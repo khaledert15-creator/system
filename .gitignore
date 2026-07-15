@@ -1,0 +1,52 @@
+logs/server*.log
+data/backups/
+*.tmp
+.DS_Store
+__pycache__/
+
+# Dependencies
+node_modules/
+services/**/node_modules/
+
+# Local runtime data and private business data
+data/database.json
+data/database.backup*.json
+data/*.backup*.json
+*.backup*.json
+
+# Logs
+logs/
+*.log
+*.err
+*.out
+server-*.log
+server-out.log
+server-err.log
+server-node-*.log
+
+# Debug / diagnostics / local browser profiles
+debug/
+qa-returns-profile/
+qa-returns-headless/
+services/local-tracking-rpa/.rpa-profile/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+services/**/.env
+services/**/.env.*
+!services/**/.env.example
+
+# Local broken/temporary backups
+app/*.broken-*
+app/*.mojibake-*
+app/*.pre-*
+app/app.js.broken*
+app/app.js.mojibake*
+app/app.js.pre*
+
+# Screenshots / temporary QA artifacts
+*.png
+!app/assets/*.png

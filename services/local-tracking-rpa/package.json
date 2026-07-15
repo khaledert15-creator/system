@@ -1,0 +1,14 @@
+{
+  "name": "dotcom-local-tracking-rpa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local headed Chrome RPA agent for Egypt Post shipment tracking.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "install:browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}

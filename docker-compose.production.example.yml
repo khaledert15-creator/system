@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dotcom_omnichannel
+      POSTGRES_USER: dotcom
+      POSTGRES_PASSWORD: change-this-password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dotcom -d dotcom_omnichannel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  omnichannel-api:
+    build:
+      context: ./services/omnichannel
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./services/omnichannel/.env.production
+    environment:
+      NODE_ENV: production
+      OMNI_START_RETRY_WORKER: "false"
+      DATABASE_URL: postgresql://dotcom:change-this-password@postgres:5432/dotcom_omnichannel?schema=public
+    volumes:
+      - omni_uploads:/app/storage/uploads
+    ports:
+      - "8775:8775"
+    command: ["node", "src/server.js"]
+
+  omnichannel-worker:
+    build:
+      context: ./services/omnichannel
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./services/omnichannel/.env.production
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://dotcom:change-this-password@postgres:5432/dotcom_omnichannel?schema=public
+    volumes:
+      - omni_uploads:/app/storage/uploads
+    command: ["node", "src/worker.js"]
+
+volumes:
+  postgres_data:
+  omni_uploads:

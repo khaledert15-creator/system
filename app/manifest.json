@@ -1,0 +1,10 @@
+{
+  "name": "مكتبة دوت كوم - نظام الإدارة",
+  "short_name": "دوت كوم",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f5f7f6",
+  "theme_color": "#173f35",
+  "lang": "ar",
+  "dir": "rtl"
+}

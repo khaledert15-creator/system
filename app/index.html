@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1f5fa8">
+  <title>مكتبة دوت كوم | نظام الإدارة</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css?v=20260714-sales-cards">
+</head>
+<body>
+  <div class="server-warning" id="server-warning" hidden>يجب تشغيل النظام من START-HERE.cmd للحفظ الآمن. لا تفتح index.html مباشرة.</div>
+  <section class="login-screen" id="login-screen">
+    <form class="login-card" id="login-form">
+      <div class="brand-logo large"><img src="assets/dotcom-logo.png" alt="مكتبة دوت كوم"></div>
+      <span class="eyebrow">مكتبة دوت كوم</span>
+      <h1>تسجيل الدخول</h1>
+      <p>أدخل حساب المستخدم للوصول إلى النظام حسب صلاحياتك.</p>
+      <div class="form-field"><label>اسم المستخدم</label><input name="username" autocomplete="username" required autofocus></div>
+      <div class="form-field"><label>كلمة المرور</label><input name="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn login-submit" type="submit">دخول إلى النظام</button>
+      <div class="login-message" id="login-message"></div>
+      <small>الحساب الأولي للمالك: owner — غيّر كلمة المرور بعد التشغيل الفعلي.</small>
+    </form>
+  </section>
+  <div class="app-shell" id="app-shell" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-logo"><img src="assets/dotcom-logo.png" alt="مكتبة دوت كوم"></div>
+        <div>
+          <strong>مكتبة دوت كوم</strong>
+          <span>نظام الإدارة والحسابات</span>
+        </div>
+      </div>
+
+      <nav id="main-nav" aria-label="القائمة الرئيسية">
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span> لوحة المتابعة</button>
+        <button class="nav-item" data-view="books"><span>▤</span> الأصناف والمخزون</button>
+        <button class="nav-item" data-view="sales"><span>▥</span> المبيعات</button>
+        <button class="nav-item" data-view="onlineOrders"><span>◎</span> طلبات الأونلاين</button>
+        <button class="nav-item" data-view="omnichannel"><span>☎</span> مركز خدمة العملاء</button>
+        <button class="nav-item" data-view="purchases"><span>▣</span> المشتريات والأمانة</button>
+        <button class="nav-item" data-view="returns"><span>↶</span> المرتجعات</button>
+        <button class="nav-item" data-view="parties"><span>♙</span> العملاء والموردون</button>
+        <button class="nav-item" data-view="shipping"><span>▰</span> الشحن والتوصيل</button>
+        <button class="nav-item" data-view="accounting"><span>≋</span> الحسابات والخزائن</button>
+        <button class="nav-item" data-view="reports"><span>↗</span> التقارير والتحليلات</button>
+        <button class="nav-item" data-view="hr"><span>♧</span> الموظفون والرواتب</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span> الإعدادات والصلاحيات</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sync-dot"></div>
+        <div>
+          <strong id="storage-status">جاري الاتصال بقاعدة البيانات...</strong>
+          <span id="storage-mode">الخادم المحلي</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="فتح القائمة">☰</button>
+        <div class="page-heading">
+          <span id="page-kicker">نظرة عامة</span>
+          <h1 id="page-title">لوحة المتابعة</h1>
+        </div>
+        <div class="top-actions">
+          <button class="icon-btn notification-btn" id="notification-btn" title="التنبيهات">
+            ♢<span id="notification-count">4</span>
+          </button>
+          <div class="user-chip">
+            <div class="avatar">م</div>
+            <div>
+              <strong id="current-user-name">—</strong>
+              <span id="current-user-role">—</span>
+            </div>
+          </div>
+          <button class="icon-btn" id="logout-btn" title="تسجيل الخروج">↩</button>
+        </div>
+      </header>
+
+      <section id="view-root" class="view-root" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow" id="modal-eyebrow">إضافة جديد</span>
+          <h2 id="modal-title">عنوان النافذة</h2>
+        </div>
+        <button class="icon-btn" id="close-modal" aria-label="إغلاق">×</button>
+      </div>
+      <div id="modal-body"></div>
+    </section>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="assertive"></div>
+
+  <template id="empty-state-template">
+    <div class="empty-state">
+      <div class="empty-icon">◇</div>
+      <h3>لا توجد بيانات حتى الآن</h3>
+      <p>ابدأ بإضافة أول سجل، وستظهر التفاصيل هنا تلقائيًا.</p>
+    </div>
+  </template>
+
+  <script src="app.js?v=20260714-sales-cards"></script>
+</body>
+</html>
