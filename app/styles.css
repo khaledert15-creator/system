@@ -92,6 +92,27 @@ button { cursor: pointer; }
 .sales-history-count strong { color: var(--ink); }
 .invoice-row-actions { flex-wrap: nowrap; }
 .invoice-row-actions .ui-icon { width: 16px; height: 16px; }
+.featured-report { border: 2px solid var(--green-700); background: linear-gradient(145deg, var(--surface), var(--green-50)); }
+.product-movement-filters { margin-bottom: 16px; }
+.movement-range-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0; }
+.product-movement-product { display: grid; grid-template-columns: minmax(240px,.7fr) minmax(0,1.3fr); gap: 20px; margin-bottom: 16px; }
+.product-movement-identity { display: flex; align-items: center; gap: 14px; }
+.product-movement-identity img, .product-movement-identity .book-cover { width: 72px; height: 86px; object-fit: cover; border-radius: 12px; }
+.product-movement-identity h3 { margin: 0 0 6px; }
+.product-movement-identity p { margin: 0 0 4px; color: var(--muted); }
+.product-movement-product-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.product-movement-product-grid > div { padding: 12px; border-radius: 10px; background: var(--canvas); }
+.product-movement-product-grid span, .product-movement-product-grid strong { display: block; }
+.product-movement-product-grid span { color: var(--muted); font-size: 12px; }
+.product-movement-summary { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.product-movement-table { max-height: 580px; }
+.product-movement-table thead { position: sticky; top: 0; z-index: 2; }
+.product-movement-table .movement-in { color: var(--green-700); font-weight: 800; }
+.product-movement-table .movement-out { color: var(--danger); font-weight: 800; }
+.product-movement-table .movement-adjustment { background: var(--warning-soft); }
+.product-movement-table .movement-cancelled { color: var(--muted); background: #f2f4f6; }
+.product-movement-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 14px; }
+@media (max-width: 1180px) { .product-movement-product { grid-template-columns: 1fr; } .product-movement-product-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } .product-movement-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 body :where(.login-message, .brand span, .sidebar-footer strong, .sidebar-footer span, .page-heading span, .user-chip span, small, .muted, .trend, .stat-card label, .stat-card small, .card-header p, .section-title p, .purchase-command-card small, .purchase-ledger-stats span, .btn.small, .chart-legend, .alert-item strong, .alert-item span, .activity-item strong, .activity-item span, .inventory-count-summary span, .customer-suggestions span, .customer-no-results, .customer-summary strong, .customer-summary span, .choice-card small, .sale-book-info, #sale-book-suggestions span, #purchase-book-suggestions span, .online-order-head span, th, td, .book-cell strong, .book-cell span, .row-action, .form-field label, .summary-row, .line-head, .tab, .mini-metric span, .report-card p, .empty-state p) { font-size: 12px !important; }
 
 .app-shell { min-height: 100vh; display: flex; }

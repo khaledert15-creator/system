@@ -2034,7 +2034,7 @@ function booksTable(books) {
       <td class="money">${money(productDefaultSellingPrice(book))}</td>
       <td>${stockBadge(book)}</td>
       <td>${book.owned ? badge("مملوك") : badge("أمانة", "blue")}</td>
-      <td><div class="row-actions"><button class="row-action" data-action="view-book" data-id="${book.id}">عرض</button><button class="row-action" data-action="edit-book" data-id="${book.id}">تعديل</button><button class="row-action" data-action="adjust-stock" data-id="${book.id}">تسوية</button><button class="row-action text-danger" data-action="delete-book" data-id="${book.id}">حذف</button></div></td>
+      <td><div class="row-actions"><button class="row-action" data-action="view-book" data-id="${book.id}">عرض</button><button class="row-action" data-action="open-product-movement" data-id="${book.id}">عرض حركة الصنف</button><button class="row-action" data-action="edit-book" data-id="${book.id}">تعديل</button><button class="row-action" data-action="adjust-stock" data-id="${book.id}">تسوية</button><button class="row-action text-danger" data-action="delete-book" data-id="${book.id}">حذف</button></div></td>
     </tr>`; }).join("")}</tbody>
   </table>`;
 }
@@ -3438,6 +3438,47 @@ function productMovementReportData(state = productMovementState) {
   return { book, allRows, rows:state.sort === "asc" ? rows : rows.slice().reverse(), range, summary, canSeeCost };
 }
 
+function productMovementBookOptions() {
+  return data.books.filter(book => !book.deletedAt).map(book => `<option value="${esc(book.id)}">${esc(book.name)} · ${esc(book.barcode || "بدون باركود")}</option>`).join("");
+}
+
+function productMovementMoney(value) {
+  return value === null || value === undefined || !Number.isFinite(Number(value)) ? "غير متاح" : money(value);
+}
+
+function productMovementTone(kind) {
+  return kind === "cancelled" ? "movement-cancelled" : ["adjustment","count"].includes(kind) ? "movement-adjustment" : "";
+}
+
+function productMovementTable(report) {
+  const pageCount = Math.max(1, Math.ceil(report.rows.length / PRODUCT_MOVEMENT_PAGE_SIZE));
+  productMovementState.page = Math.min(pageCount, Math.max(1, Number(productMovementState.page || 1)));
+  const start = (productMovementState.page - 1) * PRODUCT_MOVEMENT_PAGE_SIZE;
+  const rows = report.rows.slice(start, start + PRODUCT_MOVEMENT_PAGE_SIZE);
+  const costHeads = report.canSeeCost ? `<th>تكلفة الوحدة</th>` : "";
+  return `<div class="table-wrap product-movement-table"><table><thead><tr><th>التاريخ والوقت</th><th>نوع الحركة</th><th>المستند</th><th>الطرف / السبب</th><th>داخل</th><th>خارج</th><th>سعر الوحدة</th><th>القيمة</th>${costHeads}<th>قبل</th><th>بعد</th><th>الموظف</th><th>الحالة</th><th>ملاحظات</th><th>الإجراء</th></tr></thead><tbody>${rows.map(row => `<tr class="clickable-row ${productMovementTone(row.kind)}" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}"><td>${esc(dateTimeLabel(row.date))}</td><td>${badge(productMovementTypeLabel(row.kind, row.type), ["adjustment","count"].includes(row.kind) ? "warning" : row.kind === "cancelled" ? "gray" : row.incoming ? "" : "danger")}</td><td dir="ltr"><strong>${esc(row.documentId || "—")}</strong></td><td>${esc(row.partyName || "—")}</td><td class="movement-in">${row.incoming ? `+${row.incoming}` : "—"}</td><td class="movement-out">${row.outgoing || "—"}</td><td class="money">${productMovementMoney(row.unitPrice)}</td><td class="money">${productMovementMoney(row.totalValue)}</td>${report.canSeeCost ? `<td class="money">${productMovementMoney(row.unitCost)}</td>` : ""}<td>${row.before}</td><td><strong>${row.after}</strong></td><td>${esc(row.employee)}</td><td>${badge(row.status || "—", row.status === "ملغاة" ? "gray" : "")}</td><td>${esc(row.note || "—")}</td><td>${row.document?.action ? `<button class="row-action" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}">فتح المستند</button>` : `<button class="row-action" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}">عرض التفاصيل</button>`}</td></tr>`).join("") || `<tr><td colspan="${report.canSeeCost ? 15 : 14}" class="text-center muted">لا توجد حركات مطابقة للفلاتر المختارة.</td></tr>`}</tbody></table></div><div class="product-movement-pagination"><button class="btn ghost small" data-action="product-movement-page" data-page="${productMovementState.page - 1}" ${productMovementState.page <= 1 ? "disabled" : ""}>السابق</button><span>صفحة ${productMovementState.page} من ${pageCount} · ${report.rows.length} حركة</span><button class="btn ghost small" data-action="product-movement-page" data-page="${productMovementState.page + 1}" ${productMovementState.page >= pageCount ? "disabled" : ""}>التالي</button></div>`;
+}
+
+function renderProductMovementReport(bookId = productMovementState.bookId) {
+  if (bookId) productMovementState.bookId = bookId;
+  const report = productMovementReportData(productMovementState);
+  const quickRanges = [["today","اليوم"],["7","آخر 7 أيام"],["30","آخر 30 يومًا"],["month","الشهر الحالي"],["year","السنة الحالية"],["all","كل الحركات"]];
+  root.innerHTML = `<div class="section-title"><div><h2>حركة صنف</h2><p>تتبع الشراء والبيع والمرتجعات والتسويات والجرد مع الرصيد بعد كل حركة.</p></div><div class="actions"><button class="btn ghost" data-action="reports-main">كل التقارير</button>${report ? `<button class="btn secondary" data-action="print-product-movement">طباعة التقرير</button><button class="btn" data-action="export-product-movement">CSV</button>` : ""}</div></div>
+    <article class="card product-movement-filters"><div class="form-grid three"><div class="form-field"><label>اسم الصنف</label><input id="movement-book-name" list="movement-book-names" value="${esc(report?.book.name || "")}" placeholder="اكتب اسم الصنف"><datalist id="movement-book-names">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.name)}">${esc(b.id)}</option>`).join("")}</datalist></div><div class="form-field"><label>الباركود</label><input id="movement-book-barcode" list="movement-book-barcodes" dir="ltr" value="${esc(report?.book.barcode || "")}" placeholder="امسح الباركود"><datalist id="movement-book-barcodes">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.barcode || "")}">${esc(b.name)}</option>`).join("")}</datalist></div><div class="form-field"><label>كود الصنف</label><select id="movement-book-id"><option value="">اختر الصنف أولًا</option>${productMovementBookOptions()}</select></div></div>
+    ${!report ? `<div class="empty-state"><div class="empty-icon">⌕</div><h3>اختر صنفًا لعرض الحركة</h3><p>لن يتم تحميل أي حركات قبل تحديد الصنف بالاسم أو الباركود أو الكود.</p></div>` : `<div class="movement-range-presets">${quickRanges.map(([value,label])=>`<button class="tab ${productMovementState.quickRange===value?"active":""}" data-action="product-movement-range" data-range="${value}">${label}</button>`).join("")}</div><div class="form-grid three movement-filter-grid"><div class="form-field"><label>من تاريخ</label><input id="movement-from" type="date" value="${esc(report.range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="movement-to" type="date" value="${esc(report.range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="movement-type">${[["all","الكل"],["purchase","مشتريات"],["sale","مبيعات"],["sale-return","مرتجعات بيع"],["purchase-return","مرتجعات شراء"],["adjustment","تسويات"],["count","جرد"],["opening","مخزون افتتاحي"],["cancelled","حركات ملغاة"]].map(([v,l])=>`<option value="${v}" ${productMovementState.type===v?"selected":""}>${l}</option>`).join("")}</select></div></div>`}</article>
+    ${report ? productMovementReportMarkup(report) : ""}`;
+  if (report) { const select = document.getElementById("movement-book-id"); if (select) select.value = report.book.id; }
+}
+
+function productMovementReportMarkup(report) {
+  const book = report.book; const inventory = productInventorySummary(book.id); const s = report.summary;
+  const image = book.image || book.imageUrl || book.coverImage || "";
+  return `<article class="card product-movement-product"><div class="product-movement-identity">${image ? `<img src="${esc(image)}" alt="${esc(book.name)}">` : `<div class="book-cover">${esc(book.name.charAt(0))}</div>`}<div><h3>${esc(book.name)}</h3><p><span dir="ltr">${esc(book.id)}</span> · <span dir="ltr">${esc([book.barcode,book.extraBarcode].filter(Boolean).join("، ") || "غير متاح")}</span></p><span>${esc(book.category || "غير متاح")}</span></div></div><div class="product-movement-product-grid"><div><span>سعر الغلاف</span><strong>${productMovementMoney(productCoverPrice(book))}</strong></div><div><span>سعر البيع الحالي</span><strong>${productMovementMoney(productDefaultSellingPrice(book))}</strong></div><div><span>الرصيد الحالي</span><strong>${Number(book.stock || 0)}</strong></div><div><span>حد إعادة الطلب</span><strong>${Number(book.reorder || 0)}</strong></div>${report.canSeeCost ? `<div><span>آخر سعر شراء</span><strong>${inventory.lastPurchaseCost ? money(inventory.lastPurchaseCost) : "غير متاح"}</strong></div><div><span>متوسط التكلفة</span><strong>${inventory.hasIncompleteCost ? "غير متاح" : money(inventory.averageInventoryCost)}</strong></div><div><span>قيمة المخزون</span><strong>${inventory.hasIncompleteCost ? "غير متاح" : money(inventory.currentInventoryValue)}</strong></div>` : ""}</div></article>
+  ${s.mismatch ? `<div class="alert-item warning"><div class="alert-badge gold">!</div><div><strong>يوجد اختلاف يحتاج مراجعة في سجل حركة الصنف</strong><span>المعادلة تعطي ${s.closing} بينما آخر رصيد مسجل ${s.expected}. لم يتم تعديل المخزون.</span></div></div>` : ""}
+  <div class="stats-grid product-movement-summary">${statCard("رصيد أول المدة",s.opening,"قبل أول حركة في الفترة","↦")}${statCard("الكمية المشتراة",s.purchaseQty,productMovementMoney(s.purchaseValue),"+")}${statCard("الكمية المباعة",s.saleQty,productMovementMoney(s.saleValue),"−","blue")}${statCard("مرتجعات البيع",s.saleReturns,"كمية داخلة","↶")}${statCard("مرتجعات الشراء",s.purchaseReturns,"كمية خارجة","↶","red")}${statCard("تسويات بالزيادة",s.adjustmentIn,"تشمل فروق الجرد","+")}${statCard("تسويات بالنقص",s.adjustmentOut,"تشمل فروق الجرد","−","red")}${statCard("رصيد آخر المدة",s.closing,"أول المدة + الداخل - الخارج","=")}${report.canSeeCost ? statCard("تكلفة البضاعة المباعة",s.cogs===null?"غير متاح":money(s.cogs),"حسب تكلفة الفاتورة المسجلة","▤","blue")+statCard("مجمل ربح الصنف",s.grossProfit===null?"غير متاح":money(s.grossProfit),"المبيعات - التكلفة","↗","gold") : ""}</div>
+  <article class="card"><div class="card-header"><div><h3>سجل حركة الصنف</h3><p>مرتب ${productMovementState.sort==="desc"?"من الأحدث إلى الأقدم":"من الأقدم إلى الأحدث"}.</p></div><select id="movement-sort" class="filter-select"><option value="desc" ${productMovementState.sort==="desc"?"selected":""}>الأحدث أولًا</option><option value="asc" ${productMovementState.sort==="asc"?"selected":""}>الأقدم أولًا</option></select></div>${productMovementTable(report)}</article>`;
+}
+
 function renderReports() {
   const active = activeSalesList();
   const sales = active.reduce((s, i) => s + i.total, 0);
@@ -3478,7 +3519,7 @@ function renderReports() {
       <div class="actions"><button class="btn ghost" onclick="window.print()">PDF / طباعة</button><button class="btn secondary" data-action="whatsapp-report">إرسال عبر WhatsApp</button></div>
     </div>
     ${monthlySalesOverviewMarkup(active)}
-    <div class="report-grid">${reports.map((r, index) => `<article class="card report-card"><div class="report-icon">${r[1]}</div><h3>${r[0]}</h3><p>${r[2]}</p><div class="row-actions" style="margin-top:12px"><button class="btn ghost small" data-action="open-report" data-report="${index}">فتح</button><button class="btn ghost small" data-action="export-report" data-report="${index}">CSV</button></div></article>`).join("")}</div>`;
+    <div class="report-grid"><article class="card report-card featured-report"><div class="report-icon">↕</div><h3>حركة صنف</h3><p>عرض جميع عمليات الشراء والبيع والمرتجعات والتسويات والجرد لصنف محدد، مع الرصيد بعد كل حركة.</p><div class="row-actions"><button class="btn" data-action="open-product-movement">فتح التقرير</button></div></article>${reports.map((r, index) => `<article class="card report-card"><div class="report-icon">${r[1]}</div><h3>${r[0]}</h3><p>${r[2]}</p><div class="row-actions" style="margin-top:12px"><button class="btn ghost small" data-action="open-report" data-report="${index}">فتح</button><button class="btn ghost small" data-action="export-report" data-report="${index}">CSV</button></div></article>`).join("")}</div>`;
 }
 
 function renderHr() {
@@ -4682,6 +4723,12 @@ root.addEventListener("click", event => {
   if (action === "customize-role") customizeRole(target.dataset.role);
   if (action === "customize-user") customizeUser(target.dataset.username);
   if (action === "open-report") openReport(Number(target.dataset.report));
+  if (action === "open-product-movement") {
+    productMovementState = { ...productMovementState, bookId:target.dataset.id || "", page:1 };
+    currentView = "reports";
+    renderProductMovementReport(productMovementState.bookId);
+  }
+  if (action === "reports-main") renderReports();
   if (action === "export-report") exportReportCsv(Number(target.dataset.report));
   if (action === "print-sale") printSale(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-voucher") printVoucher(target.dataset.id, target.dataset.format || "a4");
