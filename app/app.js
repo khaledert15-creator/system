@@ -2062,7 +2062,8 @@ function saleCustomerDetailsMarkup(customer) {
 }
 
 function resetSaleDraft() {
-  draftSale = { customerId: "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
+  const cashCustomer = (data.customers || []).find(customer => !customer.deletedAt && (customer.id === "C001" || customer.name === "عميل نقدي"));
+  draftSale = { customerId: cashCustomer?.id || "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
 }
 
 function saleCreatedByName(sale = {}) {
@@ -2372,7 +2373,9 @@ function renderSaleInvoice() {
     const book = getBook(line.bookId);
     const computed = totals.lines[index] || {};
     const listId = `sale-book-options-${index}`;
-    return `<div class="invoice-line" data-line="${index}">
+    const availableStock = book ? productInventorySummary(book.id).currentStockQty : 0;
+    const stockWarning = book && Number(line.qty || 0) > availableStock;
+    return `<div class="invoice-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
       <input class="sale-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود...">
       ${bookPickerDatalist(listId)}
       <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
@@ -2380,57 +2383,44 @@ function renderSaleInvoice() {
       <input class="sale-discount discount-field" data-index="${index}" type="number" min="0" max="100" value="${line.discount || 0}">
       <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
-      ${book ? `<small class="sale-book-info">الرصيد ${productInventorySummary(book.id).currentStockQty} · البيع ${money(productDefaultSellingPrice(book))} · متوسط التكلفة ${productInventorySummary(book.id).hasIncompleteCost ? "غير مكتملة" : money(productInventorySummary(book.id).averageInventoryCost)} · بعد الخصم ${money(computed.finalNet || 0)}</small>` : ""}
+      ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
     </div>`;
   }).join("");
 
   root.innerHTML = `
     <div class="section-title">
-      <div><h2>فاتورة مبيعات جديدة</h2><p>تجزئة، جملة، متجر إلكتروني، نقدي أو آجل.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="sales-main">مركز المبيعات</button><button class="btn ghost" data-view-jump="returns">المرتجعات</button><button class="btn ghost" data-action="show-sales-list">الفواتير السابقة</button><button class="btn secondary" data-action="reset-sale">تفريغ الفاتورة</button></div>
+      <div><h2>بيع سريع</h2><p>امسح الباركود، راجع الإجمالي، ثم احفظ.</p></div>
+      <div class="actions"><button class="btn ghost" data-action="sales-main">مركز المبيعات</button><button class="btn ghost" data-action="show-sales-list">الفواتير السابقة</button><button class="btn secondary" data-action="reset-sale">تفريغ</button></div>
     </div>
-    <div class="invoice-layout">
+    <div class="invoice-layout quick-sale-layout">
       <article class="card">
-        <div class="invoice-meta">
-          <div class="form-grid">
-            <div class="form-field full sale-customer-picker">
-              <label class="required">العميل المسجل</label>
-              <div class="customer-search-row">
-                <div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div>
-                <button class="btn secondary" type="button" data-action="register-sale-customer">＋ تسجيل عميل جديد</button>
-              </div>
-              <div id="sale-customer-suggestions" class="customer-suggestions"></div>
-              <div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div>
-            </div>
-            <div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>نوع عملية البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>تاريخ الفاتورة</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div>
-          </div>
-        </div>
         <div class="invoice-lines">
-          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" placeholder="بحث ذكي: امسح الباركود أو اكتب جزء من اسم الصنف / الناشر / الصف"></div><input id="sale-quick-qty" type="number" min="1" value="1" title="الكمية"><div id="sale-book-suggestions"></div></div>
-          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">خصم صنف %</span><span>بعد الخصم</span><span></span></div>
+          <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
+          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
+          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">الخصم</span><span>الإجمالي</span><span></span></div>
           <div id="sale-lines">${lines}</div>
-          <button class="btn secondary small" data-action="add-sale-line">＋ إضافة بند</button>
         </div>
       </article>
       <aside class="card invoice-summary">
         <span class="eyebrow">ملخص الفاتورة</span>
+        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="row-action" type="button" data-action="toggle-sale-options">تغيير</button></div>
         <div class="summary-row"><span>المجموع الإجمالي قبل الخصم</span><strong id="sale-subtotal">${money(totals.subtotal)}</strong></div>
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
-        <div class="form-field" style="margin-top:12px"><label>خصم إجمالي الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" type="number" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div>
-        <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div>
-        <div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
-        <div class="form-field" style="margin-top:12px"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row total"><span>صافي الفاتورة</span><strong id="sale-total">${money(totals.total)}</strong></div>
+        <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+        <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row"><span>المتبقي على العميل</span><strong id="sale-remaining" class="${totals.remaining > 0 ? "text-danger" : ""}">${money(totals.remaining)}</strong></div>
         <div id="sale-warning"></div>
-        <button class="btn gold" data-action="save-sale" style="width:100%;margin-top:12px">اعتماد وحفظ الفاتورة</button>
-        <button class="btn ghost" onclick="window.print()" style="width:100%;margin-top:7px">طباعة A4 / حراري</button>
-        <p class="muted" style="font-size:8px;line-height:1.8;margin:12px 0 0">يمنع النظام البيع بأقل من التكلفة، ويطلب موافقة خاصة للخصم فوق ${data.settings.approvalDiscount}% أو البيع الآجل المتجاوز للحد.</p>
+        <button class="btn gold daily-action quick-save" data-action="save-sale" data-print-after="1">حفظ وطباعة</button>
+        <button class="btn ghost quick-save" data-action="save-sale">حفظ بدون طباعة</button>
+        <details class="sale-extra-options" id="sale-extra-options"><summary>خيارات إضافية</summary>
+          <div class="sale-customer-picker"><label>تغيير العميل</label><div class="customer-search-row"><div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div><button class="btn secondary" type="button" data-action="register-sale-customer">تسجيل عميل</button></div><div id="sale-customer-suggestions" class="customer-suggestions"></div><div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div></div>
+          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" type="number" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div></div>
+          <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div><div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
+        </details>
       </aside>
     </div>`;
+  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 30);
 }
 
 const ONLINE_ORDER_STATUSES = ["طلب جديد","قيد التجهيز","تم إنشاء الفاتورة","لم يتم الشحن بعد","تم إنشاء الشحنة","خرج للتوصيل","تم التسليم","مرتجع","ملغي"];
@@ -4337,6 +4327,7 @@ document.getElementById("main-nav").addEventListener("click", event => {
 });
 document.getElementById("sidebar-new-sale").addEventListener("click", () => {
   if (!canView("sales") || !requireAction("new-sale-invoice")) return;
+  resetSaleDraft();
   salesScreenMode = "invoice";
   currentView = "sales";
   render();
@@ -4358,6 +4349,22 @@ document.getElementById("menu-btn").addEventListener("click", () => document.get
 document.getElementById("notification-btn").addEventListener("click", showNotificationCenter);
 document.getElementById("close-modal").addEventListener("click", closeModal);
 modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !modal.hidden) {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (!(event.metaKey || event.ctrlKey) || currentView !== "sales" || salesScreenMode !== "invoice") return;
+  if (event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    document.getElementById("sale-book-search")?.focus();
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (requireAction("save-sale")) saveSale({ printAfter: false });
+  }
+});
 
 document.addEventListener("pointerover", event => {
   const wrap = event.target.closest?.(".table-wrap");
@@ -4489,7 +4496,8 @@ root.addEventListener("click", event => {
     renderPurchases();
   }
   if (action === "new-purchase-document") resetPurchaseDraft();
-  if (action === "save-sale") saveSale();
+  if (action === "save-sale") saveSale({ printAfter: target.dataset.printAfter === "1" });
+  if (action === "toggle-sale-options") document.getElementById("sale-extra-options")?.setAttribute("open", "");
   if (action === "view-sale") viewSale(target.dataset.id);
   if (action === "return-sale") saleReturnModal(target.dataset.id);
   if (action === "close-sales-day") closeSalesDay();
@@ -5996,7 +6004,7 @@ function shipmentFromOrderModal(order, sale) {
     </form>`);
 }
 
-function saveSale() {
+function saveSale({ printAfter = false } = {}) {
   const totals = saleTotals();
   const validEntries = draftSale.lines
     .map((line, index) => ({ line, computed: totals.lines[index] || {} }))
@@ -6074,6 +6082,8 @@ function saveSale() {
   salesScreenMode = "main";
   renderSales();
   toast(`تم اعتماد الفاتورة ${sale.id} وتحديث المخزون والحسابات.`);
+  if (printAfter) setTimeout(() => printSale(sale.id, "thermal"), 80);
+  return sale;
 }
 
 function savePurchase() {
