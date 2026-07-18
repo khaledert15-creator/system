@@ -112,6 +112,10 @@ button { cursor: pointer; }
 .product-movement-table .movement-adjustment { background: var(--warning-soft); }
 .product-movement-table .movement-cancelled { color: var(--muted); background: #f2f4f6; }
 .product-movement-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 14px; }
+.movement-advanced-filters { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.movement-advanced-filters summary { cursor: pointer; color: var(--primary); font-weight: 800; margin-bottom: 12px; }
+.movement-print-option { display: inline-flex; align-items: center; gap: 7px; padding: 0 5px; font-size: 13px; color: var(--muted); }
+.movement-print-option input { width: auto; }
 @media (max-width: 1180px) { .product-movement-product { grid-template-columns: 1fr; } .product-movement-product-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } .product-movement-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 body :where(.login-message, .brand span, .sidebar-footer strong, .sidebar-footer span, .page-heading span, .user-chip span, small, .muted, .trend, .stat-card label, .stat-card small, .card-header p, .section-title p, .purchase-command-card small, .purchase-ledger-stats span, .btn.small, .chart-legend, .alert-item strong, .alert-item span, .activity-item strong, .activity-item span, .inventory-count-summary span, .customer-suggestions span, .customer-no-results, .customer-summary strong, .customer-summary span, .choice-card small, .sale-book-info, #sale-book-suggestions span, #purchase-book-suggestions span, .online-order-head span, th, td, .book-cell strong, .book-cell span, .row-action, .form-field label, .summary-row, .line-head, .tab, .mini-metric span, .report-card p, .empty-state p) { font-size: 12px !important; }
 

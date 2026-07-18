@@ -3482,7 +3482,7 @@ function renderProductMovementReport(bookId = productMovementState.bookId) {
   if (bookId) productMovementState.bookId = bookId;
   const report = productMovementReportData(productMovementState);
   const quickRanges = [["today","اليوم"],["7","آخر 7 أيام"],["30","آخر 30 يومًا"],["month","الشهر الحالي"],["year","السنة الحالية"],["all","كل الحركات"]];
-  root.innerHTML = `<div class="section-title"><div><h2>حركة صنف</h2><p>تتبع الشراء والبيع والمرتجعات والتسويات والجرد مع الرصيد بعد كل حركة.</p></div><div class="actions"><button class="btn ghost" data-action="reports-main">كل التقارير</button>${report ? `<button class="btn secondary" data-action="print-product-movement">طباعة التقرير</button><button class="btn" data-action="export-product-movement">CSV</button>` : ""}</div></div>
+  root.innerHTML = `<div class="section-title"><div><h2>حركة صنف</h2><p>تتبع الشراء والبيع والمرتجعات والتسويات والجرد مع الرصيد بعد كل حركة.</p></div><div class="actions"><button class="btn ghost" data-action="reports-main">كل التقارير</button>${report ? `<label class="movement-print-option"><input id="movement-print-prices" type="checkbox" ${productMovementState.showPrices ? "checked" : ""}> إظهار الأسعار${report.canSeeCost ? " والتكلفة" : ""}</label><button class="btn secondary" data-action="print-product-movement">طباعة التقرير</button><button class="btn" data-action="export-product-movement">CSV</button>` : ""}</div></div>
     <article class="card product-movement-filters"><div class="form-grid three"><div class="form-field"><label>اسم الصنف</label><input id="movement-book-name" list="movement-book-names" value="${esc(report?.book.name || "")}" placeholder="اكتب اسم الصنف"><datalist id="movement-book-names">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.name)}">${esc(b.id)}</option>`).join("")}</datalist></div><div class="form-field"><label>الباركود</label><input id="movement-book-barcode" list="movement-book-barcodes" dir="ltr" value="${esc(report?.book.barcode || "")}" placeholder="امسح الباركود"><datalist id="movement-book-barcodes">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.barcode || "")}">${esc(b.name)}</option>`).join("")}</datalist></div><div class="form-field"><label>كود الصنف</label><select id="movement-book-id"><option value="">اختر الصنف أولًا</option>${productMovementBookOptions()}</select></div></div>
     ${!report ? `<div class="empty-state"><div class="empty-icon">⌕</div><h3>اختر صنفًا لعرض الحركة</h3><p>لن يتم تحميل أي حركات قبل تحديد الصنف بالاسم أو الباركود أو الكود.</p></div>` : `<div class="movement-range-presets">${quickRanges.map(([value,label])=>`<button class="tab ${productMovementState.quickRange===value?"active":""}" data-action="product-movement-range" data-range="${value}">${label}</button>`).join("")}</div><div class="form-grid three movement-filter-grid"><div class="form-field"><label>من تاريخ</label><input id="movement-from" type="date" value="${esc(report.range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="movement-to" type="date" value="${esc(report.range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="movement-type">${[["all","الكل"],["purchase","مشتريات"],["sale","مبيعات"],["sale-return","مرتجعات بيع"],["purchase-return","مرتجعات شراء"],["adjustment","تسويات"],["count","جرد"],["opening","مخزون افتتاحي"],["cancelled","حركات ملغاة"]].map(([v,l])=>`<option value="${v}" ${productMovementState.type===v?"selected":""}>${l}</option>`).join("")}</select></div></div><details class="movement-advanced-filters" ${productMovementState.supplierId || productMovementState.customerId || productMovementState.employee || productMovementState.status ? "open" : ""}><summary>فلاتر إضافية</summary><div class="form-grid four"><div class="form-field"><label>المورد</label><select id="movement-supplier">${productMovementOptionList(report.allRows.filter(row=>row.supplierId).map(row=>getSupplier(row.supplierId)?.name || row.partyName), productMovementState.supplierId ? getSupplier(productMovementState.supplierId)?.name || productMovementState.supplierId : "", "كل الموردين")}</select></div><div class="form-field"><label>العميل</label><select id="movement-customer">${productMovementOptionList(report.allRows.filter(row=>row.customerId).map(row=>getCustomer(row.customerId)?.name || row.partyName), productMovementState.customerId ? getCustomer(productMovementState.customerId)?.name || productMovementState.customerId : "", "كل العملاء")}</select></div><div class="form-field"><label>الموظف</label><select id="movement-employee">${productMovementOptionList(report.allRows.map(row=>row.employee), productMovementState.employee, "كل الموظفين")}</select></div><div class="form-field"><label>الحالة</label><select id="movement-status">${productMovementOptionList(report.allRows.map(row=>row.status), productMovementState.status, "كل الحالات")}</select></div></div></details>`}</article>
     ${report ? productMovementReportMarkup(report) : ""}`;
@@ -3497,6 +3497,46 @@ function productMovementReportMarkup(report) {
   <div class="stats-grid product-movement-summary">${statCard("رصيد أول المدة",s.opening,"قبل أول حركة في الفترة","↦")}${statCard("الكمية المشتراة",s.purchaseQty,productMovementMoney(s.purchaseValue),"+")}${statCard("الكمية المباعة",s.saleQty,productMovementMoney(s.saleValue),"−","blue")}${statCard("مرتجعات البيع",s.saleReturns,"كمية داخلة","↶")}${statCard("مرتجعات الشراء",s.purchaseReturns,"كمية خارجة","↶","red")}${statCard("تسويات بالزيادة",s.adjustmentIn,"تشمل فروق الجرد","+")}${statCard("تسويات بالنقص",s.adjustmentOut,"تشمل فروق الجرد","−","red")}${statCard("رصيد آخر المدة",s.closing,"أول المدة + الداخل - الخارج","=")}${report.canSeeCost ? statCard("تكلفة البضاعة المباعة",s.cogs===null?"غير متاح":money(s.cogs),"حسب تكلفة الفاتورة المسجلة","▤","blue")+statCard("مجمل ربح الصنف",s.grossProfit===null?"غير متاح":money(s.grossProfit),"المبيعات - التكلفة","↗","gold") : ""}</div>
   <article class="card"><div class="card-header"><div><h3>سجل حركة الصنف</h3><p>مرتب ${productMovementState.sort==="desc"?"من الأحدث إلى الأقدم":"من الأقدم إلى الأحدث"}.</p></div><select id="movement-sort" class="filter-select"><option value="desc" ${productMovementState.sort==="desc"?"selected":""}>الأحدث أولًا</option><option value="asc" ${productMovementState.sort==="asc"?"selected":""}>الأقدم أولًا</option></select></div>${productMovementTable(report)}</article>`;
 }
+
+function productMovementPrintMarkup(report) {
+  const showPrices = productMovementState.showPrices;
+  const priceHeads = showPrices ? `<th>سعر الوحدة</th><th>القيمة</th>${report.canSeeCost ? "<th>التكلفة</th>" : ""}` : "";
+  const rows = report.rows.map(row => `<tr><td>${esc(dateTimeLabel(row.date))}</td><td>${esc(productMovementTypeLabel(row.kind, row.type))}</td><td dir="ltr">${esc(row.documentId || "—")}</td><td>${esc(row.partyName || "—")}</td><td>${row.incoming || "—"}</td><td>${row.outgoing || "—"}</td>${showPrices ? `<td>${productMovementMoney(row.unitPrice)}</td><td>${productMovementMoney(row.totalValue)}</td>${report.canSeeCost ? `<td>${productMovementMoney(row.unitCost)}</td>` : ""}` : ""}<td>${row.before}</td><td>${row.after}</td><td>${esc(row.employee)}</td><td>${esc(row.note || "—")}</td></tr>`).join("");
+  const periodRows = report.allRows.filter(row=>(!report.range.from || String(row.date).slice(0,10)>=report.range.from)&&(!report.range.to || String(row.date).slice(0,10)<=report.range.to));
+  return `<table><tbody><tr><th>التقرير</th><td>حركة صنف</td><th>الصنف</th><td>${esc(report.book.name)}</td></tr><tr><th>كود الصنف</th><td dir="ltr">${esc(report.book.id)}</td><th>الباركود</th><td dir="ltr">${esc(report.book.barcode || "—")}</td></tr><tr><th>الفترة</th><td>${esc(report.range.from || "البداية")} — ${esc(report.range.to || "الآن")}</td><th>طبع بواسطة</th><td>${esc(currentUser?.name || currentUser?.username || "النظام")} · ${esc(new Date().toLocaleString("ar-EG"))}</td></tr></tbody></table><table><tbody><tr><th>رصيد أول المدة</th><td>${report.summary.opening}</td><th>إجمالي الداخل</th><td>${periodRows.reduce((sum,row)=>sum+row.incoming,0)}</td><th>إجمالي الخارج</th><td>${periodRows.reduce((sum,row)=>sum+row.outgoing,0)}</td><th>رصيد آخر المدة</th><td>${report.summary.closing}</td></tr></tbody></table><table><thead><tr><th>التاريخ</th><th>الحركة</th><th>المستند</th><th>الطرف/السبب</th><th>داخل</th><th>خارج</th>${priceHeads}<th>قبل</th><th>بعد</th><th>الموظف</th><th>ملاحظات</th></tr></thead><tbody>${rows || `<tr><td colspan="12">لا توجد حركات مطابقة.</td></tr>`}</tbody></table>`;
+}
+
+function printProductMovementReport() {
+  const report = productMovementReportData(productMovementState);
+  if (!report) return toast("اختر صنفًا أولًا.", "error");
+  printHtml(`حركة صنف — ${report.book.name}`, productMovementPrintMarkup(report), "a4");
+}
+
+function exportProductMovementCsv() {
+  const report = productMovementReportData(productMovementState);
+  if (!report) return toast("اختر صنفًا أولًا.", "error");
+  const priceHeads = productMovementState.showPrices ? ["سعر الوحدة","القيمة", ...(report.canSeeCost ? ["تكلفة الوحدة"] : [])] : [];
+  const rows = [["التقرير","حركة صنف"],["الصنف",report.book.name],["كود الصنف",report.book.id],["الباركود",report.book.barcode || ""],["من",report.range.from || "البداية"],["إلى",report.range.to || "الآن"],["رصيد أول المدة",report.summary.opening],["رصيد آخر المدة",report.summary.closing],[],["التاريخ والوقت","نوع الحركة","المستند","الطرف / السبب","داخل","خارج",...priceHeads,"قبل","بعد","الموظف","الحالة","ملاحظات"]];
+  report.rows.forEach(row => rows.push([dateTimeLabel(row.date),productMovementTypeLabel(row.kind,row.type),row.documentId,row.partyName,row.incoming||"",row.outgoing||"",...(productMovementState.showPrices ? [row.unitPrice ?? "",row.totalValue ?? "",...(report.canSeeCost ? [row.unitCost ?? ""] : [])] : []),row.before,row.after,row.employee,row.status,row.note]));
+  const csv = "\uFEFF" + rows.map(row => row.map(value => `"${String(value ?? "").replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
+  link.download = `product-movement-${report.book.id}-${today()}.csv`;
+  link.click(); URL.revokeObjectURL(link.href);
+}
+
+function runProductMovementReportTests() {
+  const originalUser = currentUser; const results = []; const check = (name, condition) => results.push({ name, ok:Boolean(condition) });
+  data.books.filter(book=>!book.deletedAt).forEach(book => { const report = productMovementReportData({ ...productMovementState, bookId:book.id, quickRange:"all", from:"", to:"", type:"all", supplierId:"", customerId:"", employee:"", status:"", sort:"asc" }); check(`معادلة الرصيد: ${book.name}`, !report || report.summary.opening + report.allRows.reduce((sum,row)=>sum+row.incoming-row.outgoing,0) === report.summary.closing); });
+  currentUser = { id:"QA-CASHIER", username:"qa-cashier", name:"كاشير اختبار", role:"كاشير" };
+  const sampleBook = data.books.find(book=>!book.deletedAt);
+  check("إخفاء التكلفة عن الكاشير", !sampleBook || productMovementReportData({ ...productMovementState, bookId:sampleBook.id })?.canSeeCost === false);
+  currentUser = originalUser;
+  check("حجم الصفحة 25 حركة", PRODUCT_MOVEMENT_PAGE_SIZE === 25);
+  check("جميع الحركات مصنفة", !sampleBook || productMovementRows(sampleBook.id).every(row=>Boolean(row.kind && row.type)));
+  return results;
+}
+window.runProductMovementReportTests = runProductMovementReportTests;
 
 function renderReports() {
   const active = activeSalesList();
@@ -4749,6 +4789,8 @@ root.addEventListener("click", event => {
   }
   if (action === "product-movement-range") refreshProductMovementReport({ quickRange:target.dataset.range || "all", page:1 });
   if (action === "product-movement-page") refreshProductMovementReport({ page:Number(target.dataset.page || 1) });
+  if (action === "print-product-movement") printProductMovementReport();
+  if (action === "export-product-movement") exportProductMovementCsv();
   if (action === "product-movement-open-document") {
     const report = productMovementReportData(productMovementState);
     const row = report?.allRows.find(item => item.id === target.dataset.movementId);
@@ -4921,6 +4963,7 @@ root.addEventListener("change", event => {
   if (event.target.id === "movement-employee") return refreshProductMovementReport({ employee:event.target.value, page:1 });
   if (event.target.id === "movement-status") return refreshProductMovementReport({ status:event.target.value, page:1 });
   if (event.target.id === "movement-sort") return refreshProductMovementReport({ sort:event.target.value, page:1 });
+  if (event.target.id === "movement-print-prices") { productMovementState.showPrices = event.target.checked; return; }
   if (event.target.id === "movement-supplier") {
     const supplier = data.suppliers.find(item => item.name === event.target.value);
     return refreshProductMovementReport({ supplierId:supplier?.id || "", page:1 });
