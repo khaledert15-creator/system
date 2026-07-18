@@ -3442,6 +3442,25 @@ function productMovementBookOptions() {
   return data.books.filter(book => !book.deletedAt).map(book => `<option value="${esc(book.id)}">${esc(book.name)} · ${esc(book.barcode || "بدون باركود")}</option>`).join("");
 }
 
+function productMovementOptionList(values, selected, emptyLabel) {
+  return `<option value="">${emptyLabel}</option>${[...new Set(values.filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b), "ar")).map(value => `<option value="${esc(value)}" ${selected === value ? "selected" : ""}>${esc(value)}</option>`).join("")}`;
+}
+
+function refreshProductMovementReport(patch = {}, keepScroll = true) {
+  const scrollY = keepScroll ? window.scrollY : 0;
+  productMovementState = { ...productMovementState, ...patch };
+  renderProductMovementReport(productMovementState.bookId);
+  requestAnimationFrame(() => window.scrollTo({ top:scrollY, behavior:"auto" }));
+}
+
+function selectProductMovementBook(field, rawValue) {
+  const value = String(rawValue || "").trim();
+  const normalized = value.toLocaleLowerCase("ar");
+  const book = data.books.find(item => !item.deletedAt && (field === "id" ? item.id === value : field === "barcode" ? [item.barcode,item.extraBarcode].filter(Boolean).includes(value) : String(item.name || "").trim().toLocaleLowerCase("ar") === normalized));
+  if (!book && value) return toast("لم يتم العثور على صنف مطابق.", "error");
+  refreshProductMovementReport({ bookId:book?.id || "", page:1 }, false);
+}
+
 function productMovementMoney(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value)) ? "غير متاح" : money(value);
 }
@@ -3465,7 +3484,7 @@ function renderProductMovementReport(bookId = productMovementState.bookId) {
   const quickRanges = [["today","اليوم"],["7","آخر 7 أيام"],["30","آخر 30 يومًا"],["month","الشهر الحالي"],["year","السنة الحالية"],["all","كل الحركات"]];
   root.innerHTML = `<div class="section-title"><div><h2>حركة صنف</h2><p>تتبع الشراء والبيع والمرتجعات والتسويات والجرد مع الرصيد بعد كل حركة.</p></div><div class="actions"><button class="btn ghost" data-action="reports-main">كل التقارير</button>${report ? `<button class="btn secondary" data-action="print-product-movement">طباعة التقرير</button><button class="btn" data-action="export-product-movement">CSV</button>` : ""}</div></div>
     <article class="card product-movement-filters"><div class="form-grid three"><div class="form-field"><label>اسم الصنف</label><input id="movement-book-name" list="movement-book-names" value="${esc(report?.book.name || "")}" placeholder="اكتب اسم الصنف"><datalist id="movement-book-names">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.name)}">${esc(b.id)}</option>`).join("")}</datalist></div><div class="form-field"><label>الباركود</label><input id="movement-book-barcode" list="movement-book-barcodes" dir="ltr" value="${esc(report?.book.barcode || "")}" placeholder="امسح الباركود"><datalist id="movement-book-barcodes">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.barcode || "")}">${esc(b.name)}</option>`).join("")}</datalist></div><div class="form-field"><label>كود الصنف</label><select id="movement-book-id"><option value="">اختر الصنف أولًا</option>${productMovementBookOptions()}</select></div></div>
-    ${!report ? `<div class="empty-state"><div class="empty-icon">⌕</div><h3>اختر صنفًا لعرض الحركة</h3><p>لن يتم تحميل أي حركات قبل تحديد الصنف بالاسم أو الباركود أو الكود.</p></div>` : `<div class="movement-range-presets">${quickRanges.map(([value,label])=>`<button class="tab ${productMovementState.quickRange===value?"active":""}" data-action="product-movement-range" data-range="${value}">${label}</button>`).join("")}</div><div class="form-grid three movement-filter-grid"><div class="form-field"><label>من تاريخ</label><input id="movement-from" type="date" value="${esc(report.range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="movement-to" type="date" value="${esc(report.range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="movement-type">${[["all","الكل"],["purchase","مشتريات"],["sale","مبيعات"],["sale-return","مرتجعات بيع"],["purchase-return","مرتجعات شراء"],["adjustment","تسويات"],["count","جرد"],["opening","مخزون افتتاحي"],["cancelled","حركات ملغاة"]].map(([v,l])=>`<option value="${v}" ${productMovementState.type===v?"selected":""}>${l}</option>`).join("")}</select></div></div>`}</article>
+    ${!report ? `<div class="empty-state"><div class="empty-icon">⌕</div><h3>اختر صنفًا لعرض الحركة</h3><p>لن يتم تحميل أي حركات قبل تحديد الصنف بالاسم أو الباركود أو الكود.</p></div>` : `<div class="movement-range-presets">${quickRanges.map(([value,label])=>`<button class="tab ${productMovementState.quickRange===value?"active":""}" data-action="product-movement-range" data-range="${value}">${label}</button>`).join("")}</div><div class="form-grid three movement-filter-grid"><div class="form-field"><label>من تاريخ</label><input id="movement-from" type="date" value="${esc(report.range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="movement-to" type="date" value="${esc(report.range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="movement-type">${[["all","الكل"],["purchase","مشتريات"],["sale","مبيعات"],["sale-return","مرتجعات بيع"],["purchase-return","مرتجعات شراء"],["adjustment","تسويات"],["count","جرد"],["opening","مخزون افتتاحي"],["cancelled","حركات ملغاة"]].map(([v,l])=>`<option value="${v}" ${productMovementState.type===v?"selected":""}>${l}</option>`).join("")}</select></div></div><details class="movement-advanced-filters" ${productMovementState.supplierId || productMovementState.customerId || productMovementState.employee || productMovementState.status ? "open" : ""}><summary>فلاتر إضافية</summary><div class="form-grid four"><div class="form-field"><label>المورد</label><select id="movement-supplier">${productMovementOptionList(report.allRows.filter(row=>row.supplierId).map(row=>getSupplier(row.supplierId)?.name || row.partyName), productMovementState.supplierId ? getSupplier(productMovementState.supplierId)?.name || productMovementState.supplierId : "", "كل الموردين")}</select></div><div class="form-field"><label>العميل</label><select id="movement-customer">${productMovementOptionList(report.allRows.filter(row=>row.customerId).map(row=>getCustomer(row.customerId)?.name || row.partyName), productMovementState.customerId ? getCustomer(productMovementState.customerId)?.name || productMovementState.customerId : "", "كل العملاء")}</select></div><div class="form-field"><label>الموظف</label><select id="movement-employee">${productMovementOptionList(report.allRows.map(row=>row.employee), productMovementState.employee, "كل الموظفين")}</select></div><div class="form-field"><label>الحالة</label><select id="movement-status">${productMovementOptionList(report.allRows.map(row=>row.status), productMovementState.status, "كل الحالات")}</select></div></div></details>`}</article>
     ${report ? productMovementReportMarkup(report) : ""}`;
   if (report) { const select = document.getElementById("movement-book-id"); if (select) select.value = report.book.id; }
 }
@@ -4728,6 +4747,17 @@ root.addEventListener("click", event => {
     currentView = "reports";
     renderProductMovementReport(productMovementState.bookId);
   }
+  if (action === "product-movement-range") refreshProductMovementReport({ quickRange:target.dataset.range || "all", page:1 });
+  if (action === "product-movement-page") refreshProductMovementReport({ page:Number(target.dataset.page || 1) });
+  if (action === "product-movement-open-document") {
+    const report = productMovementReportData(productMovementState);
+    const row = report?.allRows.find(item => item.id === target.dataset.movementId);
+    if (!row) toast("تعذر العثور على تفاصيل الحركة.", "error");
+    else if (row.document?.kind === "sale") viewSale(row.document.record.id);
+    else if (row.document?.kind === "purchase") viewPurchase(row.document.record.id);
+    else if (row.document?.kind === "return") viewReturn(row.document.record.id || row.document.record.returnNo);
+    else viewBook(productMovementState.bookId);
+  }
   if (action === "reports-main") renderReports();
   if (action === "export-report") exportReportCsv(Number(target.dataset.report));
   if (action === "print-sale") printSale(target.dataset.id, target.dataset.format || "a4");
@@ -4882,6 +4912,23 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   const index = Number(event.target.dataset.index);
+  if (event.target.id === "movement-book-id") return selectProductMovementBook("id", event.target.value);
+  if (event.target.id === "movement-book-name") return selectProductMovementBook("name", event.target.value);
+  if (event.target.id === "movement-book-barcode") return selectProductMovementBook("barcode", event.target.value);
+  if (event.target.id === "movement-from") return refreshProductMovementReport({ from:event.target.value, quickRange:"custom", page:1 });
+  if (event.target.id === "movement-to") return refreshProductMovementReport({ to:event.target.value, quickRange:"custom", page:1 });
+  if (event.target.id === "movement-type") return refreshProductMovementReport({ type:event.target.value, page:1 });
+  if (event.target.id === "movement-employee") return refreshProductMovementReport({ employee:event.target.value, page:1 });
+  if (event.target.id === "movement-status") return refreshProductMovementReport({ status:event.target.value, page:1 });
+  if (event.target.id === "movement-sort") return refreshProductMovementReport({ sort:event.target.value, page:1 });
+  if (event.target.id === "movement-supplier") {
+    const supplier = data.suppliers.find(item => item.name === event.target.value);
+    return refreshProductMovementReport({ supplierId:supplier?.id || "", page:1 });
+  }
+  if (event.target.id === "movement-customer") {
+    const customer = data.customers.find(item => item.name === event.target.value);
+    return refreshProductMovementReport({ customerId:customer?.id || "", page:1 });
+  }
   if (event.target.classList.contains("sale-book")) {
     const book = getBook(event.target.value);
     const duplicateIndex = draftSale.lines.findIndex((line, lineIndex) => lineIndex !== index && line.bookId === event.target.value);
