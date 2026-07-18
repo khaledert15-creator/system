@@ -4790,6 +4790,18 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "print-sale") {
+    printSale(appAction.dataset.id, appAction.dataset.format || "a4");
+    return;
+  }
+  if (appAction?.dataset.action === "print-voucher") {
+    printVoucher(appAction.dataset.id, appAction.dataset.format || "a4");
+    return;
+  }
+  if (appAction?.dataset.action === "print-statement") {
+    printStatement(appAction.dataset.id, appAction.dataset.kind);
+    return;
+  }
   if (appAction?.dataset.action === "party-voucher") {
     partyVoucherModal(appAction.dataset.voucherType, appAction.dataset.kind || "", appAction.dataset.id || "");
     return;
