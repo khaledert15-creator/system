@@ -3314,6 +3314,130 @@ function monthlySalesOverviewMarkup(activeSales) {
   </article>`;
 }
 
+const PRODUCT_MOVEMENT_PAGE_SIZE = 25;
+let productMovementState = {
+  bookId: "", from: "", to: "", quickRange: "all", type: "all", supplierId: "", customerId: "",
+  employee: "", status: "", sort: "desc", page: 1, showPrices: true, scrollY: 0
+};
+
+function productMovementType(type = "") {
+  const value = String(type);
+  if (/^إلغاء/.test(value)) return "cancelled";
+  if (/جرد/.test(value)) return "count";
+  if (/تسوية|تالف|مفقود|مجاني|تصحيح/.test(value)) return "adjustment";
+  if (/مرتجع مبيعات/.test(value)) return "sale-return";
+  if (/مرتجع مشتريات|مرتجع أمانة/.test(value)) return "purchase-return";
+  if (/بيع/.test(value)) return "sale";
+  if (/شراء|توريد|استلام/.test(value)) return "purchase";
+  if (/افتتاح/.test(value)) return "opening";
+  return "other";
+}
+
+function productMovementTypeLabel(kind, fallback = "حركة مخزون") {
+  return ({ purchase:"مشتريات", sale:"مبيعات", "sale-return":"مرتجع بيع", "purchase-return":"مرتجع شراء", adjustment:"تسوية", count:"جرد", opening:"مخزون افتتاحي", cancelled:"حركة ملغاة", other:fallback })[kind] || fallback;
+}
+
+function productMovementDocument(documentId = "") {
+  const sale = (data.sales || []).find(item => item.id === documentId);
+  if (sale) return { kind:"sale", record:sale, status:sale.status || "معتمدة", partyId:sale.customerId || "", partyName:getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "", action:"view-sale" };
+  const purchase = (data.purchases || []).find(item => item.id === documentId);
+  if (purchase) return { kind:"purchase", record:purchase, status:purchase.status || "مستلمة", partyId:purchase.supplierId || "", partyName:getSupplier(purchase.supplierId)?.name || "", action:"view-purchase" };
+  const ret = (data.returns || []).find(item => [item.id, item.returnNo, item.returnInvoiceId, item.documentId].includes(documentId));
+  if (ret) return { kind:"return", record:ret, status:ret.status || "معتمد", partyId:ret.accountId || ret.partyId || "", partyName:returnAccountName(ret) || "", action:"view-return" };
+  return null;
+}
+
+function productMovementLineValue(movement, document, bookId) {
+  const qty = Math.abs(Number(movement.quantity || 0));
+  if (document?.kind === "sale") {
+    const line = (document.record.lines || []).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = line ? saleLineRevenue(line) : null;
+    return { unitPrice: lineQty ? total / lineQty : Number(movement.priceAtOperation || 0), totalValue: lineQty ? total / lineQty * qty : Number(movement.priceAtOperation || 0) * qty, unitCost: line ? saleLineCogs(line) == null ? null : saleLineCogs(line) / Math.max(1, lineQty) : Number(movement.costAtOperation || 0), cogs: line ? saleLineCogs(line) : null };
+  }
+  if (document?.kind === "purchase") {
+    const line = (document.record.lines || []).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = Number(line?.finalNet ?? line?.total ?? line?.totalCost ?? 0);
+    const unit = lineQty ? total / lineQty : Number(line?.cost || movement.costAtOperation || 0);
+    return { unitPrice: unit, totalValue: unit * qty, unitCost: unit, cogs:null };
+  }
+  if (document?.kind === "return") {
+    const line = returnItems(document.record).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = Number(line?.total ?? line?.amount ?? 0);
+    const unit = lineQty ? total / lineQty : Number(line?.unitPrice || movement.priceAtOperation || movement.costAtOperation || 0);
+    return { unitPrice: unit, totalValue: unit * qty, unitCost:Number(movement.costAtOperation || 0) || null, cogs:null };
+  }
+  const unit = Number(movement.quantity || 0) < 0 ? Number(movement.priceAtOperation || 0) : Number(movement.costAtOperation || 0);
+  return { unitPrice: unit || null, totalValue: unit ? unit * qty : null, unitCost:Number(movement.costAtOperation || 0) || null, cogs:null };
+}
+
+function productMovementRows(bookId) {
+  return (data.stockMovements || []).filter(item => item.bookId === bookId).map(item => {
+    const document = productMovementDocument(item.documentId || item.documentNo || "");
+    const kind = productMovementType(item.type);
+    const value = productMovementLineValue(item, document, bookId);
+    const quantity = Number(item.quantity || 0);
+    return {
+      id:item.id, date:item.createdAt || item.date, type:item.type || "حركة مخزون", kind,
+      documentId:item.documentNo || item.documentId || "", document, status:document?.status || (kind === "cancelled" ? "ملغاة" : "معتمد"),
+      partyId:document?.partyId || item.customerId || item.supplierId || "", partyName:document?.partyName || item.partyName || item.note || "",
+      supplierId:item.supplierId || (document?.kind === "purchase" ? document.partyId : ""), customerId:item.customerId || (document?.kind === "sale" ? document.partyId : ""),
+      incoming:quantity > 0 ? quantity : 0, outgoing:quantity < 0 ? Math.abs(quantity) : 0,
+      before:Number(item.before || 0), after:Number(item.after || 0), unitPrice:value.unitPrice, totalValue:value.totalValue, unitCost:value.unitCost, cogs:value.cogs,
+      employee:item.employeeName || item.user || "النظام", username:item.username || "", note:item.note || ""
+    };
+  }).sort((a, b) => new Date(a.date) - new Date(b.date) || String(a.id).localeCompare(String(b.id)));
+}
+
+function productMovementRange(state = productMovementState) {
+  const now = new Date();
+  const day = date => date.toISOString().slice(0, 10);
+  if (state.quickRange === "today") return { from:day(now), to:day(now) };
+  if (state.quickRange === "7") return { from:day(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to:day(now) };
+  if (state.quickRange === "30") return { from:day(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to:day(now) };
+  if (state.quickRange === "month") return { from:day(new Date(now.getFullYear(), now.getMonth(), 1)), to:day(now) };
+  if (state.quickRange === "year") return { from:`${now.getFullYear()}-01-01`, to:day(now) };
+  return { from:state.from || "", to:state.to || "" };
+}
+
+function productMovementReportData(state = productMovementState) {
+  const book = getBook(state.bookId);
+  if (!book) return null;
+  const allRows = productMovementRows(book.id);
+  const range = productMovementRange(state);
+  const beforeRows = allRows.filter(row => range.from && String(row.date).slice(0, 10) < range.from);
+  const opening = range.from ? (beforeRows.length ? beforeRows[beforeRows.length - 1].after : allRows[0]?.before ?? Number(book.stock || 0)) : allRows[0]?.before ?? Number(book.stock || 0);
+  let rows = allRows.filter(row => (!range.from || String(row.date).slice(0, 10) >= range.from) && (!range.to || String(row.date).slice(0, 10) <= range.to));
+  if (state.type !== "all") rows = rows.filter(row => row.kind === state.type);
+  if (state.supplierId) rows = rows.filter(row => row.supplierId === state.supplierId);
+  if (state.customerId) rows = rows.filter(row => row.customerId === state.customerId);
+  if (state.employee) rows = rows.filter(row => row.employee === state.employee);
+  if (state.status) rows = rows.filter(row => row.status === state.status);
+  const periodRows = allRows.filter(row => (!range.from || String(row.date).slice(0, 10) >= range.from) && (!range.to || String(row.date).slice(0, 10) <= range.to));
+  const incoming = periodRows.reduce((sum, row) => sum + row.incoming, 0);
+  const outgoing = periodRows.reduce((sum, row) => sum + row.outgoing, 0);
+  const closing = opening + incoming - outgoing;
+  const expected = periodRows.length ? periodRows[periodRows.length - 1].after : opening;
+  const salesRows = periodRows.filter(row => row.kind === "sale");
+  const canSeeCost = canAction("view-item-cost-profit");
+  const cogsKnown = salesRows.every(row => row.cogs !== null && row.cogs !== undefined);
+  const summary = {
+    opening, closing, expected, mismatch:Math.abs(closing - expected) > 0.0001,
+    purchaseQty:periodRows.filter(row => row.kind === "purchase").reduce((s,r)=>s+r.incoming,0),
+    purchaseValue:periodRows.filter(row => row.kind === "purchase").reduce((s,r)=>s+Number(r.totalValue || 0),0),
+    saleQty:salesRows.reduce((s,r)=>s+r.outgoing,0), saleValue:salesRows.reduce((s,r)=>s+Number(r.totalValue || 0),0),
+    saleReturns:periodRows.filter(row=>row.kind === "sale-return").reduce((s,r)=>s+r.incoming,0),
+    purchaseReturns:periodRows.filter(row=>row.kind === "purchase-return").reduce((s,r)=>s+r.outgoing,0),
+    adjustmentIn:periodRows.filter(row=>["adjustment","count"].includes(row.kind)).reduce((s,r)=>s+r.incoming,0),
+    adjustmentOut:periodRows.filter(row=>["adjustment","count"].includes(row.kind)).reduce((s,r)=>s+r.outgoing,0),
+    cogs:canSeeCost && cogsKnown ? salesRows.reduce((s,r)=>s+Number(r.cogs || 0),0) : null
+  };
+  summary.grossProfit = summary.cogs === null ? null : summary.saleValue - summary.cogs;
+  return { book, allRows, rows:state.sort === "asc" ? rows : rows.slice().reverse(), range, summary, canSeeCost };
+}
+
 function renderReports() {
   const active = activeSalesList();
   const sales = active.reduce((s, i) => s + i.total, 0);
