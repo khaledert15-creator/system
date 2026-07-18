@@ -5979,7 +5979,7 @@ function saveSale() {
     const netUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.price) * Number(line.qty || 0))) / Number(line.qty || 1) : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن بيع «${book.name}» بأقل من متوسط التكلفة.`, "error");
-    if (!data.settings.allowNegativeStock && book.stock < line.qty) return toast(`الرصيد غير كافٍ للصنف آ«${book.name}آ».`, "error");
+    if (!data.settings.allowNegativeStock && book.stock < line.qty) return toast(`الرصيد غير كافٍ للصنف «${book.name}».`, "error");
   }
   const payment = document.getElementById("sale-payment").value;
   const paid = Math.max(0, Math.min(Number(draftSale.paid || 0), totals.total));
@@ -6310,7 +6310,7 @@ function preparePurchaseForBook(id) {
   };
   closeModal();
   navigate("purchases");
-  toast(`تم تجهيز مستند شراء للصنف آ«${book.name}آ» بكمية مقترحة ${suggestedQty}.`);
+  toast(`تم تجهيز مستند شراء للصنف «${book.name}» بكمية مقترحة ${suggestedQty}.`);
 }
 
 function adjustStock(id) {
@@ -6730,7 +6730,7 @@ function deleteBook(id) {
   if (!book) return;
   const used = data.sales.some(sale => sale.lines?.some(line => line.bookId === id)) || data.purchases.some(purchase => purchase.lines?.some(line => line.bookId === id));
   if (used) return toast("لا يمكن حذف صنف مرتبط بفواتير. يمكنك تعديل بياناته أو تصفير رصيده.", "error");
-  if (!confirm(`هل تريد حذف الصنف آ«${book.name}آ» نهائيًا؟`)) return;
+  if (!confirm(`هل تريد حذف الصنف «${book.name}» نهائيًا؟`)) return;
   book.deletedAt = new Date().toISOString();
   saveData("حذف صنف", "الأصناف", id);
   renderBooks();
@@ -6745,7 +6745,7 @@ function deleteParty(id, kind) {
   const usedByReceipt = data.receipts.some(row => row.partyKind === kind && row.partyId === id);
   const used = usedByReceipt || (isCustomer ? data.sales.some(row => row.customerId === id) : data.purchases.some(row => row.supplierId === id) || data.books.some(row => row.supplierId === id));
   if (used) return toast(`لا يمكن حذف ${isCustomer ? "عميل" : "مورد"} مرتبط بحركات أو أصناف.`, "error");
-  if (!confirm(`هل تريد حذف آ«${item.name}»؟`)) return;
+  if (!confirm(`هل تريد حذف «${item.name}»؟`)) return;
   item.deletedAt = new Date().toISOString();
   saveData("حذف طرف", isCustomer ? "العملاء" : "الموردون", id);
   renderParties();
@@ -6810,7 +6810,7 @@ function viewShipment(id) {
 */
 function deleteShipment(id) {
   const item = data.shipments.find(row => row.id === id);
-  if (!item || !confirm(`هل تريد حذف الشحنة ${id}طں`)) return;
+  if (!item || !confirm(`هل تريد حذف الشحنة ${id}؟`)) return;
   item.deletedAt = new Date().toISOString();
   const sale = data.sales.find(row => row.id === item.invoiceId || row.id === item.orderId);
   const order = data.onlineOrders.find(row => row.id === item.onlineOrderId);
@@ -7084,7 +7084,7 @@ function deleteCash(id) {
   const item = data.cash.find(row => row.id === id);
   if (!item) return;
   if (isLockedCash(item)) return toast("هذه حركة تلقائية مرتبطة بمستند. ألغِ الفاتورة أو الإيصال الأصلي بدل حذف القيد.", "error");
-  if (!confirm(`هل تريد حذف الحركة المالية ${id}طں`)) return;
+  if (!confirm(`هل تريد حذف الحركة المالية ${id}؟`)) return;
   const actor = actorSnapshot();
   item.deletedAt = new Date().toISOString();
   item.deletedBy = actor.name;
@@ -7110,7 +7110,7 @@ function viewEmployee(id) {
 
 function deleteEmployee(id) {
   const item = data.employees.find(row => row.id === id);
-  if (!item || !confirm(`هل تريد حذف ملف الموظف آ«${item.name}»؟`)) return;
+  if (!item || !confirm(`هل تريد حذف ملف الموظف «${item.name}»؟`)) return;
   item.deletedAt = new Date().toISOString();
   saveData("حذف موظف", "الموظفون", id);
   renderHr();
@@ -7749,7 +7749,7 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     const sourceLine = returnableLines.find(row => row.purchaseId === line.documentId && Number(row.lineIndex) === Number(line.lineIndex));
     if (!sourceLine || Number(line.qty || 0) > Number(sourceLine.remaining || 0)) return toast("لا يمكن إرجاع كمية أكبر من الكمية المتاحة.", "error");
     const book = getBook(line.bookId);
-    if (book && Number(book.stock || 0) < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد آ«${book.name}آ» أقل من الكمية المطلوبة.`, "error");
+    if (book && Number(book.stock || 0) < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
   const subtotal = selectedLines.reduce((sum, line) => sum + Number(line.amount || line.total || 0), 0);
   const returnId = nextId("RET-", data.returns);
@@ -7866,7 +7866,7 @@ function cancelPurchase(id) {
   if (!purchase || purchase.status === "ملغاة" || !confirm(`سيتم إلغاء المستند ${id} وخصم كمياته من المخزون. هل أنت متأكد؟`)) return;
   for (const line of (purchase.status === "مستلمة" ? (purchase.lines || []) : [])) {
     const book = getBook(line.bookId);
-    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد آ«${book.name}آ» أقل من كمية المستند.`, "error");
+    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد «${book.name}» أقل من كمية المستند.`, "error");
   }
   (purchase.status === "مستلمة" ? (purchase.lines || []) : []).forEach(line => {
     const book = getBook(line.bookId);
@@ -7926,7 +7926,7 @@ function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumbe
   if (!selectedLines.length) return toast("حدد كمية لصنف واحد على الأقل.", "error");
   for (const line of selectedLines) {
     const book = getBook(line.bookId);
-    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد آ«${book.name}آ» أقل من الكمية المطلوبة.`, "error");
+    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
   selectedLines.forEach(line => {
     const book = getBook(line.bookId);
@@ -8008,7 +8008,7 @@ function receivePurchase(id) {
 function deletePurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase || purchase.status !== "ملغاة") return toast("يجب إلغاء المستند أولًا.", "error");
-  if (!confirm(`هل تريد حذف المستند الملغى ${id}طں`)) return;
+  if (!confirm(`هل تريد حذف المستند الملغى ${id}؟`)) return;
   purchase.deletedAt = new Date().toISOString();
   saveData("حذف مستند شراء ملغى", "المشتريات", id);
   showPurchasesList();

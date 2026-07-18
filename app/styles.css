@@ -1,6 +1,20 @@
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap');
 
 :root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-sm: 8px;
+  --radius-button: 10px;
+  --radius-card: 12px;
+  --radius-modal: 16px;
+  --text-helper: 12px;
+  --text-body: 14px;
+  --text-heading-sm: 16px;
+  --text-page: clamp(20px, 2vw, 24px);
   --green-950: #1a2020;
   --green-900: #1f4f8f;
   --green-800: #2f67ae;
@@ -32,7 +46,8 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background: var(--canvas);
-  font-family: "Cairo", Tahoma, Arial, sans-serif;
+  font-family: "Cairo", "Noto Kufi Arabic", Tahoma, Arial, sans-serif;
+  font-size: var(--text-body);
 }
 .server-warning { padding: 12px; color: #fff; background: #a33; text-align: center; font-weight: 800; }
 .login-screen {
@@ -56,8 +71,21 @@ body {
 .login-submit { width: 100%; margin-top: 20px; }
 .login-message { min-height: 22px; padding-top: 9px; color: var(--danger); font-size: 10px; }
 .login-card small { display: block; margin-top: 15px; color: var(--muted); line-height: 1.7; }
-button, input, select, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; min-height: 40px; }
 button { cursor: pointer; }
+.ui-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.btn.primary-action, .daily-action { min-height: 44px; }
+.text-helper, small, .muted { font-size: max(var(--text-helper), 12px); }
+.search input, input, select, textarea { border-radius: var(--radius-sm); }
+.badge { border-radius: 999px; }
+.alert-item { border-radius: var(--radius-card); }
+.modal { border-radius: var(--radius-modal); }
+.empty-state { border-radius: var(--radius-card); }
+.table-actions-menu { position: relative; display: inline-flex; }
+.table-actions-menu > summary { list-style: none; min-height: 40px; display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }
+.table-actions-menu > summary::-webkit-details-marker { display: none; }
+.table-actions-popover { position: absolute; inset-inline-end: 0; top: calc(100% + 6px); min-width: 160px; padding: var(--space-2); z-index: 12; border: 1px solid var(--line); border-radius: var(--radius-button); background: var(--surface); box-shadow: var(--shadow); display: grid; gap: var(--space-1); }
+.table-actions-popover .row-action { width: 100%; justify-content: flex-start; text-align: start; }
 
 .app-shell { min-height: 100vh; display: flex; }
 .sidebar {

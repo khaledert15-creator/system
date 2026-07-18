@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="home" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5M5.5 10v9h13v-9M9.5 19v-6h5v6"/></symbol>
+  <symbol id="sale" viewBox="0 0 24 24"><path d="M4 6h16v13H4zM7 10h10M7 14h4M16 14h1"/></symbol>
+  <symbol id="orders" viewBox="0 0 24 24"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"/></symbol>
+  <symbol id="shipping" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7zM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></symbol>
+  <symbol id="return" viewBox="0 0 24 24"><path d="m9 7-4 4 4 4M5 11h8a6 6 0 0 1 6 6v2"/></symbol>
+  <symbol id="inventory" viewBox="0 0 24 24"><path d="M4 7 12 3l8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/></symbol>
+  <symbol id="purchase" viewBox="0 0 24 24"><path d="M4 5h2l2 10h9l2-7H7M10 20a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm6 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/></symbol>
+  <symbol id="supplier" viewBox="0 0 24 24"><path d="M4 20V8l8-4 8 4v12M8 20v-6h8v6M8 9h.01M12 9h.01M16 9h.01"/></symbol>
+  <symbol id="customer" viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"/></symbol>
+  <symbol id="support" viewBox="0 0 24 24"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v6H5a1 1 0 0 1-1-1zm16 0h-3v6h2a1 1 0 0 0 1-1zM17 19c0 1-2 2-5 2"/></symbol>
+  <symbol id="accounting" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h3M15 13h1M8 16h3M15 16h1"/></symbol>
+  <symbol id="report" viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></symbol>
+  <symbol id="employees" viewBox="0 0 24 24"><path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7-1a2.5 2.5 0 1 0 0-5M3 20a6 6 0 0 1 12 0M15 14a5 5 0 0 1 6 5"/></symbol>
+  <symbol id="settings" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19 13 2 1-2 4-2-1.5a8 8 0 0 1-2 1L14.5 20h-5L9 17.5a8 8 0 0 1-2-1L5 18l-2-4 2-1a8 8 0 0 1 0-2L3 10l2-4 2 1.5a8 8 0 0 1 2-1L9.5 4h5l.5 2.5a8 8 0 0 1 2 1L19 6l2 4-2 1a8 8 0 0 1 0 2Z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="print" viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v6H7z"/></symbol>
+</svg>
