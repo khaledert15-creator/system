@@ -4803,6 +4803,7 @@ root.addEventListener("click", event => {
   if (action === "reports-main") renderReports();
   if (action === "export-report") exportReportCsv(Number(target.dataset.report));
   if (action === "print-sale") printSale(target.dataset.id, target.dataset.format || "a4");
+  if (action === "print-purchase") printPurchase(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-voucher") printVoucher(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-online-order") printOnlineOrder(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-statement") printStatement(target.dataset.id, target.dataset.kind);
@@ -6861,6 +6862,36 @@ function printSale(id, format = "a4") {
   toast("تم تجهيز الفاتورة للطباعة.");
 }
 
+function printPurchase(id, format = "a4") {
+  const purchase = data.purchases.find(item => item.id === id);
+  if (!purchase) return toast("لم يتم العثور على مستند الشراء.", "error");
+  const supplier = getSupplier(purchase.supplierId);
+  const lines = purchase.lines || [];
+  const linesMarkup = lines.map((line, index) => {
+    const qty = Number(line.qty || line.quantity || 0);
+    const coverPrice = Number(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)) ?? 0);
+    const discount = Number(line.supplierDiscountPercent ?? line.discount ?? 0);
+    const unitCost = Number(line.unitPurchaseCost ?? line.cost ?? 0);
+    const totalCost = Number(line.totalCost ?? purchaseLineNet(line, qty) ?? unitCost * qty);
+    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${qty.toLocaleString("ar-EG")}</td><td>${money(coverPrice)}</td><td>${discount.toLocaleString("ar-EG")}%</td><td>${money(unitCost)}</td><td>${money(totalCost)}</td></tr>`;
+  }).join("");
+  printHtml(`فاتورة مشتريات ${purchase.id}`, `
+    <table><tbody>
+      <tr><th>رقم المستند</th><td dir="ltr">${esc(purchase.id)}</td><th>فاتورة المورد</th><td>${esc(purchase.supplierInvoiceNumber || "—")}</td></tr>
+      <tr><th>المورد</th><td>${esc(supplier?.name || "—")}</td><th>التاريخ</th><td>${esc(dateTimeLabel(purchase.createdAt || purchase.date))}</td></tr>
+      <tr><th>نوع المستند</th><td>${esc(purchase.type || "شراء")}</td><th>الحالة</th><td>${esc(purchase.status || "—")}</td></tr>
+    </tbody></table>
+    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="7">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
+    <table><tbody>
+      <tr><th>الإجمالي</th><td>${money(purchase.total || 0)}</td><th>المدفوع</th><td>${money(purchase.paid || 0)}</td></tr>
+      <tr><th>المتبقي</th><td>${money(purchase.remaining || 0)}</td><th>الشحن / مصروفات إضافية</th><td>${money(purchase.shipping || 0)}</td></tr>
+      <tr><th>ملاحظات</th><td colspan="3">${esc(purchase.notes || "—")}</td></tr>
+    </tbody></table>
+    <div class="sign"><span>توقيع المورد: ....................</span><span>استلم بواسطة: ${esc(currentUser?.name || currentUser?.username || "النظام")}</span></div>
+  `, format);
+  toast("تم تجهيز فاتورة المشتريات للطباعة.");
+}
+
 function printVoucher(id, format = "a4") {
   const receipt = data.receipts.find(item => item.id === id);
   if (!receipt) return;
@@ -8199,7 +8230,7 @@ function viewPurchase(id) {
     <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th><th>Batch</th></tr></thead><tbody>
     ${(purchase.lines || []).map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty || line.quantity}</td><td class="money">${money(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)))}</td><td>${Number(line.supplierDiscountPercent ?? line.discount ?? 0)}%</td><td class="money">${money(line.unitPurchaseCost ?? line.cost)}</td><td class="money">${money(line.totalCost ?? purchaseLineNet(line, line.qty))}</td><td>${esc(line.batchId || "—")}</td></tr>`).join("") || `<tr><td colspan="7" class="text-center muted">مستند تجريبي قديم بدون بنود تفصيلية.</td></tr>`}
     </tbody></table></div>
-    <div class="form-actions">${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+    <div class="form-actions"><button class="btn" data-action="print-purchase" data-id="${purchase.id}" data-format="a4">طباعة A4</button><button class="btn secondary" data-action="print-purchase" data-id="${purchase.id}" data-format="thermal">طباعة حرارية</button>${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
 
 function cancelPurchase(id) {
