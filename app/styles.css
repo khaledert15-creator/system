@@ -86,6 +86,13 @@ button { cursor: pointer; }
 .table-actions-menu > summary::-webkit-details-marker { display: none; }
 .table-actions-popover { position: absolute; inset-inline-end: 0; top: calc(100% + 6px); min-width: 160px; padding: var(--space-2); z-index: 12; border: 1px solid var(--line); border-radius: var(--radius-button); background: var(--surface); box-shadow: var(--shadow); display: grid; gap: var(--space-1); }
 .table-actions-popover .row-action { width: 100%; justify-content: flex-start; text-align: start; }
+.sales-tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.sales-tabs .tab { border-radius: 10px 10px 0 0; }
+.sales-history-count { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--muted); }
+.sales-history-count strong { color: var(--ink); }
+.invoice-row-actions { flex-wrap: nowrap; }
+.invoice-row-actions .ui-icon { width: 16px; height: 16px; }
+body :where(.login-message, .brand span, .sidebar-footer strong, .sidebar-footer span, .page-heading span, .user-chip span, small, .muted, .trend, .stat-card label, .stat-card small, .card-header p, .section-title p, .purchase-command-card small, .purchase-ledger-stats span, .btn.small, .chart-legend, .alert-item strong, .alert-item span, .activity-item strong, .activity-item span, .inventory-count-summary span, .customer-suggestions span, .customer-no-results, .customer-summary strong, .customer-summary span, .choice-card small, .sale-book-info, #sale-book-suggestions span, #purchase-book-suggestions span, .online-order-head span, th, td, .book-cell strong, .book-cell span, .row-action, .form-field label, .summary-row, .line-head, .tab, .mini-metric span, .report-card p, .empty-state p) { font-size: 12px !important; }
 
 .app-shell { min-height: 100vh; display: flex; }
 .sidebar {

@@ -354,6 +354,7 @@ function showApplication() {
   document.getElementById("current-user-name").textContent = currentUser?.name || currentUser?.username || "مستخدم";
   document.getElementById("current-user-role").textContent = currentUser?.role || "—";
   document.querySelectorAll(".nav-item").forEach(item => item.hidden = !canView(item.dataset.view));
+  document.getElementById("sidebar-new-sale").hidden = !canView("sales") || !canAction("new-sale-invoice");
   const collapsed = localStorage.getItem("dotcom-sidebar-collapsed") === "1";
   document.getElementById("app-shell").classList.toggle("sidebar-collapsed", collapsed);
   if (!canView(currentView)) currentView = "dashboard";
@@ -1460,7 +1461,7 @@ function normalizeSmartSearch(value) {
     .toLocaleLowerCase("ar")
     .replace(/[أإآ]/g, "ا")
     .replace(/ة/g, "ه")
-    .replace(/ى/g, "ظٹ")
+    .replace(/ى/g, "ي")
     .replace(/[٠-٩]/g, digit => "٠١٢٣٤٥٦٧٨٩".indexOf(digit))
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
@@ -2363,6 +2364,7 @@ function renderSalesCenter() {
 
 function renderSales() {
   if (salesScreenMode === "invoice") return renderSaleInvoice();
+  if (salesScreenMode === "history") return renderSalesHistory();
   return renderSalesCenter();
 }
 
@@ -4505,6 +4507,18 @@ root.addEventListener("click", event => {
   if (action === "limited-edit-sale") limitedEditSale(target.dataset.id);
   if (action === "save-purchase") savePurchase();
   if (action === "show-sales-list") showSalesList();
+  if (action === "resume-sale-invoice") { salesScreenMode = "invoice"; renderSales(); }
+  if (action === "clear-sales-search") {
+    const search = document.getElementById("old-sales-search");
+    const status = document.getElementById("old-sales-status");
+    if (search) search.value = "";
+    if (status) status.value = "";
+    updateSalesHistorySearch();
+    search?.focus();
+  }
+  if (action === "edit-sale-payment") salePaymentModal(target.dataset.id);
+  if (action === "cancel-sale") cancelSale(target.dataset.id);
+  if (action === "delete-sale") deleteSale(target.dataset.id);
   if (action === "show-purchases-list") showPurchasesList();
   if (action === "view-purchase") viewPurchase(target.dataset.id);
   if (action === "receive-purchase") receivePurchase(target.dataset.id);
@@ -4635,6 +4649,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
+  if (event.target.id === "old-sales-search") updateSalesHistorySearch();
   if (event.target.id === "sale-book-search") {
     const suggestions = document.getElementById("sale-book-suggestions");
     const matches = searchSaleBooks(event.target.value);
@@ -4764,6 +4779,7 @@ root.addEventListener("change", event => {
   if (event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-status") filterOnlineOrders();
+  if (event.target.id === "old-sales-status") updateSalesHistorySearch();
   if (event.target.id === "omni-channel-filter") {
     selectedOmniChannelAccountId = event.target.value;
     selectedOmniConversationId = "";
@@ -6184,14 +6200,25 @@ function savePurchase() {
 }
 
 function showSalesList() {
-  openModal("البحث في الفواتير القديمة", "المبيعات", `
+  const hasUnsavedInvoice = salesScreenMode === "invoice" && draftSale.lines.some(line => line.bookId);
+  if (hasUnsavedInvoice && !confirm("توجد فاتورة غير محفوظة. سيتم الاحتفاظ بها عند فتح الفواتير السابقة. هل تستمر؟")) return;
+  salesScreenMode = "history";
+  renderSales();
+}
+
+function renderSalesHistory() {
+  root.innerHTML = `
+    <div class="section-title"><div><h2>الفواتير السابقة</h2><p>بحث موحد برقم الفاتورة أو العميل أو الهاتف أو التتبع.</p></div><div class="actions"><button class="btn" data-action="resume-sale-invoice">${draftSale.lines.some(line => line.bookId) ? "متابعة الفاتورة الحالية" : "فاتورة جديدة"}</button><button class="btn ghost" data-action="sales-main">مركز المبيعات</button></div></div>
+    <div class="sales-tabs" role="tablist"><button class="tab" data-action="sales-main">ملخص اليوم</button><button class="tab" data-action="resume-sale-invoice">فاتورة جديدة</button><button class="tab active" aria-selected="true">الفواتير السابقة</button></div>
+    <article class="card sales-history-card">
     <div class="toolbar" style="padding:0 0 15px;border-bottom:0">
       <div class="search"><input id="old-sales-search" autocomplete="off" placeholder="ابحث برقم الفاتورة، كود تتبع الشحنة، رقم الموبايل أو اسم العميل..."></div>
       <select id="old-sales-status" class="filter-select"><option value="">كل الحالات</option><option>معتمدة</option><option>مرتجع جزئي</option><option>مرتجع</option><option>ملغاة</option></select>
-      <button class="btn ghost" type="button" data-modal-action="clear-sales-search">مسح البحث</button>
+      <button class="btn ghost" type="button" data-action="clear-sales-search">مسح البحث</button>
     </div>
-    <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge blue">⌕</div><div><strong>بحث موحد وسريع</strong><span>يمكن كتابة جزء من الاسم أو الرقم، ولا يلزم إدخال البيانات كاملة.</span></div><span class="badge blue" id="old-sales-count">${data.sales.length} فاتورة</span></div>
-    <div class="table-wrap" id="old-sales-results">${salesHistoryTable(data.sales.slice().reverse())}</div>`);
+    <div class="sales-history-count"><strong id="old-sales-count">${data.sales.length} فاتورة</strong><span>يمكن كتابة جزء من الاسم أو الرقم.</span></div>
+    <div class="table-wrap" id="old-sales-results">${salesHistoryTable(data.sales.slice().reverse())}</div>
+    </article>`;
 }
 
 function normalizeInvoiceSearch(value) {
@@ -6251,7 +6278,7 @@ function salesHistoryTable(list) {
         <td class="money">${money(sale.paid ?? (sale.remaining ? sale.total - sale.remaining : sale.total))}</td>
         <td class="money">${money(sale.remaining || 0)}</td>
         <td>${badge(sale.status, ["ملغاة","مرتجع"].includes(sale.status) ? "danger" : sale.status === "مرتجع جزئي" ? "warning" : "")}</td>
-        <td><div class="row-actions"><button class="row-action" data-modal-action="view-sale" data-id="${sale.id}">عرض</button>${shipment ? `<button class="row-action" data-modal-action="view-linked-shipment" data-id="${shipment.id}">الشحنة</button>` : ""}<button class="row-action" data-modal-action="edit-sale-payment" data-id="${sale.id}">السداد</button>${!["ملغاة","مرتجع"].includes(sale.status) ? `<button class="row-action" data-modal-action="return-sale" data-id="${sale.id}">مرتجع</button>` : ""}<button class="row-action text-danger" data-modal-action="${sale.status === "ملغاة" ? "delete-sale" : "cancel-sale"}" data-id="${sale.id}">${sale.status === "ملغاة" ? "حذف" : "إلغاء"}</button></div></td>
+        <td><div class="row-actions invoice-row-actions"><button class="row-action" data-action="view-sale" data-id="${sale.id}">عرض</button><button class="row-action" data-action="print-sale" data-id="${sale.id}">طباعة</button><details class="table-actions-menu"><summary class="row-action">المزيد <svg class="ui-icon"><use href="assets/icons/ui-icons.svg#more"></use></svg></summary><div class="table-actions-popover"><button class="row-action" data-action="edit-sale-payment" data-id="${sale.id}">تحصيل</button>${!["ملغاة","مرتجع"].includes(sale.status) ? `<button class="row-action" data-action="return-sale" data-id="${sale.id}">مرتجع</button>` : ""}${shipment ? `<button class="row-action" data-action="view-shipment" data-id="${shipment.id}">فتح الشحنة</button>` : sale.onlineOrderId ? `<button class="row-action" data-action="create-order-shipment" data-id="${sale.onlineOrderId}">إنشاء شحنة</button>` : ""}<button class="row-action text-danger" data-action="${sale.status === "ملغاة" ? "delete-sale" : "cancel-sale"}" data-id="${sale.id}">${sale.status === "ملغاة" ? "حذف" : "إلغاء"}</button></div></details></div></td>
       </tr>`;
     }).join("")}
   </tbody></table>`;
