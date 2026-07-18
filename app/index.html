@@ -33,20 +33,34 @@
         </div>
       </div>
 
+      <button class="sidebar-sale-btn daily-action" id="sidebar-new-sale" data-action="sidebar-new-sale"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#plus"></use></svg><span>بيع جديد</span></button>
       <nav id="main-nav" aria-label="القائمة الرئيسية">
-        <button class="nav-item active" data-view="dashboard"><span>⌂</span> لوحة المتابعة</button>
-        <button class="nav-item" data-view="books"><span>▤</span> الأصناف والمخزون</button>
-        <button class="nav-item" data-view="sales"><span>▥</span> المبيعات</button>
-        <button class="nav-item" data-view="onlineOrders"><span>◎</span> طلبات الأونلاين</button>
-        <button class="nav-item" data-view="omnichannel"><span>☎</span> مركز خدمة العملاء</button>
-        <button class="nav-item" data-view="purchases"><span>▣</span> المشتريات والأمانة</button>
-        <button class="nav-item" data-view="returns"><span>↶</span> المرتجعات</button>
-        <button class="nav-item" data-view="parties"><span>♙</span> العملاء والموردون</button>
-        <button class="nav-item" data-view="shipping"><span>▰</span> الشحن والتوصيل</button>
-        <button class="nav-item" data-view="accounting"><span>≋</span> الحسابات والخزائن</button>
-        <button class="nav-item" data-view="reports"><span>↗</span> التقارير والتحليلات</button>
-        <button class="nav-item" data-view="hr"><span>♧</span> الموظفون والرواتب</button>
-        <button class="nav-item" data-view="settings"><span>⚙</span> الإعدادات والصلاحيات</button>
+        <div class="nav-group"><span class="nav-group-label">الرئيسية</span>
+          <button class="nav-item active" data-view="dashboard"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#home"></use></svg><span>لوحة اليوم</span></button>
+        </div>
+        <div class="nav-group"><span class="nav-group-label">التشغيل</span>
+          <button class="nav-item" data-view="sales"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#sale"></use></svg><span>المبيعات</span></button>
+          <button class="nav-item" data-view="onlineOrders"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#orders"></use></svg><span>طلبات الأونلاين</span><b class="nav-badge" id="nav-orders-badge" hidden>0</b></button>
+          <button class="nav-item" data-view="shipping"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#shipping"></use></svg><span>الشحن</span><b class="nav-badge" id="nav-shipping-badge" hidden>0</b></button>
+          <button class="nav-item" data-view="returns"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#return"></use></svg><span>المرتجعات</span></button>
+        </div>
+        <div class="nav-group"><span class="nav-group-label">المخزون والتوريد</span>
+          <button class="nav-item" data-view="books"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#inventory"></use></svg><span>الأصناف والمخزون</span></button>
+          <button class="nav-item" data-view="purchases"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#purchase"></use></svg><span>المشتريات</span></button>
+          <button class="nav-item" data-view="parties" data-party-tab-target="suppliers"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#supplier"></use></svg><span>الموردون</span></button>
+        </div>
+        <div class="nav-group"><span class="nav-group-label">العلاقات</span>
+          <button class="nav-item" data-view="parties" data-party-tab-target="customers"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#customer"></use></svg><span>العملاء</span></button>
+          <button class="nav-item" data-view="omnichannel"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#support"></use></svg><span>خدمة العملاء</span></button>
+        </div>
+        <div class="nav-group"><span class="nav-group-label">المالية</span>
+          <button class="nav-item" data-view="accounting"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#accounting"></use></svg><span>الحسابات والخزائن</span></button>
+          <button class="nav-item" data-view="reports"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#report"></use></svg><span>التقارير</span></button>
+        </div>
+        <div class="nav-group"><span class="nav-group-label">الإدارة</span>
+          <button class="nav-item" data-view="hr"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#employees"></use></svg><span>الموظفون</span></button>
+          <button class="nav-item" data-view="settings"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#settings"></use></svg><span>الإعدادات</span></button>
+        </div>
       </nav>
 
       <div class="sidebar-footer">
@@ -56,6 +70,7 @@
           <span id="storage-mode">الخادم المحلي</span>
         </div>
       </div>
+      <button class="sidebar-collapse" id="sidebar-collapse" type="button" aria-label="تصغير القائمة" title="تصغير القائمة"><svg class="ui-icon"><use href="assets/icons/ui-icons.svg#chevron"></use></svg><span>تصغير القائمة</span></button>
     </aside>
 
     <main class="main">

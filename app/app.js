@@ -354,6 +354,8 @@ function showApplication() {
   document.getElementById("current-user-name").textContent = currentUser?.name || currentUser?.username || "مستخدم";
   document.getElementById("current-user-role").textContent = currentUser?.role || "—";
   document.querySelectorAll(".nav-item").forEach(item => item.hidden = !canView(item.dataset.view));
+  const collapsed = localStorage.getItem("dotcom-sidebar-collapsed") === "1";
+  document.getElementById("app-shell").classList.toggle("sidebar-collapsed", collapsed);
   if (!canView(currentView)) currentView = "dashboard";
 }
 
@@ -3922,7 +3924,10 @@ function render() {
   };
   document.getElementById("page-title").textContent = meta[currentView][0];
   document.getElementById("page-kicker").textContent = meta[currentView][1];
-  document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === currentView));
+  document.querySelectorAll(".nav-item").forEach(item => {
+    const partyMatch = item.dataset.view !== "parties" || !item.dataset.partyTabTarget || item.dataset.partyTabTarget === partyTab;
+    item.classList.toggle("active", item.dataset.view === currentView && partyMatch);
+  });
   ({
     dashboard: renderDashboard,
     books: renderBooks,
@@ -3939,8 +3944,20 @@ function render() {
     settings: renderSettings
   })[currentView]();
   updateNotificationBadge();
+  updateSidebarBadges();
   scheduleStickyTableScrollbar();
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function updateSidebarBadges() {
+  const pendingOrders = (data.onlineOrders || []).filter(item => !item.deletedAt && !["تم التسليم", "ملغي"].includes(item.status)).length;
+  const pendingShipping = (data.shipments || []).filter(item => !item.deletedAt && !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status)).length;
+  [["nav-orders-badge", pendingOrders], ["nav-shipping-badge", pendingShipping]].forEach(([id, count]) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.textContent = count;
+    element.hidden = count === 0;
+  });
 }
 
 function navigate(view) {
@@ -4313,7 +4330,22 @@ function employeeModal(item = null) {
 
 document.getElementById("main-nav").addEventListener("click", event => {
   const item = event.target.closest("[data-view]");
-  if (item) navigate(item.dataset.view);
+  if (item) {
+    if (item.dataset.partyTabTarget) partyTab = item.dataset.partyTabTarget;
+    navigate(item.dataset.view);
+  }
+});
+document.getElementById("sidebar-new-sale").addEventListener("click", () => {
+  if (!canView("sales") || !requireAction("new-sale-invoice")) return;
+  salesScreenMode = "invoice";
+  currentView = "sales";
+  render();
+  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 50);
+});
+document.getElementById("sidebar-collapse").addEventListener("click", () => {
+  const shell = document.getElementById("app-shell");
+  const collapsed = shell.classList.toggle("sidebar-collapsed");
+  localStorage.setItem("dotcom-sidebar-collapsed", collapsed ? "1" : "0");
 });
 document.getElementById("login-form").addEventListener("submit", event => {
   event.preventDefault();
