@@ -17,7 +17,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dotcom_omnichannel}
       POSTGRES_USER: ${POSTGRES_USER:-dotcom}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dotcom-docker-default}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -35,12 +35,23 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
-    env_file:
-      - ./.env
     environment:
       OMNICHANNEL_PORT: ${OMNICHANNEL_PORT:-8775}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8775}
+      OMNICHANNEL_PUBLIC_URL: ${OMNICHANNEL_PUBLIC_URL:-http://127.0.0.1:8775}
       EXISTING_APP_BASE_URL: http://app:${APP_PORT:-8765}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-dotcom}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dotcom_omnichannel}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dotcom}:${POSTGRES_PASSWORD:-dotcom-docker-default}@postgres:5432/${POSTGRES_DB:-dotcom_omnichannel}?schema=public
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:8765,http://127.0.0.1:8775}
+      SESSION_BRIDGE_SECRET: ${SESSION_BRIDGE_SECRET:-docker-default-session-bridge-secret-change-later}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-docker-default-encryption-key-change-later}
+      META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN:-docker-default-webhook-token-change-later}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      VERIFY_WEBHOOK_SIGNATURES: ${VERIFY_WEBHOOK_SIGNATURES:-true}
+      ALLOW_MOCK_ENDPOINTS: ${ALLOW_MOCK_ENDPOINTS:-false}
+      ALLOW_QUERY_SESSION_TOKEN: ${ALLOW_QUERY_SESSION_TOKEN:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}
+      ENABLE_HSTS: ${ENABLE_HSTS:-false}
       OMNI_START_RETRY_WORKER: "true"
     volumes:
       - omni_uploads:/app/storage/uploads

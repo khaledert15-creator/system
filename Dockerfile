@@ -1,13 +1,11 @@
 FROM node:22-alpine
 
-ENV NODE_ENV=production \
-    HOST=0.0.0.0 \
+ENV HOST=0.0.0.0 \
     PORT=8765
 
 WORKDIR /app
 
 COPY --chown=node:node app ./app
-COPY --chown=node:node data ./data
 COPY --chown=node:node server-node.js ./server-node.js
 
 RUN mkdir -p /app/data/backups /app/debug/tracking \

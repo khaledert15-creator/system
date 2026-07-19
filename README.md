@@ -6,16 +6,18 @@
 
 ### التشغيل الموحد باستخدام Docker
 
-لا توجد بيئات Test وProduction منفصلة. يوجد ملف إعداد واحد في جذر المشروع:
+لا توجد بيئات Test وProduction منفصلة. بعد Clone يمكن تشغيل النظام مباشرة دون إنشاء أو تعديل أي ملف:
+
+```bash
+docker compose up -d
+```
+
+سيتم بناء وتشغيل النظام وقاعدة PostgreSQL وخدمة Omnichannel، مع حفظ البيانات داخل Docker Volumes.
+
+ملف `.env` اختياري. عند تجهيز Domain أو ربط WhatsApp/Messenger، أنشئه من المثال لتخصيص الروابط والأسرار:
 
 ```bash
 cp .env.example .env
-```
-
-عدّل كلمات المرور والأسرار والروابط داخل `.env`، ثم شغّل النظام وقاعدة PostgreSQL وخدمة Omnichannel معًا:
-
-```bash
-docker compose up -d --build
 ```
 
 لمراجعة الحالة:
