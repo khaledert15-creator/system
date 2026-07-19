@@ -1966,6 +1966,13 @@ function renderDashboard() {
     </div>`;
 }
 
+function requiredDashboardStatsForRole(role) {
+  if (role === "كاشير") return ["sales", "stock-alerts"];
+  if (role === "مخزن") return ["inventory", "stock-alerts"];
+  if (role === "شحن") return ["shipping"];
+  return ["sales", "inventory", "customer-debt", "stock-alerts"];
+}
+
 function showDashboardStatDetails(type) {
   const activeSales = activeSalesList();
   if (type === "sales") {
@@ -8861,7 +8868,21 @@ async function runSelfTest() {
     currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
     check("منع الكاشير من صفحة الحسابات", canView("accounting") === false);
     check("منع الكاشير من حذف الأصناف", canAction("delete-book") === false);
+    const negativeStockBook = data.books.find(book => Number(book.stock || 0) >= 0);
+    const negativeStockBefore = Number(negativeStockBook?.stock || 0);
+    const negativeSettingBefore = data.settings.allowNegativeStock;
+    data.settings.allowNegativeStock = false;
+    check("منع المخزون السالب عند إغلاق الإعداد", Boolean(negativeStockError(negativeStockBook, negativeStockBefore + 1)));
+    data.settings.allowNegativeStock = true;
+    check("منع الكاشير من تجاوز المخزون رغم فتح الإعداد", Boolean(negativeStockError(negativeStockBook, negativeStockBefore + 1)));
+    check("فشل التحقق لا يعدل رصيد الصنف", Number(negativeStockBook?.stock || 0) === negativeStockBefore);
     currentUser = ownerUser;
+    check("السماح للمالك بتجاوز المخزون عند فتح الإعداد", negativeStockError(negativeStockBook, negativeStockBefore + 1) === "");
+    const enoughBook = data.books.find(book => book.id !== negativeStockBook?.id && Number(book.stock || 0) > 0);
+    currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
+    check("فاتورة متعددة الأصناف تُرفض عند نقص صنف واحد", [negativeStockError(enoughBook, 1), negativeStockError(negativeStockBook, negativeStockBefore + 1)].filter(Boolean).length === 1);
+    currentUser = ownerUser;
+    data.settings.allowNegativeStock = negativeSettingBefore;
     const views = ["dashboard", "books", "sales", "onlineOrders", "purchases", "parties", "shipping", "accounting", "reports", "hr", "settings"];
     for (const view of views) {
       navigate(view);
@@ -8882,7 +8903,7 @@ async function runSelfTest() {
     check("إخفاء خصم الشراء من بطاقة الصنف", !document.getElementById("book-purchase-discount"));
     check("عرض سعر الغلاف في بطاقة الصنف", Number(document.querySelector('[name="coverPrice"]')?.value) === 25);
     check("عرض سعر البيع الافتراضي", Number(document.querySelector('[name="defaultSellingPrice"]')?.value) === 20);
-    check("آخر سعر شراء محسوب وغير قابل للكتابة", Number(document.querySelector('[name="lastPurchasePrice"]')?.value) === 10 && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
+    check("آخر سعر شراء غير متاح بدون مستند شراء", document.querySelector('[name="lastPurchasePrice"]')?.value === "غير متاح" && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
     closeModal();
     data.books.push(testBook);
     check("إضافة صنف", Boolean(getBook(testBook.id)));
@@ -9020,6 +9041,10 @@ async function runSelfTest() {
     savePurchase();
     const testPurchase = data.purchases.find(p => p.lines?.some(line => line.bookId === testBook.id));
     check("إنشاء فاتورة شراء", Boolean(testPurchase));
+    check("آخر سعر شراء مشتق من آخر مستند معتمد", latestApprovedPurchaseCost(testBook.id) === 10);
+    addBookModal(testBook);
+    check("آخر سعر شراء ظاهر وغير قابل للكتابة بعد الشراء", Number(document.querySelector('[name="lastPurchasePrice"]')?.value) === 10 && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
+    closeModal();
     check("زيادة المخزون بعد الشراء", getBook(testBook.id).stock === stockBeforePurchase + 2);
     if (testPurchase) cancelPurchase(testPurchase.id);
     check("تحديث المخزون بعد إلغاء الشراء", getBook(testBook.id).stock === stockBeforePurchase);
@@ -9052,7 +9077,17 @@ async function runSelfTest() {
     check("البحث في الفواتير بدون نتائج", findSalesInvoices("لا-توجد-فاتورة-بهذا-الرقم").length === 0);
 
     navigate("dashboard");
-    check("بطاقات لوحة المتابعة قابلة للضغط", root.querySelectorAll('.stat-card.interactive[data-action="dashboard-stat"]').length === 4);
+    const dashboardStats = () => new Set([...root.querySelectorAll('.stat-card.interactive[data-action="dashboard-stat"][data-stat]')].map(card => card.dataset.stat));
+    const ownerStats = dashboardStats();
+    check("بطاقات Dashboard المطلوبة للمالك", requiredDashboardStatsForRole("مالك").every(stat => ownerStats.has(stat)), `الموجود: ${[...ownerStats].join("، ")}`);
+    const dashboardOwner = currentUser;
+    currentUser = { id:"QA-CASHIER", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
+    renderDashboard();
+    const cashierStats = dashboardStats();
+    check("بطاقات Dashboard المطلوبة للكاشير", requiredDashboardStatsForRole("كاشير").every(stat => cashierStats.has(stat)), `الموجود: ${[...cashierStats].join("، ")}`);
+    check("صلاحيات Dashboard للكاشير لا تمنح التكلفة", canAction("view-item-cost-profit") === false && canAction("allow-negative-stock") === false);
+    currentUser = dashboardOwner;
+    renderDashboard();
     check("بطاقة الشحنات مجهزة للتحديث الدوري", Boolean(document.getElementById("dashboard-shipment-list")) && SHIPMENT_REFRESH_INTERVAL === 60000);
     check("مؤقت تحديث الشحنات يعمل مرة واحدة", Boolean(shipmentRefreshTimer));
     check("زر تحديث الشحنات الفوري ظاهر", Boolean(root.querySelector('[data-action="refresh-dashboard-shipments"]')));
