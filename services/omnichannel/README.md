@@ -2,35 +2,38 @@
 
 خدمة مستقلة داخل نفس Repository لنظام مكتبة دوت كوم. تحفظ المحادثات والرسائل في PostgreSQL عبر Prisma، وتقرأ بيانات العملاء/الطلبات/الفواتير/الشحنات من النظام الحالي قراءة فقط.
 
-## التشغيل المحلي
+## التشغيل
 
-1. جهز PostgreSQL محليًا، أو شغّله سريعًا من ملف Docker المرفق:
+يوجد Environment واحد فقط للنظام. انسخ ملف الإعداد الموحد من جذر المشروع:
 
 ```bash
-docker compose up -d
+cp .env.example .env
 ```
 
-إذا لم تستخدم Docker، استخدم أي PostgreSQL متاح واضبط `DATABASE_URL`.
+عدّل القيم داخل `.env`، خصوصًا كلمات المرور والأسرار والروابط العامة، ثم شغّل كل الخدمات من جذر المشروع:
 
-2. انسخ `.env.example` إلى `.env` واضبط `DATABASE_URL`.
-3. ثبّت الاعتمادات:
+```bash
+docker compose up -d --build
+```
+
+إذا لم تستخدم Docker، استخدم PostgreSQL متاحًا واضبط `DATABASE_URL` في ملف `.env` الموجود في جذر المشروع، ثم ثبّت الاعتمادات:
 
 ```bash
 npm install
 ```
 
-4. شغّل Prisma:
+شغّل Prisma:
 
 ```bash
 npm run generate
-npm run migrate:dev
+npm run migrate
 npm run seed
 ```
 
-5. شغّل الخدمة:
+شغّل الخدمة:
 
 ```bash
-npm run dev
+npm start
 ```
 
 الخدمة تعمل افتراضيًا على:
@@ -45,7 +48,7 @@ http://127.0.0.1:8775
 - WhatsApp الأساسي موجود كـ Channel Account بحالة `not_connected` فقط ولا يتم لمسه.
 - WhatsApp Secondary و Messenger يعملان محليًا عبر Mock Providers.
 - Webhook endpoints جاهزة بدون أي Access Tokens حقيقية.
-- في production يجب تفعيل HTTPS وإدخال Meta credentials في environment variables فقط.
+- عند الربط الخارجي يجب تفعيل HTTPS وإدخال Meta credentials في ملف `.env` على السيرفر فقط.
 
 ## Endpoints مختصرة
 
@@ -66,10 +69,10 @@ http://127.0.0.1:8775
 - `GET /webhooks/messenger`
 - `POST /webhooks/messenger`
 
-## Production checklist
+## قائمة تجهيز الربط الخارجي
 
 1. Public HTTPS URL.
-2. Production PostgreSQL.
+2. PostgreSQL دائم مع Volume ونسخة احتياطية.
 3. `DATABASE_URL`.
 4. `META_APP_SECRET`.
 5. `META_WEBHOOK_VERIFY_TOKEN`.

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-function loadDotEnv(file = path.join(__dirname, "..", "..", ".env")) {
+function loadDotEnv(file = path.join(__dirname, "..", "..", "..", ".env")) {
   if (!fs.existsSync(file)) return;
   const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
   for (const line of lines) {
@@ -44,8 +44,7 @@ function isLocalUrl(value = "") {
 }
 
 const env = {
-  nodeEnv: process.env.NODE_ENV || "development",
-  isProduction: (process.env.NODE_ENV || "development") === "production",
+  runtimeName: "default",
   port: numberEnv("OMNICHANNEL_PORT", 8775),
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "http://127.0.0.1:8775",
   omnichannelPublicUrl: process.env.OMNICHANNEL_PUBLIC_URL || process.env.PUBLIC_BASE_URL || "http://127.0.0.1:8775",
@@ -76,17 +75,18 @@ const env = {
   whatsappServiceWindowHours: numberEnv("WHATSAPP_SERVICE_WINDOW_HOURS", 24),
   retryPollMs: numberEnv("OMNI_RETRY_POLL_MS", 10000),
   retryMaxAttempts: numberEnv("OMNI_RETRY_MAX_ATTEMPTS", 3),
-  startRetryWorker: boolEnv("OMNI_START_RETRY_WORKER", (process.env.NODE_ENV || "development") !== "production"),
+  startRetryWorker: boolEnv("OMNI_START_RETRY_WORKER", true),
   rateLimitWindowMs: numberEnv("RATE_LIMIT_WINDOW_MS", 60000),
   rateLimitMax: numberEnv("RATE_LIMIT_MAX", 300),
   webhookRateLimitMax: numberEnv("WEBHOOK_RATE_LIMIT_MAX", 2000),
   sendRateLimitMax: numberEnv("SEND_RATE_LIMIT_MAX", 120),
   uploadRateLimitMax: numberEnv("UPLOAD_RATE_LIMIT_MAX", 60),
-  trustProxy: process.env.TRUST_PROXY || (process.env.NODE_ENV === "production" ? "1" : "loopback"),
+  trustProxy: process.env.TRUST_PROXY || "1",
   forceHttps: boolEnv("FORCE_HTTPS", false),
-  enableHsts: boolEnv("ENABLE_HSTS", (process.env.NODE_ENV || "development") === "production"),
-  allowMockInProduction: boolEnv("ALLOW_MOCK_IN_PRODUCTION", false),
-  allowQuerySessionTokenInProduction: boolEnv("ALLOW_QUERY_SESSION_TOKEN_IN_PRODUCTION", false),
+  enableHsts: boolEnv("ENABLE_HSTS", false),
+  verifyWebhookSignatures: boolEnv("VERIFY_WEBHOOK_SIGNATURES", true),
+  allowMockEndpoints: boolEnv("ALLOW_MOCK_ENDPOINTS", false),
+  allowQuerySessionToken: boolEnv("ALLOW_QUERY_SESSION_TOKEN", false),
   sessionBridgeTimeoutMs: numberEnv("SESSION_BRIDGE_TIMEOUT_MS", 5000),
   sseTicketTtlMs: numberEnv("SSE_TICKET_TTL_MS", 60 * 1000),
   shutdownTimeoutMs: numberEnv("SHUTDOWN_TIMEOUT_MS", 15000)
@@ -94,7 +94,7 @@ const env = {
 
 function publicConfig() {
   return {
-    nodeEnv: env.nodeEnv,
+    runtimeName: env.runtimeName,
     publicBaseUrl: env.publicBaseUrl,
     omnichannelPublicUrl: env.omnichannelPublicUrl,
     existingAppBaseUrl: env.existingAppBaseUrl,
@@ -108,20 +108,18 @@ function publicConfig() {
   };
 }
 
-function validateProductionEnvironment() {
-  if (!env.isProduction) return { ok: true, errors: [] };
-  const errors = [];
-  if (!env.databaseUrl) errors.push("DATABASE_URL is required in production");
-  if (!env.port) errors.push("OMNICHANNEL_PORT is required in production");
-  if (!env.publicBaseUrl || isLocalUrl(env.publicBaseUrl)) errors.push("PUBLIC_BASE_URL must be a public HTTPS URL in production");
-  if (!env.omnichannelPublicUrl || isLocalUrl(env.omnichannelPublicUrl)) errors.push("OMNICHANNEL_PUBLIC_URL must be public in production");
-  if (!env.existingAppBaseUrl || isLocalUrl(env.existingAppBaseUrl)) errors.push("EXISTING_APP_BASE_URL must be public in production");
-  if (!env.allowedOrigins.length || env.allowedOrigins.some(origin => origin === "*" || isLocalUrl(origin))) errors.push("ALLOWED_ORIGINS must be an exact production allowlist");
-  if (isWeakSecret(env.metaWebhookVerifyToken, ["change-this-verify-token"])) errors.push("META_WEBHOOK_VERIFY_TOKEN must be configured in production");
-  if (isWeakSecret(env.sessionBridgeSecret, ["dev-session-bridge-secret", "change-this-long-random-secret"])) errors.push("SESSION_BRIDGE_SECRET must be changed in production");
-  if (isWeakSecret(env.encryptionKey)) errors.push("ENCRYPTION_KEY must be configured in production");
-  if (env.storageProvider === "s3" && (!env.s3Bucket || !env.s3Region || !env.s3AccessKeyId || !env.s3SecretAccessKey)) errors.push("S3 storage requires bucket, region and credentials");
-  return { ok: errors.length === 0, errors };
+function inspectRuntimeEnvironment() {
+  const warnings = [];
+  if (!env.databaseUrl) warnings.push("DATABASE_URL is not configured");
+  if (!env.publicBaseUrl || isLocalUrl(env.publicBaseUrl)) warnings.push("PUBLIC_BASE_URL is local; external webhooks need a public HTTPS URL");
+  if (!env.omnichannelPublicUrl || isLocalUrl(env.omnichannelPublicUrl)) warnings.push("OMNICHANNEL_PUBLIC_URL is local; external webhooks need a public URL");
+  if (!env.existingAppBaseUrl) warnings.push("EXISTING_APP_BASE_URL is not configured");
+  if (!env.allowedOrigins.length || env.allowedOrigins.includes("*")) warnings.push("ALLOWED_ORIGINS must contain explicit origins");
+  if (isWeakSecret(env.metaWebhookVerifyToken, ["change-this-verify-token"])) warnings.push("META_WEBHOOK_VERIFY_TOKEN should be changed");
+  if (isWeakSecret(env.sessionBridgeSecret, ["dev-session-bridge-secret", "change-this-long-random-secret"])) warnings.push("SESSION_BRIDGE_SECRET should be changed");
+  if (isWeakSecret(env.encryptionKey)) warnings.push("ENCRYPTION_KEY should be configured");
+  if (env.storageProvider === "s3" && (!env.s3Bucket || !env.s3Region || !env.s3AccessKeyId || !env.s3SecretAccessKey)) warnings.push("S3 storage requires bucket, region and credentials");
+  return { ok: true, warnings };
 }
 
-module.exports = { env, publicConfig, loadDotEnv, validateProductionEnvironment };
+module.exports = { env, publicConfig, loadDotEnv, inspectRuntimeEnvironment };

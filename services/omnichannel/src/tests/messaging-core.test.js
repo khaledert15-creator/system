@@ -9,6 +9,8 @@ const { InMemoryRepository } = require("../repositories/in-memory.repository");
 const { LocalStorageProvider } = require("../storage/local-storage.provider");
 const { MediaService } = require("../services/media.service");
 
+env.allowMockEndpoints = true;
+
 function signedUser(user) {
   const header = Buffer.from(JSON.stringify(user)).toString("base64url");
   const signature = crypto.createHmac("sha256", env.sessionBridgeSecret).update(header).digest("hex");

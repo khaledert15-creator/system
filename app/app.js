@@ -32,7 +32,7 @@ const ACTION_ROLES = {
   "delete-cash": ["مالك","مدير","محاسب"], "delete-employee": ["مالك","مدير"],
   "save-settings": ["مالك","مدير"], "restore-db": ["مالك","مدير"], "backup-db": ["مالك","مدير","محاسب"],
   "audit-log": ["مالك","مدير","محاسب"], "add-cash-in": ["مالك","مدير","محاسب"],
-  "view-item-cost-profit": ["مالك","مدير","محاسب"], "export-audit-log": ["مالك","مدير","محاسب"],
+  "view-item-cost-profit": ["مالك","مدير","محاسب"], "allow-negative-stock": ["مالك"], "export-audit-log": ["مالك","مدير","محاسب"],
   "view-best-customers": ["مالك","مدير","محاسب"], "view-best-suppliers": ["مالك","مدير","محاسب"],
   "add-cash-out": ["مالك","مدير","محاسب"], "add-employee": ["مالك","مدير"],
   "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"],
@@ -67,7 +67,7 @@ const VIEW_DEFINITIONS = [
 ];
 
 const PERMISSION_ACTIONS = [
-  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
+  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
   ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
@@ -255,6 +255,28 @@ function actorSnapshot() {
   };
 }
 
+function negativeStockError(book, requestedQuantity) {
+  const available = Number(book?.stock || 0);
+  const requested = Number(requestedQuantity || 0);
+  if (requested <= available) return "";
+  if (data.settings.allowNegativeStock && canAction("allow-negative-stock")) return "";
+  return `لا يمكن إتمام البيع. الرصيد المتاح من «${book?.name || "الصنف"}» هو ${available} والكمية المطلوبة ${requested}.`;
+}
+
+function recordNegativeStockOverride(book, requestedQuantity, documentId) {
+  if (Number(requestedQuantity || 0) <= Number(book?.stock || 0)) return;
+  data.audit.push(auditEntry({
+    action:"تجاوز المخزون السالب بصلاحية",
+    operationType:"تجاوز المخزون السالب",
+    moduleName:"المبيعات",
+    entityType:"المخزون",
+    entity:"المخزون",
+    entityId:book.id,
+    documentNo:documentId,
+    details:`${book.name}: المتاح ${Number(book.stock || 0)}، المطلوب ${Number(requestedQuantity || 0)}`
+  }));
+}
+
 function actorLabel(item = {}) {
   const name = item.createdBy || item.updatedBy || item.user || "غير مسجل";
   const username = item.createdByUsername || item.updatedByUsername || "";
@@ -354,6 +376,9 @@ function showApplication() {
   document.getElementById("current-user-name").textContent = currentUser?.name || currentUser?.username || "مستخدم";
   document.getElementById("current-user-role").textContent = currentUser?.role || "—";
   document.querySelectorAll(".nav-item").forEach(item => item.hidden = !canView(item.dataset.view));
+  document.getElementById("sidebar-new-sale").hidden = !canView("sales") || !canAction("new-sale-invoice");
+  const collapsed = localStorage.getItem("dotcom-sidebar-collapsed") === "1";
+  document.getElementById("app-shell").classList.toggle("sidebar-collapsed", collapsed);
   if (!canView(currentView)) currentView = "dashboard";
 }
 
@@ -1458,7 +1483,7 @@ function normalizeSmartSearch(value) {
     .toLocaleLowerCase("ar")
     .replace(/[أإآ]/g, "ا")
     .replace(/ة/g, "ه")
-    .replace(/ى/g, "ظٹ")
+    .replace(/ى/g, "ي")
     .replace(/[٠-٩]/g, digit => "٠١٢٣٤٥٦٧٨٩".indexOf(digit))
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
@@ -1529,16 +1554,31 @@ function activeInventoryBatches(productId) {
     .sort((a, b) => String(a.purchaseDate || "").localeCompare(String(b.purchaseDate || "")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.batchId || a.id).localeCompare(String(b.batchId || b.id)));
 }
 
+function latestApprovedPurchaseCost(productId) {
+  const approved = (data.purchases || [])
+    .filter(purchase => !purchase.deletedAt && !/ملغاة|بانتظار|قيد/.test(String(purchase.status || "")) && (purchase.lines || []).some(line => (line.bookId || line.productId) === productId))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.id || "").localeCompare(String(b.id || "")));
+  const purchase = approved.at(-1);
+  if (!purchase) return null;
+  const matchingLines = (purchase.lines || []).filter(line => (line.bookId || line.productId) === productId);
+  const line = matchingLines.at(-1);
+  if (!line) return null;
+  const quantity = Number(line.qty || line.quantity || 0);
+  const explicitTotal = line.totalCost ?? line.finalNet ?? line.total;
+  const total = explicitTotal === undefined || explicitTotal === null ? NaN : Number(explicitTotal);
+  const unitCost = quantity > 0 && Number.isFinite(total)
+    ? total / quantity
+    : Number(line.unitPurchaseCost ?? line.cost ?? NaN);
+  return Number.isFinite(unitCost) && unitCost >= 0 ? unitCost : null;
+}
+
 function productInventorySummary(productId) {
   const book = getBook(productId) || {};
   const batches = activeInventoryBatches(productId);
   const currentStockQty = batches.reduce((sum, batch) => sum + Number(batch.remainingQty || 0), 0);
   const currentInventoryValue = batches.reduce((sum, batch) => sum + Number(batch.remainingQty || 0) * Number(batch.unitCost || 0), 0);
   const averageInventoryCost = currentStockQty > 0 ? currentInventoryValue / currentStockQty : 0;
-  const lastBatch = (data.inventoryBatches || [])
-    .filter(batch => !batch.deletedAt && (batch.productId || batch.bookId) === productId && batch.source !== "opening_balance")
-    .sort((a, b) => String(b.purchaseDate || "").localeCompare(String(a.purchaseDate || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
-  const lastPurchaseCost = Number(lastBatch?.unitCost ?? book.lastPurchasePrice ?? book.cost ?? 0);
+  const lastPurchaseCost = latestApprovedPurchaseCost(productId);
   const selling = productDefaultSellingPrice(book);
   const expectedMarginAtDefaultPrice = selling > 0 && averageInventoryCost > 0 ? ((selling - averageInventoryCost) / selling) * 100 : null;
   const hasIncompleteCost = batches.some(batch => !Number(batch.unitCost || 0) || batch.status === "cost_incomplete");
@@ -1929,6 +1969,13 @@ function renderDashboard() {
     </div>`;
 }
 
+function requiredDashboardStatsForRole(role) {
+  if (role === "كاشير") return ["sales", "stock-alerts"];
+  if (role === "مخزن") return ["inventory", "stock-alerts"];
+  if (role === "شحن") return ["shipping"];
+  return ["sales", "inventory", "customer-debt", "stock-alerts"];
+}
+
 function showDashboardStatDetails(type) {
   const activeSales = activeSalesList();
   if (type === "sales") {
@@ -1982,7 +2029,6 @@ function showDashboardStatDetails(type) {
 
   const attention = data.books.filter(book => book.stock <= book.reorder).sort((a, b) => a.stock - b.stock);
   openModal("أصناف تحتاج انتباه", "لوحة المتابعة", `
-    ${item.trackingDebug?.screenshotFile ? `<div class="alert-item warning"><div class="alert-badge gold">⚑</div><div><strong>لقطة فشل التتبع محفوظة</strong><span>يمكن مراجعة الصورة وHTML snapshot لتحديد سبب عدم قراءة النتيجة.</span></div><button class="btn ghost small" data-action="show-tracking-debug" data-id="${item.id}">عرض لقطة فشل التتبع</button></div>` : ""}
     <div class="metric-strip">
       <div class="mini-metric"><span>صفري أو سالب</span><strong>${attention.filter(book => book.stock <= 0).length}</strong></div>
       <div class="mini-metric"><span>تحت حد الطلب</span><strong>${attention.filter(book => book.stock > 0).length}</strong></div>
@@ -2031,7 +2077,7 @@ function booksTable(books) {
       <td class="money">${money(productDefaultSellingPrice(book))}</td>
       <td>${stockBadge(book)}</td>
       <td>${book.owned ? badge("مملوك") : badge("أمانة", "blue")}</td>
-      <td><div class="row-actions"><button class="row-action" data-action="view-book" data-id="${book.id}">عرض</button><button class="row-action" data-action="edit-book" data-id="${book.id}">تعديل</button><button class="row-action" data-action="adjust-stock" data-id="${book.id}">تسوية</button><button class="row-action text-danger" data-action="delete-book" data-id="${book.id}">حذف</button></div></td>
+      <td><div class="row-actions"><button class="row-action" data-action="view-book" data-id="${book.id}">عرض</button><button class="row-action" data-action="open-product-movement" data-id="${book.id}">عرض حركة الصنف</button><button class="row-action" data-action="edit-book" data-id="${book.id}">تعديل</button><button class="row-action" data-action="adjust-stock" data-id="${book.id}">تسوية</button><button class="row-action text-danger" data-action="delete-book" data-id="${book.id}">حذف</button></div></td>
     </tr>`; }).join("")}</tbody>
   </table>`;
 }
@@ -2060,7 +2106,8 @@ function saleCustomerDetailsMarkup(customer) {
 }
 
 function resetSaleDraft() {
-  draftSale = { customerId: "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
+  const cashCustomer = (data.customers || []).find(customer => !customer.deletedAt && (customer.id === "C001" || customer.name === "عميل نقدي"));
+  draftSale = { customerId: cashCustomer?.id || "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
 }
 
 function saleCreatedByName(sale = {}) {
@@ -2360,6 +2407,7 @@ function renderSalesCenter() {
 
 function renderSales() {
   if (salesScreenMode === "invoice") return renderSaleInvoice();
+  if (salesScreenMode === "history") return renderSalesHistory();
   return renderSalesCenter();
 }
 
@@ -2370,7 +2418,9 @@ function renderSaleInvoice() {
     const book = getBook(line.bookId);
     const computed = totals.lines[index] || {};
     const listId = `sale-book-options-${index}`;
-    return `<div class="invoice-line" data-line="${index}">
+    const availableStock = book ? productInventorySummary(book.id).currentStockQty : 0;
+    const stockWarning = book && Number(line.qty || 0) > availableStock;
+    return `<div class="invoice-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
       <input class="sale-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود...">
       ${bookPickerDatalist(listId)}
       <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
@@ -2378,57 +2428,44 @@ function renderSaleInvoice() {
       <input class="sale-discount discount-field" data-index="${index}" type="number" min="0" max="100" value="${line.discount || 0}">
       <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
-      ${book ? `<small class="sale-book-info">الرصيد ${productInventorySummary(book.id).currentStockQty} · البيع ${money(productDefaultSellingPrice(book))} · متوسط التكلفة ${productInventorySummary(book.id).hasIncompleteCost ? "غير مكتملة" : money(productInventorySummary(book.id).averageInventoryCost)} · بعد الخصم ${money(computed.finalNet || 0)}</small>` : ""}
+      ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
     </div>`;
   }).join("");
 
   root.innerHTML = `
     <div class="section-title">
-      <div><h2>فاتورة مبيعات جديدة</h2><p>تجزئة، جملة، متجر إلكتروني، نقدي أو آجل.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="sales-main">مركز المبيعات</button><button class="btn ghost" data-view-jump="returns">المرتجعات</button><button class="btn ghost" data-action="show-sales-list">الفواتير السابقة</button><button class="btn secondary" data-action="reset-sale">تفريغ الفاتورة</button></div>
+      <div><h2>بيع سريع</h2><p>امسح الباركود، راجع الإجمالي، ثم احفظ.</p></div>
+      <div class="actions"><button class="btn ghost" data-action="sales-main">مركز المبيعات</button><button class="btn ghost" data-action="show-sales-list">الفواتير السابقة</button><button class="btn secondary" data-action="reset-sale">تفريغ</button></div>
     </div>
-    <div class="invoice-layout">
+    <div class="invoice-layout quick-sale-layout">
       <article class="card">
-        <div class="invoice-meta">
-          <div class="form-grid">
-            <div class="form-field full sale-customer-picker">
-              <label class="required">العميل المسجل</label>
-              <div class="customer-search-row">
-                <div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div>
-                <button class="btn secondary" type="button" data-action="register-sale-customer">＋ تسجيل عميل جديد</button>
-              </div>
-              <div id="sale-customer-suggestions" class="customer-suggestions"></div>
-              <div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div>
-            </div>
-            <div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>نوع عملية البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-            <div class="form-field"><label>تاريخ الفاتورة</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div>
-          </div>
-        </div>
         <div class="invoice-lines">
-          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" placeholder="بحث ذكي: امسح الباركود أو اكتب جزء من اسم الصنف / الناشر / الصف"></div><input id="sale-quick-qty" type="number" min="1" value="1" title="الكمية"><div id="sale-book-suggestions"></div></div>
-          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">خصم صنف %</span><span>بعد الخصم</span><span></span></div>
+          <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
+          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
+          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">الخصم</span><span>الإجمالي</span><span></span></div>
           <div id="sale-lines">${lines}</div>
-          <button class="btn secondary small" data-action="add-sale-line">＋ إضافة بند</button>
         </div>
       </article>
       <aside class="card invoice-summary">
         <span class="eyebrow">ملخص الفاتورة</span>
+        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="row-action" type="button" data-action="toggle-sale-options">تغيير</button></div>
         <div class="summary-row"><span>المجموع الإجمالي قبل الخصم</span><strong id="sale-subtotal">${money(totals.subtotal)}</strong></div>
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
-        <div class="form-field" style="margin-top:12px"><label>خصم إجمالي الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" type="number" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div>
-        <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div>
-        <div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
-        <div class="form-field" style="margin-top:12px"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row total"><span>صافي الفاتورة</span><strong id="sale-total">${money(totals.total)}</strong></div>
+        <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+        <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row"><span>المتبقي على العميل</span><strong id="sale-remaining" class="${totals.remaining > 0 ? "text-danger" : ""}">${money(totals.remaining)}</strong></div>
         <div id="sale-warning"></div>
-        <button class="btn gold" data-action="save-sale" style="width:100%;margin-top:12px">اعتماد وحفظ الفاتورة</button>
-        <button class="btn ghost" onclick="window.print()" style="width:100%;margin-top:7px">طباعة A4 / حراري</button>
-        <p class="muted" style="font-size:8px;line-height:1.8;margin:12px 0 0">يمنع النظام البيع بأقل من التكلفة، ويطلب موافقة خاصة للخصم فوق ${data.settings.approvalDiscount}% أو البيع الآجل المتجاوز للحد.</p>
+        <button class="btn gold daily-action quick-save" data-action="save-sale" data-print-after="1">حفظ وطباعة</button>
+        <button class="btn ghost quick-save" data-action="save-sale">حفظ بدون طباعة</button>
+        <details class="sale-extra-options" id="sale-extra-options"><summary>خيارات إضافية</summary>
+          <div class="sale-customer-picker"><label>تغيير العميل</label><div class="customer-search-row"><div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div><button class="btn secondary" type="button" data-action="register-sale-customer">تسجيل عميل</button></div><div id="sale-customer-suggestions" class="customer-suggestions"></div><div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div></div>
+          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" type="number" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div></div>
+          <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div><div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
+        </details>
       </aside>
     </div>`;
+  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 30);
 }
 
 const ONLINE_ORDER_STATUSES = ["طلب جديد","قيد التجهيز","تم إنشاء الفاتورة","لم يتم الشحن بعد","تم إنشاء الشحنة","خرج للتوصيل","تم التسليم","مرتجع","ملغي"];
@@ -3320,6 +3357,235 @@ function monthlySalesOverviewMarkup(activeSales) {
   </article>`;
 }
 
+const PRODUCT_MOVEMENT_PAGE_SIZE = 25;
+let productMovementState = {
+  bookId: "", from: "", to: "", quickRange: "all", type: "all", supplierId: "", customerId: "",
+  employee: "", status: "", sort: "desc", page: 1, showPrices: true, scrollY: 0
+};
+
+function productMovementType(type = "") {
+  const value = String(type);
+  if (/^إلغاء/.test(value)) return "cancelled";
+  if (/جرد/.test(value)) return "count";
+  if (/تسوية|تالف|مفقود|مجاني|تصحيح/.test(value)) return "adjustment";
+  if (/مرتجع مبيعات/.test(value)) return "sale-return";
+  if (/مرتجع مشتريات|مرتجع أمانة/.test(value)) return "purchase-return";
+  if (/بيع/.test(value)) return "sale";
+  if (/شراء|توريد|استلام/.test(value)) return "purchase";
+  if (/افتتاح/.test(value)) return "opening";
+  return "other";
+}
+
+function productMovementTypeLabel(kind, fallback = "حركة مخزون") {
+  return ({ purchase:"مشتريات", sale:"مبيعات", "sale-return":"مرتجع بيع", "purchase-return":"مرتجع شراء", adjustment:"تسوية", count:"جرد", opening:"مخزون افتتاحي", cancelled:"حركة ملغاة", other:fallback })[kind] || fallback;
+}
+
+function productMovementDocument(documentId = "") {
+  const sale = (data.sales || []).find(item => item.id === documentId);
+  if (sale) return { kind:"sale", record:sale, status:sale.status || "معتمدة", partyId:sale.customerId || "", partyName:getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "", action:"view-sale" };
+  const purchase = (data.purchases || []).find(item => item.id === documentId);
+  if (purchase) return { kind:"purchase", record:purchase, status:purchase.status || "مستلمة", partyId:purchase.supplierId || "", partyName:getSupplier(purchase.supplierId)?.name || "", action:"view-purchase" };
+  const ret = (data.returns || []).find(item => [item.id, item.returnNo, item.returnInvoiceId, item.documentId].includes(documentId));
+  if (ret) return { kind:"return", record:ret, status:ret.status || "معتمد", partyId:ret.accountId || ret.partyId || "", partyName:returnAccountName(ret) || "", action:"view-return" };
+  return null;
+}
+
+function productMovementLineValue(movement, document, bookId) {
+  const qty = Math.abs(Number(movement.quantity || 0));
+  if (document?.kind === "sale") {
+    const line = (document.record.lines || []).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = line ? saleLineRevenue(line) : null;
+    return { unitPrice: lineQty ? total / lineQty : Number(movement.priceAtOperation || 0), totalValue: lineQty ? total / lineQty * qty : Number(movement.priceAtOperation || 0) * qty, unitCost: line ? saleLineCogs(line) == null ? null : saleLineCogs(line) / Math.max(1, lineQty) : Number(movement.costAtOperation || 0), cogs: line ? saleLineCogs(line) : null };
+  }
+  if (document?.kind === "purchase") {
+    const line = (document.record.lines || []).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = Number(line?.finalNet ?? line?.total ?? line?.totalCost ?? 0);
+    const unit = lineQty ? total / lineQty : Number(line?.cost || movement.costAtOperation || 0);
+    return { unitPrice: unit, totalValue: unit * qty, unitCost: unit, cogs:null };
+  }
+  if (document?.kind === "return") {
+    const line = returnItems(document.record).find(item => (item.bookId || item.productId) === bookId);
+    const lineQty = Number(line?.qty || line?.quantity || 0);
+    const total = Number(line?.total ?? line?.amount ?? 0);
+    const unit = lineQty ? total / lineQty : Number(line?.unitPrice || movement.priceAtOperation || movement.costAtOperation || 0);
+    return { unitPrice: unit, totalValue: unit * qty, unitCost:Number(movement.costAtOperation || 0) || null, cogs:null };
+  }
+  const unit = Number(movement.quantity || 0) < 0 ? Number(movement.priceAtOperation || 0) : Number(movement.costAtOperation || 0);
+  return { unitPrice: unit || null, totalValue: unit ? unit * qty : null, unitCost:Number(movement.costAtOperation || 0) || null, cogs:null };
+}
+
+function productMovementRows(bookId) {
+  const rows = (data.stockMovements || []).filter(item => item.bookId === bookId).map(item => {
+    const document = productMovementDocument(item.documentId || item.documentNo || "");
+    const kind = productMovementType(item.type);
+    const value = productMovementLineValue(item, document, bookId);
+    const quantity = Number(item.quantity || 0);
+    return {
+      id:item.id, date:item.createdAt || item.date, type:item.type || "حركة مخزون", kind,
+      documentId:item.documentNo || item.documentId || "", document, status:document?.status || (kind === "cancelled" ? "ملغاة" : "معتمد"),
+      partyId:document?.partyId || item.customerId || item.supplierId || "", partyName:document?.partyName || item.partyName || item.note || "",
+      supplierId:item.supplierId || (document?.kind === "purchase" ? document.partyId : ""), customerId:item.customerId || (document?.kind === "sale" ? document.partyId : ""),
+      incoming:quantity > 0 ? quantity : 0, outgoing:quantity < 0 ? Math.abs(quantity) : 0,
+      before:Number(item.before ?? item.calculatedBefore ?? 0), after:Number(item.after ?? item.calculatedAfter ?? 0), unitPrice:value.unitPrice, totalValue:value.totalValue, unitCost:value.unitCost, cogs:value.cogs,
+      employee:item.employeeName || item.user || "النظام", username:item.username || "", note:item.note || ""
+    };
+  }).sort((a, b) => new Date(a.date) - new Date(b.date) || String(a.id).localeCompare(String(b.id)));
+  let balance = rows.length && rows[0].kind !== "opening" && Number.isFinite(rows[0].before) ? rows[0].before : 0;
+  rows.forEach(row => { row.before = balance; balance += row.incoming - row.outgoing; row.after = balance; });
+  return rows;
+}
+
+function productMovementRange(state = productMovementState) {
+  const now = new Date();
+  const day = date => date.toISOString().slice(0, 10);
+  if (state.quickRange === "today") return { from:day(now), to:day(now) };
+  if (state.quickRange === "7") return { from:day(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to:day(now) };
+  if (state.quickRange === "30") return { from:day(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to:day(now) };
+  if (state.quickRange === "month") return { from:day(new Date(now.getFullYear(), now.getMonth(), 1)), to:day(now) };
+  if (state.quickRange === "year") return { from:`${now.getFullYear()}-01-01`, to:day(now) };
+  return { from:state.from || "", to:state.to || "" };
+}
+
+function productMovementReportData(state = productMovementState) {
+  const book = getBook(state.bookId);
+  if (!book) return null;
+  const allRows = productMovementRows(book.id);
+  const range = productMovementRange(state);
+  const beforeRows = allRows.filter(row => range.from && String(row.date).slice(0, 10) < range.from);
+  const opening = range.from ? (beforeRows.length ? beforeRows[beforeRows.length - 1].after : allRows[0]?.before ?? Number(book.stock || 0)) : allRows[0]?.before ?? Number(book.stock || 0);
+  let rows = allRows.filter(row => (!range.from || String(row.date).slice(0, 10) >= range.from) && (!range.to || String(row.date).slice(0, 10) <= range.to));
+  if (state.type !== "all") rows = rows.filter(row => row.kind === state.type);
+  if (state.supplierId) rows = rows.filter(row => row.supplierId === state.supplierId);
+  if (state.customerId) rows = rows.filter(row => row.customerId === state.customerId);
+  if (state.employee) rows = rows.filter(row => row.employee === state.employee);
+  if (state.status) rows = rows.filter(row => row.status === state.status);
+  const periodRows = allRows.filter(row => (!range.from || String(row.date).slice(0, 10) >= range.from) && (!range.to || String(row.date).slice(0, 10) <= range.to));
+  const incoming = periodRows.reduce((sum, row) => sum + row.incoming, 0);
+  const outgoing = periodRows.reduce((sum, row) => sum + row.outgoing, 0);
+  const closing = opening + incoming - outgoing;
+  const expected = range.to
+    ? (periodRows.length ? periodRows[periodRows.length - 1].after : opening)
+    : Number(book.stock || 0);
+  const salesRows = periodRows.filter(row => row.kind === "sale");
+  const canSeeCost = canAction("view-item-cost-profit");
+  const cogsKnown = salesRows.every(row => row.cogs !== null && row.cogs !== undefined);
+  const summary = {
+    opening, closing, expected, mismatch:Math.abs(closing - expected) > 0.0001,
+    purchaseQty:periodRows.filter(row => row.kind === "purchase").reduce((s,r)=>s+r.incoming,0),
+    purchaseValue:periodRows.filter(row => row.kind === "purchase").reduce((s,r)=>s+Number(r.totalValue || 0),0),
+    saleQty:salesRows.reduce((s,r)=>s+r.outgoing,0), saleValue:salesRows.reduce((s,r)=>s+Number(r.totalValue || 0),0),
+    saleReturns:periodRows.filter(row=>row.kind === "sale-return").reduce((s,r)=>s+r.incoming,0),
+    purchaseReturns:periodRows.filter(row=>row.kind === "purchase-return").reduce((s,r)=>s+r.outgoing,0),
+    adjustmentIn:periodRows.filter(row=>["adjustment","count"].includes(row.kind)).reduce((s,r)=>s+r.incoming,0),
+    adjustmentOut:periodRows.filter(row=>["adjustment","count"].includes(row.kind)).reduce((s,r)=>s+r.outgoing,0),
+    cogs:canSeeCost && cogsKnown ? salesRows.reduce((s,r)=>s+Number(r.cogs || 0),0) : null
+  };
+  summary.grossProfit = summary.cogs === null ? null : summary.saleValue - summary.cogs;
+  return { book, allRows, rows:state.sort === "asc" ? rows : rows.slice().reverse(), range, summary, canSeeCost };
+}
+
+function productMovementBookOptions() {
+  return data.books.filter(book => !book.deletedAt).map(book => `<option value="${esc(book.id)}">${esc(book.name)} · ${esc(book.barcode || "بدون باركود")}</option>`).join("");
+}
+
+function productMovementOptionList(values, selected, emptyLabel) {
+  return `<option value="">${emptyLabel}</option>${[...new Set(values.filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b), "ar")).map(value => `<option value="${esc(value)}" ${selected === value ? "selected" : ""}>${esc(value)}</option>`).join("")}`;
+}
+
+function refreshProductMovementReport(patch = {}, keepScroll = true) {
+  const scrollY = keepScroll ? window.scrollY : 0;
+  productMovementState = { ...productMovementState, ...patch };
+  renderProductMovementReport(productMovementState.bookId);
+  requestAnimationFrame(() => window.scrollTo({ top:scrollY, behavior:"auto" }));
+}
+
+function selectProductMovementBook(field, rawValue) {
+  const value = String(rawValue || "").trim();
+  const normalized = value.toLocaleLowerCase("ar");
+  const book = data.books.find(item => !item.deletedAt && (field === "id" ? item.id === value : field === "barcode" ? [item.barcode,item.extraBarcode].filter(Boolean).includes(value) : String(item.name || "").trim().toLocaleLowerCase("ar") === normalized));
+  if (!book && value) return toast("لم يتم العثور على صنف مطابق.", "error");
+  refreshProductMovementReport({ bookId:book?.id || "", page:1 }, false);
+}
+
+function productMovementMoney(value) {
+  return value === null || value === undefined || !Number.isFinite(Number(value)) ? "غير متاح" : money(value);
+}
+
+function productMovementTone(kind) {
+  return kind === "cancelled" ? "movement-cancelled" : ["adjustment","count"].includes(kind) ? "movement-adjustment" : "";
+}
+
+function productMovementTable(report) {
+  const pageCount = Math.max(1, Math.ceil(report.rows.length / PRODUCT_MOVEMENT_PAGE_SIZE));
+  productMovementState.page = Math.min(pageCount, Math.max(1, Number(productMovementState.page || 1)));
+  const start = (productMovementState.page - 1) * PRODUCT_MOVEMENT_PAGE_SIZE;
+  const rows = report.rows.slice(start, start + PRODUCT_MOVEMENT_PAGE_SIZE);
+  const costHeads = report.canSeeCost ? `<th>تكلفة الوحدة</th>` : "";
+  return `<div class="table-wrap product-movement-table"><table><thead><tr><th>التاريخ والوقت</th><th>نوع الحركة</th><th>المستند</th><th>الطرف / السبب</th><th>داخل</th><th>خارج</th><th>سعر الوحدة</th><th>القيمة</th>${costHeads}<th>قبل</th><th>بعد</th><th>الموظف</th><th>الحالة</th><th>ملاحظات</th><th>الإجراء</th></tr></thead><tbody>${rows.map(row => `<tr class="clickable-row ${productMovementTone(row.kind)}" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}"><td>${esc(dateTimeLabel(row.date))}</td><td>${badge(productMovementTypeLabel(row.kind, row.type), ["adjustment","count"].includes(row.kind) ? "warning" : row.kind === "cancelled" ? "gray" : row.incoming ? "" : "danger")}</td><td dir="ltr"><strong>${esc(row.documentId || "—")}</strong></td><td>${esc(row.partyName || "—")}</td><td class="movement-in">${row.incoming ? `+${row.incoming}` : "—"}</td><td class="movement-out">${row.outgoing || "—"}</td><td class="money">${productMovementMoney(row.unitPrice)}</td><td class="money">${productMovementMoney(row.totalValue)}</td>${report.canSeeCost ? `<td class="money">${productMovementMoney(row.unitCost)}</td>` : ""}<td>${row.before}</td><td><strong>${row.after}</strong></td><td>${esc(row.employee)}</td><td>${badge(row.status || "—", row.status === "ملغاة" ? "gray" : "")}</td><td>${esc(row.note || "—")}</td><td>${row.document?.action ? `<button class="row-action" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}">فتح المستند</button>` : `<button class="row-action" data-action="product-movement-open-document" data-movement-id="${esc(row.id)}">عرض التفاصيل</button>`}</td></tr>`).join("") || `<tr><td colspan="${report.canSeeCost ? 15 : 14}" class="text-center muted">لا توجد حركات مطابقة للفلاتر المختارة.</td></tr>`}</tbody></table></div><div class="product-movement-pagination"><button class="btn ghost small" data-action="product-movement-page" data-page="${productMovementState.page - 1}" ${productMovementState.page <= 1 ? "disabled" : ""}>السابق</button><span>صفحة ${productMovementState.page} من ${pageCount} · ${report.rows.length} حركة</span><button class="btn ghost small" data-action="product-movement-page" data-page="${productMovementState.page + 1}" ${productMovementState.page >= pageCount ? "disabled" : ""}>التالي</button></div>`;
+}
+
+function renderProductMovementReport(bookId = productMovementState.bookId) {
+  if (bookId) productMovementState.bookId = bookId;
+  const report = productMovementReportData(productMovementState);
+  const quickRanges = [["today","اليوم"],["7","آخر 7 أيام"],["30","آخر 30 يومًا"],["month","الشهر الحالي"],["year","السنة الحالية"],["all","كل الحركات"]];
+  root.innerHTML = `<div class="section-title"><div><h2>حركة صنف</h2><p>تتبع الشراء والبيع والمرتجعات والتسويات والجرد مع الرصيد بعد كل حركة.</p></div><div class="actions"><button class="btn ghost" data-action="reports-main">كل التقارير</button>${report ? `<label class="movement-print-option"><input id="movement-print-prices" type="checkbox" ${productMovementState.showPrices ? "checked" : ""}> إظهار الأسعار${report.canSeeCost ? " والتكلفة" : ""}</label><button class="btn secondary" data-action="print-product-movement">طباعة التقرير</button><button class="btn" data-action="export-product-movement">CSV</button>` : ""}</div></div>
+    <article class="card product-movement-filters"><div class="form-grid three"><div class="form-field"><label>اسم الصنف</label><input id="movement-book-name" list="movement-book-names" value="${esc(report?.book.name || "")}" placeholder="اكتب اسم الصنف"><datalist id="movement-book-names">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.name)}">${esc(b.id)}</option>`).join("")}</datalist></div><div class="form-field"><label>الباركود</label><input id="movement-book-barcode" list="movement-book-barcodes" dir="ltr" value="${esc(report?.book.barcode || "")}" placeholder="امسح الباركود"><datalist id="movement-book-barcodes">${data.books.filter(b=>!b.deletedAt).map(b=>`<option value="${esc(b.barcode || "")}">${esc(b.name)}</option>`).join("")}</datalist></div><div class="form-field"><label>كود الصنف</label><select id="movement-book-id"><option value="">اختر الصنف أولًا</option>${productMovementBookOptions()}</select></div></div>
+    ${!report ? `<div class="empty-state"><div class="empty-icon">⌕</div><h3>اختر صنفًا لعرض الحركة</h3><p>لن يتم تحميل أي حركات قبل تحديد الصنف بالاسم أو الباركود أو الكود.</p></div>` : `<div class="movement-range-presets">${quickRanges.map(([value,label])=>`<button class="tab ${productMovementState.quickRange===value?"active":""}" data-action="product-movement-range" data-range="${value}">${label}</button>`).join("")}</div><div class="form-grid three movement-filter-grid"><div class="form-field"><label>من تاريخ</label><input id="movement-from" type="date" value="${esc(report.range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="movement-to" type="date" value="${esc(report.range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="movement-type">${[["all","الكل"],["purchase","مشتريات"],["sale","مبيعات"],["sale-return","مرتجعات بيع"],["purchase-return","مرتجعات شراء"],["adjustment","تسويات"],["count","جرد"],["opening","مخزون افتتاحي"],["cancelled","حركات ملغاة"]].map(([v,l])=>`<option value="${v}" ${productMovementState.type===v?"selected":""}>${l}</option>`).join("")}</select></div></div><details class="movement-advanced-filters" ${productMovementState.supplierId || productMovementState.customerId || productMovementState.employee || productMovementState.status ? "open" : ""}><summary>فلاتر إضافية</summary><div class="form-grid four"><div class="form-field"><label>المورد</label><select id="movement-supplier">${productMovementOptionList(report.allRows.filter(row=>row.supplierId).map(row=>getSupplier(row.supplierId)?.name || row.partyName), productMovementState.supplierId ? getSupplier(productMovementState.supplierId)?.name || productMovementState.supplierId : "", "كل الموردين")}</select></div><div class="form-field"><label>العميل</label><select id="movement-customer">${productMovementOptionList(report.allRows.filter(row=>row.customerId).map(row=>getCustomer(row.customerId)?.name || row.partyName), productMovementState.customerId ? getCustomer(productMovementState.customerId)?.name || productMovementState.customerId : "", "كل العملاء")}</select></div><div class="form-field"><label>الموظف</label><select id="movement-employee">${productMovementOptionList(report.allRows.map(row=>row.employee), productMovementState.employee, "كل الموظفين")}</select></div><div class="form-field"><label>الحالة</label><select id="movement-status">${productMovementOptionList(report.allRows.map(row=>row.status), productMovementState.status, "كل الحالات")}</select></div></div></details>`}</article>
+    ${report ? productMovementReportMarkup(report) : ""}`;
+  if (report) { const select = document.getElementById("movement-book-id"); if (select) select.value = report.book.id; }
+}
+
+function productMovementReportMarkup(report) {
+  const book = report.book; const inventory = productInventorySummary(book.id); const s = report.summary;
+  const image = book.image || book.imageUrl || book.coverImage || "";
+  return `<article class="card product-movement-product"><div class="product-movement-identity">${image ? `<img src="${esc(image)}" alt="${esc(book.name)}">` : `<div class="book-cover">${esc(book.name.charAt(0))}</div>`}<div><h3>${esc(book.name)}</h3><p><span dir="ltr">${esc(book.id)}</span> · <span dir="ltr">${esc([book.barcode,book.extraBarcode].filter(Boolean).join("، ") || "غير متاح")}</span></p><span>${esc(book.category || "غير متاح")}</span></div></div><div class="product-movement-product-grid"><div><span>سعر الغلاف</span><strong>${productMovementMoney(productCoverPrice(book))}</strong></div><div><span>سعر البيع الحالي</span><strong>${productMovementMoney(productDefaultSellingPrice(book))}</strong></div><div><span>الرصيد الحالي</span><strong>${Number(book.stock || 0)}</strong></div><div><span>حد إعادة الطلب</span><strong>${Number(book.reorder || 0)}</strong></div>${report.canSeeCost ? `<div><span>آخر سعر شراء</span><strong>${inventory.lastPurchaseCost ? money(inventory.lastPurchaseCost) : "غير متاح"}</strong></div><div><span>متوسط التكلفة</span><strong>${inventory.hasIncompleteCost ? "غير متاح" : money(inventory.averageInventoryCost)}</strong></div><div><span>قيمة المخزون</span><strong>${inventory.hasIncompleteCost ? "غير متاح" : money(inventory.currentInventoryValue)}</strong></div>` : ""}</div></article>
+  ${s.mismatch ? `<div class="alert-item warning"><div class="alert-badge gold">!</div><div><strong>يوجد اختلاف يحتاج مراجعة في سجل حركة الصنف</strong><span>المعادلة تعطي ${s.closing} بينما آخر رصيد مسجل ${s.expected}. لم يتم تعديل المخزون.</span></div></div>` : ""}
+  <div class="stats-grid product-movement-summary">${statCard("رصيد أول المدة",s.opening,"قبل أول حركة في الفترة","↦")}${statCard("الكمية المشتراة",s.purchaseQty,productMovementMoney(s.purchaseValue),"+")}${statCard("الكمية المباعة",s.saleQty,productMovementMoney(s.saleValue),"−","blue")}${statCard("مرتجعات البيع",s.saleReturns,"كمية داخلة","↶")}${statCard("مرتجعات الشراء",s.purchaseReturns,"كمية خارجة","↶","red")}${statCard("تسويات بالزيادة",s.adjustmentIn,"تشمل فروق الجرد","+")}${statCard("تسويات بالنقص",s.adjustmentOut,"تشمل فروق الجرد","−","red")}${statCard("رصيد آخر المدة",s.closing,"أول المدة + الداخل - الخارج","=")}${report.canSeeCost ? statCard("تكلفة البضاعة المباعة",s.cogs===null?"غير متاح":money(s.cogs),"حسب تكلفة الفاتورة المسجلة","▤","blue")+statCard("مجمل ربح الصنف",s.grossProfit===null?"غير متاح":money(s.grossProfit),"المبيعات - التكلفة","↗","gold") : ""}</div>
+  <article class="card"><div class="card-header"><div><h3>سجل حركة الصنف</h3><p>مرتب ${productMovementState.sort==="desc"?"من الأحدث إلى الأقدم":"من الأقدم إلى الأحدث"}.</p></div><select id="movement-sort" class="filter-select"><option value="desc" ${productMovementState.sort==="desc"?"selected":""}>الأحدث أولًا</option><option value="asc" ${productMovementState.sort==="asc"?"selected":""}>الأقدم أولًا</option></select></div>${productMovementTable(report)}</article>`;
+}
+
+function productMovementPrintMarkup(report) {
+  const showPrices = productMovementState.showPrices;
+  const priceHeads = showPrices ? `<th>سعر الوحدة</th><th>القيمة</th>${report.canSeeCost ? "<th>التكلفة</th>" : ""}` : "";
+  const rows = report.rows.map(row => `<tr><td>${esc(dateTimeLabel(row.date))}</td><td>${esc(productMovementTypeLabel(row.kind, row.type))}</td><td dir="ltr">${esc(row.documentId || "—")}</td><td>${esc(row.partyName || "—")}</td><td>${row.incoming || "—"}</td><td>${row.outgoing || "—"}</td>${showPrices ? `<td>${productMovementMoney(row.unitPrice)}</td><td>${productMovementMoney(row.totalValue)}</td>${report.canSeeCost ? `<td>${productMovementMoney(row.unitCost)}</td>` : ""}` : ""}<td>${row.before}</td><td>${row.after}</td><td>${esc(row.employee)}</td><td>${esc(row.note || "—")}</td></tr>`).join("");
+  const periodRows = report.allRows.filter(row=>(!report.range.from || String(row.date).slice(0,10)>=report.range.from)&&(!report.range.to || String(row.date).slice(0,10)<=report.range.to));
+  return `<table><tbody><tr><th>التقرير</th><td>حركة صنف</td><th>الصنف</th><td>${esc(report.book.name)}</td></tr><tr><th>كود الصنف</th><td dir="ltr">${esc(report.book.id)}</td><th>الباركود</th><td dir="ltr">${esc(report.book.barcode || "—")}</td></tr><tr><th>الفترة</th><td>${esc(report.range.from || "البداية")} — ${esc(report.range.to || "الآن")}</td><th>طبع بواسطة</th><td>${esc(currentUser?.name || currentUser?.username || "النظام")} · ${esc(new Date().toLocaleString("ar-EG"))}</td></tr></tbody></table><table><tbody><tr><th>رصيد أول المدة</th><td>${report.summary.opening}</td><th>إجمالي الداخل</th><td>${periodRows.reduce((sum,row)=>sum+row.incoming,0)}</td><th>إجمالي الخارج</th><td>${periodRows.reduce((sum,row)=>sum+row.outgoing,0)}</td><th>رصيد آخر المدة</th><td>${report.summary.closing}</td></tr></tbody></table><table><thead><tr><th>التاريخ</th><th>الحركة</th><th>المستند</th><th>الطرف/السبب</th><th>داخل</th><th>خارج</th>${priceHeads}<th>قبل</th><th>بعد</th><th>الموظف</th><th>ملاحظات</th></tr></thead><tbody>${rows || `<tr><td colspan="12">لا توجد حركات مطابقة.</td></tr>`}</tbody></table>`;
+}
+
+function printProductMovementReport() {
+  const report = productMovementReportData(productMovementState);
+  if (!report) return toast("اختر صنفًا أولًا.", "error");
+  printHtml(`حركة صنف — ${report.book.name}`, productMovementPrintMarkup(report), "a4");
+}
+
+function exportProductMovementCsv() {
+  const report = productMovementReportData(productMovementState);
+  if (!report) return toast("اختر صنفًا أولًا.", "error");
+  const priceHeads = productMovementState.showPrices ? ["سعر الوحدة","القيمة", ...(report.canSeeCost ? ["تكلفة الوحدة"] : [])] : [];
+  const rows = [["التقرير","حركة صنف"],["الصنف",report.book.name],["كود الصنف",report.book.id],["الباركود",report.book.barcode || ""],["من",report.range.from || "البداية"],["إلى",report.range.to || "الآن"],["رصيد أول المدة",report.summary.opening],["رصيد آخر المدة",report.summary.closing],[],["التاريخ والوقت","نوع الحركة","المستند","الطرف / السبب","داخل","خارج",...priceHeads,"قبل","بعد","الموظف","الحالة","ملاحظات"]];
+  report.rows.forEach(row => rows.push([dateTimeLabel(row.date),productMovementTypeLabel(row.kind,row.type),row.documentId,row.partyName,row.incoming||"",row.outgoing||"",...(productMovementState.showPrices ? [row.unitPrice ?? "",row.totalValue ?? "",...(report.canSeeCost ? [row.unitCost ?? ""] : [])] : []),row.before,row.after,row.employee,row.status,row.note]));
+  const csv = "\uFEFF" + rows.map(row => row.map(value => `"${String(value ?? "").replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
+  link.download = `product-movement-${report.book.id}-${today()}.csv`;
+  link.click(); URL.revokeObjectURL(link.href);
+}
+
+function runProductMovementReportTests() {
+  const originalUser = currentUser; const results = []; const check = (name, condition) => results.push({ name, ok:Boolean(condition) });
+  data.books.filter(book=>!book.deletedAt).forEach(book => { const report = productMovementReportData({ ...productMovementState, bookId:book.id, quickRange:"all", from:"", to:"", type:"all", supplierId:"", customerId:"", employee:"", status:"", sort:"asc" }); check(`معادلة الرصيد: ${book.name}`, !report || report.summary.opening + report.allRows.reduce((sum,row)=>sum+row.incoming-row.outgoing,0) === report.summary.closing); });
+  currentUser = { id:"QA-CASHIER", username:"qa-cashier", name:"كاشير اختبار", role:"كاشير" };
+  const sampleBook = data.books.find(book=>!book.deletedAt);
+  check("إخفاء التكلفة عن الكاشير", !sampleBook || productMovementReportData({ ...productMovementState, bookId:sampleBook.id })?.canSeeCost === false);
+  currentUser = originalUser;
+  check("حجم الصفحة 25 حركة", PRODUCT_MOVEMENT_PAGE_SIZE === 25);
+  check("جميع الحركات مصنفة", !sampleBook || productMovementRows(sampleBook.id).every(row=>Boolean(row.kind && row.type)));
+  return results;
+}
+window.runProductMovementReportTests = runProductMovementReportTests;
+
 function renderReports() {
   const active = activeSalesList();
   const sales = active.reduce((s, i) => s + i.total, 0);
@@ -3360,7 +3626,7 @@ function renderReports() {
       <div class="actions"><button class="btn ghost" onclick="window.print()">PDF / طباعة</button><button class="btn secondary" data-action="whatsapp-report">إرسال عبر WhatsApp</button></div>
     </div>
     ${monthlySalesOverviewMarkup(active)}
-    <div class="report-grid">${reports.map((r, index) => `<article class="card report-card"><div class="report-icon">${r[1]}</div><h3>${r[0]}</h3><p>${r[2]}</p><div class="row-actions" style="margin-top:12px"><button class="btn ghost small" data-action="open-report" data-report="${index}">فتح</button><button class="btn ghost small" data-action="export-report" data-report="${index}">CSV</button></div></article>`).join("")}</div>`;
+    <div class="report-grid"><article class="card report-card featured-report"><div class="report-icon">↕</div><h3>حركة صنف</h3><p>عرض جميع عمليات الشراء والبيع والمرتجعات والتسويات والجرد لصنف محدد، مع الرصيد بعد كل حركة.</p><div class="row-actions"><button class="btn" data-action="open-product-movement">فتح التقرير</button></div></article>${reports.map((r, index) => `<article class="card report-card"><div class="report-icon">${r[1]}</div><h3>${r[0]}</h3><p>${r[2]}</p><div class="row-actions" style="margin-top:12px"><button class="btn ghost small" data-action="open-report" data-report="${index}">فتح</button><button class="btn ghost small" data-action="export-report" data-report="${index}">CSV</button></div></article>`).join("")}</div>`;
 }
 
 function renderHr() {
@@ -3922,7 +4188,10 @@ function render() {
   };
   document.getElementById("page-title").textContent = meta[currentView][0];
   document.getElementById("page-kicker").textContent = meta[currentView][1];
-  document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === currentView));
+  document.querySelectorAll(".nav-item").forEach(item => {
+    const partyMatch = item.dataset.view !== "parties" || !item.dataset.partyTabTarget || item.dataset.partyTabTarget === partyTab;
+    item.classList.toggle("active", item.dataset.view === currentView && partyMatch);
+  });
   ({
     dashboard: renderDashboard,
     books: renderBooks,
@@ -3939,8 +4208,20 @@ function render() {
     settings: renderSettings
   })[currentView]();
   updateNotificationBadge();
+  updateSidebarBadges();
   scheduleStickyTableScrollbar();
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function updateSidebarBadges() {
+  const pendingOrders = (data.onlineOrders || []).filter(item => !item.deletedAt && !["تم التسليم", "ملغي"].includes(item.status)).length;
+  const pendingShipping = (data.shipments || []).filter(item => !item.deletedAt && !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status)).length;
+  [["nav-orders-badge", pendingOrders], ["nav-shipping-badge", pendingShipping]].forEach(([id, count]) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.textContent = count;
+    element.hidden = count === 0;
+  });
 }
 
 function navigate(view) {
@@ -4016,7 +4297,7 @@ function addBookModal(book = null) {
   const summary = book ? productInventorySummary(book.id) : null;
   const coverPrice = Number(book?.coverPrice ?? book?.purchaseListPrice ?? book?.price ?? 0);
   const defaultSellingPrice = Number(book?.defaultSellingPrice ?? book?.price ?? 0);
-  const lastPurchaseCost = Number(summary?.lastPurchaseCost ?? book?.lastPurchasePrice ?? book?.cost ?? 0);
+  const lastPurchaseCost = summary?.lastPurchaseCost;
   const selectedType = itemTypeLabel(book);
   const selectedUnit = itemUnitLabel(book);
   openModal(book ? "تعديل بيانات الصنف" : "إضافة صنف جديد", "الأصناف والمخزون", `
@@ -4035,7 +4316,7 @@ function addBookModal(book = null) {
         <div class="form-field"><label class="required">المورد الأساسي</label><select name="supplierId" required>${data.suppliers.map(s => `<option value="${s.id}" ${book?.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
         <div class="form-field"><label class="required">سعر الغلاف</label><input name="coverPrice" type="number" min="0" step="0.01" required value="${coverPrice || ""}" placeholder="السعر المطبوع على المنتج"></div>
         <div class="form-field"><label class="required">سعر البيع الافتراضي</label><input name="defaultSellingPrice" type="number" min="0" step="0.01" required value="${defaultSellingPrice || ""}"></div>
-        <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" type="number" min="0" step="0.01" readonly value="${lastPurchaseCost || ""}"><small>لا يُدخل هنا. يتم تحديثه من آخر فاتورة شراء أو من الرصيد الافتتاحي.</small></div>
+        <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" readonly value="${lastPurchaseCost === null || lastPurchaseCost === undefined ? "غير متاح" : lastPurchaseCost}"><small>مشتق من آخر فاتورة شراء أو استلام معتمدة، ولا يمكن تعديله يدويًا.</small></div>
         <div class="form-field"><label>الرصيد الافتتاحي</label><input name="stock" type="number" value="${book?.stock ?? 0}"></div>
         <div class="form-field"><label>حد إعادة الطلب</label><input name="reorder" type="number" min="0" value="${book?.reorder ?? 5}"></div>
         <div class="form-field"><label>نوع الملكية</label><select name="owned"><option value="true" ${book?.owned !== false ? "selected" : ""}>مملوك</option><option value="false" ${book?.owned === false ? "selected" : ""}>أمانة / تصريف</option></select></div>
@@ -4313,7 +4594,23 @@ function employeeModal(item = null) {
 
 document.getElementById("main-nav").addEventListener("click", event => {
   const item = event.target.closest("[data-view]");
-  if (item) navigate(item.dataset.view);
+  if (item) {
+    if (item.dataset.partyTabTarget) partyTab = item.dataset.partyTabTarget;
+    navigate(item.dataset.view);
+  }
+});
+document.getElementById("sidebar-new-sale").addEventListener("click", () => {
+  if (!canView("sales") || !requireAction("new-sale-invoice")) return;
+  resetSaleDraft();
+  salesScreenMode = "invoice";
+  currentView = "sales";
+  render();
+  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 50);
+});
+document.getElementById("sidebar-collapse").addEventListener("click", () => {
+  const shell = document.getElementById("app-shell");
+  const collapsed = shell.classList.toggle("sidebar-collapsed");
+  localStorage.setItem("dotcom-sidebar-collapsed", collapsed ? "1" : "0");
 });
 document.getElementById("login-form").addEventListener("submit", event => {
   event.preventDefault();
@@ -4326,6 +4623,22 @@ document.getElementById("menu-btn").addEventListener("click", () => document.get
 document.getElementById("notification-btn").addEventListener("click", showNotificationCenter);
 document.getElementById("close-modal").addEventListener("click", closeModal);
 modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !modal.hidden) {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (!(event.metaKey || event.ctrlKey) || currentView !== "sales" || salesScreenMode !== "invoice") return;
+  if (event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    document.getElementById("sale-book-search")?.focus();
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (requireAction("save-sale")) saveSale({ printAfter: false });
+  }
+});
 
 document.addEventListener("pointerover", event => {
   const wrap = event.target.closest?.(".table-wrap");
@@ -4457,7 +4770,8 @@ root.addEventListener("click", event => {
     renderPurchases();
   }
   if (action === "new-purchase-document") resetPurchaseDraft();
-  if (action === "save-sale") saveSale();
+  if (action === "save-sale") saveSale({ printAfter: target.dataset.printAfter === "1" });
+  if (action === "toggle-sale-options") document.getElementById("sale-extra-options")?.setAttribute("open", "");
   if (action === "view-sale") viewSale(target.dataset.id);
   if (action === "return-sale") saleReturnModal(target.dataset.id);
   if (action === "close-sales-day") closeSalesDay();
@@ -4465,6 +4779,18 @@ root.addEventListener("click", event => {
   if (action === "limited-edit-sale") limitedEditSale(target.dataset.id);
   if (action === "save-purchase") savePurchase();
   if (action === "show-sales-list") showSalesList();
+  if (action === "resume-sale-invoice") { salesScreenMode = "invoice"; renderSales(); }
+  if (action === "clear-sales-search") {
+    const search = document.getElementById("old-sales-search");
+    const status = document.getElementById("old-sales-status");
+    if (search) search.value = "";
+    if (status) status.value = "";
+    updateSalesHistorySearch();
+    search?.focus();
+  }
+  if (action === "edit-sale-payment") salePaymentModal(target.dataset.id);
+  if (action === "cancel-sale") cancelSale(target.dataset.id);
+  if (action === "delete-sale") deleteSale(target.dataset.id);
   if (action === "show-purchases-list") showPurchasesList();
   if (action === "view-purchase") viewPurchase(target.dataset.id);
   if (action === "receive-purchase") receivePurchase(target.dataset.id);
@@ -4504,8 +4830,28 @@ root.addEventListener("click", event => {
   if (action === "customize-role") customizeRole(target.dataset.role);
   if (action === "customize-user") customizeUser(target.dataset.username);
   if (action === "open-report") openReport(Number(target.dataset.report));
+  if (action === "open-product-movement") {
+    productMovementState = { ...productMovementState, bookId:target.dataset.id || "", page:1 };
+    currentView = "reports";
+    renderProductMovementReport(productMovementState.bookId);
+  }
+  if (action === "product-movement-range") refreshProductMovementReport({ quickRange:target.dataset.range || "all", page:1 });
+  if (action === "product-movement-page") refreshProductMovementReport({ page:Number(target.dataset.page || 1) });
+  if (action === "print-product-movement") printProductMovementReport();
+  if (action === "export-product-movement") exportProductMovementCsv();
+  if (action === "product-movement-open-document") {
+    const report = productMovementReportData(productMovementState);
+    const row = report?.allRows.find(item => item.id === target.dataset.movementId);
+    if (!row) toast("تعذر العثور على تفاصيل الحركة.", "error");
+    else if (row.document?.kind === "sale") viewSale(row.document.record.id);
+    else if (row.document?.kind === "purchase") viewPurchase(row.document.record.id);
+    else if (row.document?.kind === "return") viewReturn(row.document.record.id || row.document.record.returnNo);
+    else viewBook(productMovementState.bookId);
+  }
+  if (action === "reports-main") renderReports();
   if (action === "export-report") exportReportCsv(Number(target.dataset.report));
   if (action === "print-sale") printSale(target.dataset.id, target.dataset.format || "a4");
+  if (action === "print-purchase") printPurchase(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-voucher") printVoucher(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-online-order") printOnlineOrder(target.dataset.id, target.dataset.format || "a4");
   if (action === "print-statement") printStatement(target.dataset.id, target.dataset.kind);
@@ -4595,6 +4941,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
+  if (event.target.id === "old-sales-search") updateSalesHistorySearch();
   if (event.target.id === "sale-book-search") {
     const suggestions = document.getElementById("sale-book-suggestions");
     const matches = searchSaleBooks(event.target.value);
@@ -4656,6 +5003,24 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   const index = Number(event.target.dataset.index);
+  if (event.target.id === "movement-book-id") return selectProductMovementBook("id", event.target.value);
+  if (event.target.id === "movement-book-name") return selectProductMovementBook("name", event.target.value);
+  if (event.target.id === "movement-book-barcode") return selectProductMovementBook("barcode", event.target.value);
+  if (event.target.id === "movement-from") return refreshProductMovementReport({ from:event.target.value, quickRange:"custom", page:1 });
+  if (event.target.id === "movement-to") return refreshProductMovementReport({ to:event.target.value, quickRange:"custom", page:1 });
+  if (event.target.id === "movement-type") return refreshProductMovementReport({ type:event.target.value, page:1 });
+  if (event.target.id === "movement-employee") return refreshProductMovementReport({ employee:event.target.value, page:1 });
+  if (event.target.id === "movement-status") return refreshProductMovementReport({ status:event.target.value, page:1 });
+  if (event.target.id === "movement-sort") return refreshProductMovementReport({ sort:event.target.value, page:1 });
+  if (event.target.id === "movement-print-prices") { productMovementState.showPrices = event.target.checked; return; }
+  if (event.target.id === "movement-supplier") {
+    const supplier = data.suppliers.find(item => item.name === event.target.value);
+    return refreshProductMovementReport({ supplierId:supplier?.id || "", page:1 });
+  }
+  if (event.target.id === "movement-customer") {
+    const customer = data.customers.find(item => item.name === event.target.value);
+    return refreshProductMovementReport({ customerId:customer?.id || "", page:1 });
+  }
   if (event.target.classList.contains("sale-book")) {
     const book = getBook(event.target.value);
     const duplicateIndex = draftSale.lines.findIndex((line, lineIndex) => lineIndex !== index && line.bookId === event.target.value);
@@ -4724,6 +5089,7 @@ root.addEventListener("change", event => {
   if (event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-status") filterOnlineOrders();
+  if (event.target.id === "old-sales-status") updateSalesHistorySearch();
   if (event.target.id === "omni-channel-filter") {
     selectedOmniChannelAccountId = event.target.value;
     selectedOmniConversationId = "";
@@ -4734,6 +5100,18 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "print-sale") {
+    printSale(appAction.dataset.id, appAction.dataset.format || "a4");
+    return;
+  }
+  if (appAction?.dataset.action === "print-voucher") {
+    printVoucher(appAction.dataset.id, appAction.dataset.format || "a4");
+    return;
+  }
+  if (appAction?.dataset.action === "print-statement") {
+    printStatement(appAction.dataset.id, appAction.dataset.kind);
+    return;
+  }
   if (appAction?.dataset.action === "party-voucher") {
     partyVoucherModal(appAction.dataset.voucherType, appAction.dataset.kind || "", appAction.dataset.id || "");
     return;
@@ -5280,8 +5658,8 @@ modalBody.addEventListener("submit", async event => {
       defaultSellingPrice: Number(formData.defaultSellingPrice || 0),
       purchaseListPrice: Number(formData.coverPrice || 0),
       purchaseDiscount: 0,
-      lastPurchasePrice: Number(formData.lastPurchasePrice || getBook(form.dataset.editId)?.lastPurchasePrice || getBook(form.dataset.editId)?.cost || 0),
-      cost: Number(formData.lastPurchasePrice || getBook(form.dataset.editId)?.cost || 0),
+      lastPurchasePrice: latestApprovedPurchaseCost(form.dataset.editId) ?? null,
+      cost: Number(getBook(form.dataset.editId)?.cost || 0),
       price: Number(formData.defaultSellingPrice || 0),
       stock: Number(formData.stock),
       reorder: Number(formData.reorder),
@@ -5847,7 +6225,8 @@ function convertOnlineOrderToSale(id, options = {}) {
   for (const computed of totals.lines) {
     const book = getBook(computed.bookId);
     if (!book) return toast("أحد أصناف الطلب غير موجود.", "error");
-    if (!data.settings.allowNegativeStock && book.stock < computed.qty) return toast(`الرصيد غير كافٍ: ${book.name}`, "error");
+    const stockError = negativeStockError(book, computed.qty);
+    if (stockError) return toast(stockError, "error");
     const netUnit = computed.qty > 0 ? computed.finalNet / computed.qty : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن تحويل الطلب: صافي سعر «${book.name}» (${money(netUnit)}) أقل من متوسط التكلفة (${money(summary.averageInventoryCost)}).`, "error");
@@ -5868,6 +6247,7 @@ function convertOnlineOrderToSale(id, options = {}) {
     createdByUserId: actor.userId, createdByName: actor.name, createdByUsername: actor.username, createdByRole: actor.role,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null
   };
+  sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   sale.lines.forEach(line => {
     const book = getBook(line.bookId);
     const costing = allocateInventoryFIFO(book.id, line.qty);
@@ -5964,7 +6344,7 @@ function shipmentFromOrderModal(order, sale) {
     </form>`);
 }
 
-function saveSale() {
+function saveSale({ printAfter = false } = {}) {
   const totals = saleTotals();
   const validEntries = draftSale.lines
     .map((line, index) => ({ line, computed: totals.lines[index] || {} }))
@@ -5979,7 +6359,8 @@ function saveSale() {
     const netUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.price) * Number(line.qty || 0))) / Number(line.qty || 1) : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن بيع «${book.name}» بأقل من متوسط التكلفة.`, "error");
-    if (!data.settings.allowNegativeStock && book.stock < line.qty) return toast(`الرصيد غير كافٍ للصنف آ«${book.name}آ».`, "error");
+    const stockError = negativeStockError(book, line.qty);
+    if (stockError) return toast(stockError, "error");
   }
   const payment = document.getElementById("sale-payment").value;
   const paid = Math.max(0, Math.min(Number(draftSale.paid || 0), totals.total));
@@ -6019,6 +6400,7 @@ function saveSale() {
     updatedAt: new Date().toISOString(),
     deletedAt: null
   };
+  sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   validEntries.forEach(({ line }, index) => {
     const book = getBook(line.bookId);
     const costing = allocateInventoryFIFO(book.id, line.qty);
@@ -6042,6 +6424,8 @@ function saveSale() {
   salesScreenMode = "main";
   renderSales();
   toast(`تم اعتماد الفاتورة ${sale.id} وتحديث المخزون والحسابات.`);
+  if (printAfter) setTimeout(() => printSale(sale.id, "thermal"), 80);
+  return sale;
 }
 
 function savePurchase() {
@@ -6142,14 +6526,25 @@ function savePurchase() {
 }
 
 function showSalesList() {
-  openModal("البحث في الفواتير القديمة", "المبيعات", `
+  const hasUnsavedInvoice = salesScreenMode === "invoice" && draftSale.lines.some(line => line.bookId);
+  if (hasUnsavedInvoice && !confirm("توجد فاتورة غير محفوظة. سيتم الاحتفاظ بها عند فتح الفواتير السابقة. هل تستمر؟")) return;
+  salesScreenMode = "history";
+  renderSales();
+}
+
+function renderSalesHistory() {
+  root.innerHTML = `
+    <div class="section-title"><div><h2>الفواتير السابقة</h2><p>بحث موحد برقم الفاتورة أو العميل أو الهاتف أو التتبع.</p></div><div class="actions"><button class="btn" data-action="resume-sale-invoice">${draftSale.lines.some(line => line.bookId) ? "متابعة الفاتورة الحالية" : "فاتورة جديدة"}</button><button class="btn ghost" data-action="sales-main">مركز المبيعات</button></div></div>
+    <div class="sales-tabs" role="tablist"><button class="tab" data-action="sales-main">ملخص اليوم</button><button class="tab" data-action="resume-sale-invoice">فاتورة جديدة</button><button class="tab active" aria-selected="true">الفواتير السابقة</button></div>
+    <article class="card sales-history-card">
     <div class="toolbar" style="padding:0 0 15px;border-bottom:0">
       <div class="search"><input id="old-sales-search" autocomplete="off" placeholder="ابحث برقم الفاتورة، كود تتبع الشحنة، رقم الموبايل أو اسم العميل..."></div>
       <select id="old-sales-status" class="filter-select"><option value="">كل الحالات</option><option>معتمدة</option><option>مرتجع جزئي</option><option>مرتجع</option><option>ملغاة</option></select>
-      <button class="btn ghost" type="button" data-modal-action="clear-sales-search">مسح البحث</button>
+      <button class="btn ghost" type="button" data-action="clear-sales-search">مسح البحث</button>
     </div>
-    <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge blue">⌕</div><div><strong>بحث موحد وسريع</strong><span>يمكن كتابة جزء من الاسم أو الرقم، ولا يلزم إدخال البيانات كاملة.</span></div><span class="badge blue" id="old-sales-count">${data.sales.length} فاتورة</span></div>
-    <div class="table-wrap" id="old-sales-results">${salesHistoryTable(data.sales.slice().reverse())}</div>`);
+    <div class="sales-history-count"><strong id="old-sales-count">${data.sales.length} فاتورة</strong><span>يمكن كتابة جزء من الاسم أو الرقم.</span></div>
+    <div class="table-wrap" id="old-sales-results">${salesHistoryTable(data.sales.slice().reverse())}</div>
+    </article>`;
 }
 
 function normalizeInvoiceSearch(value) {
@@ -6209,7 +6604,7 @@ function salesHistoryTable(list) {
         <td class="money">${money(sale.paid ?? (sale.remaining ? sale.total - sale.remaining : sale.total))}</td>
         <td class="money">${money(sale.remaining || 0)}</td>
         <td>${badge(sale.status, ["ملغاة","مرتجع"].includes(sale.status) ? "danger" : sale.status === "مرتجع جزئي" ? "warning" : "")}</td>
-        <td><div class="row-actions"><button class="row-action" data-modal-action="view-sale" data-id="${sale.id}">عرض</button>${shipment ? `<button class="row-action" data-modal-action="view-linked-shipment" data-id="${shipment.id}">الشحنة</button>` : ""}<button class="row-action" data-modal-action="edit-sale-payment" data-id="${sale.id}">السداد</button>${!["ملغاة","مرتجع"].includes(sale.status) ? `<button class="row-action" data-modal-action="return-sale" data-id="${sale.id}">مرتجع</button>` : ""}<button class="row-action text-danger" data-modal-action="${sale.status === "ملغاة" ? "delete-sale" : "cancel-sale"}" data-id="${sale.id}">${sale.status === "ملغاة" ? "حذف" : "إلغاء"}</button></div></td>
+        <td><div class="row-actions invoice-row-actions"><button class="row-action" data-action="view-sale" data-id="${sale.id}">عرض</button><button class="row-action" data-action="print-sale" data-id="${sale.id}">طباعة</button><details class="table-actions-menu"><summary class="row-action">المزيد <svg class="ui-icon"><use href="assets/icons/ui-icons.svg#more"></use></svg></summary><div class="table-actions-popover"><button class="row-action" data-action="edit-sale-payment" data-id="${sale.id}">تحصيل</button>${!["ملغاة","مرتجع"].includes(sale.status) ? `<button class="row-action" data-action="return-sale" data-id="${sale.id}">مرتجع</button>` : ""}${shipment ? `<button class="row-action" data-action="view-shipment" data-id="${shipment.id}">فتح الشحنة</button>` : sale.onlineOrderId ? `<button class="row-action" data-action="create-order-shipment" data-id="${sale.onlineOrderId}">إنشاء شحنة</button>` : ""}<button class="row-action text-danger" data-action="${sale.status === "ملغاة" ? "delete-sale" : "cancel-sale"}" data-id="${sale.id}">${sale.status === "ملغاة" ? "حذف" : "إلغاء"}</button></div></details></div></td>
       </tr>`;
     }).join("")}
   </tbody></table>`;
@@ -6310,7 +6705,7 @@ function preparePurchaseForBook(id) {
   };
   closeModal();
   navigate("purchases");
-  toast(`تم تجهيز مستند شراء للصنف آ«${book.name}آ» بكمية مقترحة ${suggestedQty}.`);
+  toast(`تم تجهيز مستند شراء للصنف «${book.name}» بكمية مقترحة ${suggestedQty}.`);
 }
 
 function adjustStock(id) {
@@ -6517,6 +6912,36 @@ function printSale(id, format = "a4") {
     <div class="sign"><span>توقيع العميل: ............</span><span>تم البيع بواسطة: ${esc(saleCreatedByName(sale))}</span></div>
   `, format);
   toast("تم تجهيز الفاتورة للطباعة.");
+}
+
+function printPurchase(id, format = "a4") {
+  const purchase = data.purchases.find(item => item.id === id);
+  if (!purchase) return toast("لم يتم العثور على مستند الشراء.", "error");
+  const supplier = getSupplier(purchase.supplierId);
+  const lines = purchase.lines || [];
+  const linesMarkup = lines.map((line, index) => {
+    const qty = Number(line.qty || line.quantity || 0);
+    const coverPrice = Number(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)) ?? 0);
+    const discount = Number(line.supplierDiscountPercent ?? line.discount ?? 0);
+    const unitCost = Number(line.unitPurchaseCost ?? line.cost ?? 0);
+    const totalCost = Number(line.totalCost ?? purchaseLineNet(line, qty) ?? unitCost * qty);
+    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${qty.toLocaleString("ar-EG")}</td><td>${money(coverPrice)}</td><td>${discount.toLocaleString("ar-EG")}%</td><td>${money(unitCost)}</td><td>${money(totalCost)}</td></tr>`;
+  }).join("");
+  printHtml(`فاتورة مشتريات ${purchase.id}`, `
+    <table><tbody>
+      <tr><th>رقم المستند</th><td dir="ltr">${esc(purchase.id)}</td><th>فاتورة المورد</th><td>${esc(purchase.supplierInvoiceNumber || "—")}</td></tr>
+      <tr><th>المورد</th><td>${esc(supplier?.name || "—")}</td><th>التاريخ</th><td>${esc(dateTimeLabel(purchase.createdAt || purchase.date))}</td></tr>
+      <tr><th>نوع المستند</th><td>${esc(purchase.type || "شراء")}</td><th>الحالة</th><td>${esc(purchase.status || "—")}</td></tr>
+    </tbody></table>
+    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="7">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
+    <table><tbody>
+      <tr><th>الإجمالي</th><td>${money(purchase.total || 0)}</td><th>المدفوع</th><td>${money(purchase.paid || 0)}</td></tr>
+      <tr><th>المتبقي</th><td>${money(purchase.remaining || 0)}</td><th>الشحن / مصروفات إضافية</th><td>${money(purchase.shipping || 0)}</td></tr>
+      <tr><th>ملاحظات</th><td colspan="3">${esc(purchase.notes || "—")}</td></tr>
+    </tbody></table>
+    <div class="sign"><span>توقيع المورد: ....................</span><span>استلم بواسطة: ${esc(currentUser?.name || currentUser?.username || "النظام")}</span></div>
+  `, format);
+  toast("تم تجهيز فاتورة المشتريات للطباعة.");
 }
 
 function printVoucher(id, format = "a4") {
@@ -6730,7 +7155,7 @@ function deleteBook(id) {
   if (!book) return;
   const used = data.sales.some(sale => sale.lines?.some(line => line.bookId === id)) || data.purchases.some(purchase => purchase.lines?.some(line => line.bookId === id));
   if (used) return toast("لا يمكن حذف صنف مرتبط بفواتير. يمكنك تعديل بياناته أو تصفير رصيده.", "error");
-  if (!confirm(`هل تريد حذف الصنف آ«${book.name}آ» نهائيًا؟`)) return;
+  if (!confirm(`هل تريد حذف الصنف «${book.name}» نهائيًا؟`)) return;
   book.deletedAt = new Date().toISOString();
   saveData("حذف صنف", "الأصناف", id);
   renderBooks();
@@ -6745,7 +7170,7 @@ function deleteParty(id, kind) {
   const usedByReceipt = data.receipts.some(row => row.partyKind === kind && row.partyId === id);
   const used = usedByReceipt || (isCustomer ? data.sales.some(row => row.customerId === id) : data.purchases.some(row => row.supplierId === id) || data.books.some(row => row.supplierId === id));
   if (used) return toast(`لا يمكن حذف ${isCustomer ? "عميل" : "مورد"} مرتبط بحركات أو أصناف.`, "error");
-  if (!confirm(`هل تريد حذف آ«${item.name}»؟`)) return;
+  if (!confirm(`هل تريد حذف «${item.name}»؟`)) return;
   item.deletedAt = new Date().toISOString();
   saveData("حذف طرف", isCustomer ? "العملاء" : "الموردون", id);
   renderParties();
@@ -6810,7 +7235,7 @@ function viewShipment(id) {
 */
 function deleteShipment(id) {
   const item = data.shipments.find(row => row.id === id);
-  if (!item || !confirm(`هل تريد حذف الشحنة ${id}طں`)) return;
+  if (!item || !confirm(`هل تريد حذف الشحنة ${id}؟`)) return;
   item.deletedAt = new Date().toISOString();
   const sale = data.sales.find(row => row.id === item.invoiceId || row.id === item.orderId);
   const order = data.onlineOrders.find(row => row.id === item.onlineOrderId);
@@ -7084,7 +7509,7 @@ function deleteCash(id) {
   const item = data.cash.find(row => row.id === id);
   if (!item) return;
   if (isLockedCash(item)) return toast("هذه حركة تلقائية مرتبطة بمستند. ألغِ الفاتورة أو الإيصال الأصلي بدل حذف القيد.", "error");
-  if (!confirm(`هل تريد حذف الحركة المالية ${id}طں`)) return;
+  if (!confirm(`هل تريد حذف الحركة المالية ${id}؟`)) return;
   const actor = actorSnapshot();
   item.deletedAt = new Date().toISOString();
   item.deletedBy = actor.name;
@@ -7110,7 +7535,7 @@ function viewEmployee(id) {
 
 function deleteEmployee(id) {
   const item = data.employees.find(row => row.id === id);
-  if (!item || !confirm(`هل تريد حذف ملف الموظف آ«${item.name}»؟`)) return;
+  if (!item || !confirm(`هل تريد حذف ملف الموظف «${item.name}»؟`)) return;
   item.deletedAt = new Date().toISOString();
   saveData("حذف موظف", "الموظفون", id);
   renderHr();
@@ -7749,7 +8174,7 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     const sourceLine = returnableLines.find(row => row.purchaseId === line.documentId && Number(row.lineIndex) === Number(line.lineIndex));
     if (!sourceLine || Number(line.qty || 0) > Number(sourceLine.remaining || 0)) return toast("لا يمكن إرجاع كمية أكبر من الكمية المتاحة.", "error");
     const book = getBook(line.bookId);
-    if (book && Number(book.stock || 0) < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد آ«${book.name}آ» أقل من الكمية المطلوبة.`, "error");
+    if (book && Number(book.stock || 0) < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
   const subtotal = selectedLines.reduce((sum, line) => sum + Number(line.amount || line.total || 0), 0);
   const returnId = nextId("RET-", data.returns);
@@ -7857,7 +8282,7 @@ function viewPurchase(id) {
     <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th><th>Batch</th></tr></thead><tbody>
     ${(purchase.lines || []).map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty || line.quantity}</td><td class="money">${money(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)))}</td><td>${Number(line.supplierDiscountPercent ?? line.discount ?? 0)}%</td><td class="money">${money(line.unitPurchaseCost ?? line.cost)}</td><td class="money">${money(line.totalCost ?? purchaseLineNet(line, line.qty))}</td><td>${esc(line.batchId || "—")}</td></tr>`).join("") || `<tr><td colspan="7" class="text-center muted">مستند تجريبي قديم بدون بنود تفصيلية.</td></tr>`}
     </tbody></table></div>
-    <div class="form-actions">${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+    <div class="form-actions"><button class="btn" data-action="print-purchase" data-id="${purchase.id}" data-format="a4">طباعة A4</button><button class="btn secondary" data-action="print-purchase" data-id="${purchase.id}" data-format="thermal">طباعة حرارية</button>${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
 
 function cancelPurchase(id) {
@@ -7866,7 +8291,7 @@ function cancelPurchase(id) {
   if (!purchase || purchase.status === "ملغاة" || !confirm(`سيتم إلغاء المستند ${id} وخصم كمياته من المخزون. هل أنت متأكد؟`)) return;
   for (const line of (purchase.status === "مستلمة" ? (purchase.lines || []) : [])) {
     const book = getBook(line.bookId);
-    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد آ«${book.name}آ» أقل من كمية المستند.`, "error");
+    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد «${book.name}» أقل من كمية المستند.`, "error");
   }
   (purchase.status === "مستلمة" ? (purchase.lines || []) : []).forEach(line => {
     const book = getBook(line.bookId);
@@ -7926,7 +8351,7 @@ function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumbe
   if (!selectedLines.length) return toast("حدد كمية لصنف واحد على الأقل.", "error");
   for (const line of selectedLines) {
     const book = getBook(line.bookId);
-    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد آ«${book.name}آ» أقل من الكمية المطلوبة.`, "error");
+    if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
   selectedLines.forEach(line => {
     const book = getBook(line.bookId);
@@ -8008,7 +8433,7 @@ function receivePurchase(id) {
 function deletePurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase || purchase.status !== "ملغاة") return toast("يجب إلغاء المستند أولًا.", "error");
-  if (!confirm(`هل تريد حذف المستند الملغى ${id}طں`)) return;
+  if (!confirm(`هل تريد حذف المستند الملغى ${id}؟`)) return;
   purchase.deletedAt = new Date().toISOString();
   saveData("حذف مستند شراء ملغى", "المشتريات", id);
   showPurchasesList();
@@ -8448,7 +8873,21 @@ async function runSelfTest() {
     currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
     check("منع الكاشير من صفحة الحسابات", canView("accounting") === false);
     check("منع الكاشير من حذف الأصناف", canAction("delete-book") === false);
+    const negativeStockBook = data.books.find(book => Number(book.stock || 0) >= 0);
+    const negativeStockBefore = Number(negativeStockBook?.stock || 0);
+    const negativeSettingBefore = data.settings.allowNegativeStock;
+    data.settings.allowNegativeStock = false;
+    check("منع المخزون السالب عند إغلاق الإعداد", Boolean(negativeStockError(negativeStockBook, negativeStockBefore + 1)));
+    data.settings.allowNegativeStock = true;
+    check("منع الكاشير من تجاوز المخزون رغم فتح الإعداد", Boolean(negativeStockError(negativeStockBook, negativeStockBefore + 1)));
+    check("فشل التحقق لا يعدل رصيد الصنف", Number(negativeStockBook?.stock || 0) === negativeStockBefore);
     currentUser = ownerUser;
+    check("السماح للمالك بتجاوز المخزون عند فتح الإعداد", negativeStockError(negativeStockBook, negativeStockBefore + 1) === "");
+    const enoughBook = data.books.find(book => book.id !== negativeStockBook?.id && Number(book.stock || 0) > 0);
+    currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
+    check("فاتورة متعددة الأصناف تُرفض عند نقص صنف واحد", [negativeStockError(enoughBook, 1), negativeStockError(negativeStockBook, negativeStockBefore + 1)].filter(Boolean).length === 1);
+    currentUser = ownerUser;
+    data.settings.allowNegativeStock = negativeSettingBefore;
     const views = ["dashboard", "books", "sales", "onlineOrders", "purchases", "parties", "shipping", "accounting", "reports", "hr", "settings"];
     for (const view of views) {
       navigate(view);
@@ -8469,7 +8908,7 @@ async function runSelfTest() {
     check("إخفاء خصم الشراء من بطاقة الصنف", !document.getElementById("book-purchase-discount"));
     check("عرض سعر الغلاف في بطاقة الصنف", Number(document.querySelector('[name="coverPrice"]')?.value) === 25);
     check("عرض سعر البيع الافتراضي", Number(document.querySelector('[name="defaultSellingPrice"]')?.value) === 20);
-    check("آخر سعر شراء محسوب وغير قابل للكتابة", Number(document.querySelector('[name="lastPurchasePrice"]')?.value) === 10 && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
+    check("آخر سعر شراء غير متاح بدون مستند شراء", document.querySelector('[name="lastPurchasePrice"]')?.value === "غير متاح" && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
     closeModal();
     data.books.push(testBook);
     check("إضافة صنف", Boolean(getBook(testBook.id)));
@@ -8607,6 +9046,10 @@ async function runSelfTest() {
     savePurchase();
     const testPurchase = data.purchases.find(p => p.lines?.some(line => line.bookId === testBook.id));
     check("إنشاء فاتورة شراء", Boolean(testPurchase));
+    check("آخر سعر شراء مشتق من آخر مستند معتمد", latestApprovedPurchaseCost(testBook.id) === 10);
+    addBookModal(testBook);
+    check("آخر سعر شراء ظاهر وغير قابل للكتابة بعد الشراء", Number(document.querySelector('[name="lastPurchasePrice"]')?.value) === 10 && document.querySelector('[name="lastPurchasePrice"]')?.readOnly === true);
+    closeModal();
     check("زيادة المخزون بعد الشراء", getBook(testBook.id).stock === stockBeforePurchase + 2);
     if (testPurchase) cancelPurchase(testPurchase.id);
     check("تحديث المخزون بعد إلغاء الشراء", getBook(testBook.id).stock === stockBeforePurchase);
@@ -8639,7 +9082,17 @@ async function runSelfTest() {
     check("البحث في الفواتير بدون نتائج", findSalesInvoices("لا-توجد-فاتورة-بهذا-الرقم").length === 0);
 
     navigate("dashboard");
-    check("بطاقات لوحة المتابعة قابلة للضغط", root.querySelectorAll('.stat-card.interactive[data-action="dashboard-stat"]').length === 4);
+    const dashboardStats = () => new Set([...root.querySelectorAll('.stat-card.interactive[data-action="dashboard-stat"][data-stat]')].map(card => card.dataset.stat));
+    const ownerStats = dashboardStats();
+    check("بطاقات Dashboard المطلوبة للمالك", requiredDashboardStatsForRole("مالك").every(stat => ownerStats.has(stat)), `الموجود: ${[...ownerStats].join("، ")}`);
+    const dashboardOwner = currentUser;
+    currentUser = { id:"QA-CASHIER", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
+    renderDashboard();
+    const cashierStats = dashboardStats();
+    check("بطاقات Dashboard المطلوبة للكاشير", requiredDashboardStatsForRole("كاشير").every(stat => cashierStats.has(stat)), `الموجود: ${[...cashierStats].join("، ")}`);
+    check("صلاحيات Dashboard للكاشير لا تمنح التكلفة", canAction("view-item-cost-profit") === false && canAction("allow-negative-stock") === false);
+    currentUser = dashboardOwner;
+    renderDashboard();
     check("بطاقة الشحنات مجهزة للتحديث الدوري", Boolean(document.getElementById("dashboard-shipment-list")) && SHIPMENT_REFRESH_INTERVAL === 60000);
     check("مؤقت تحديث الشحنات يعمل مرة واحدة", Boolean(shipmentRefreshTimer));
     check("زر تحديث الشحنات الفوري ظاهر", Boolean(root.querySelector('[data-action="refresh-dashboard-shipments"]')));

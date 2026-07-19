@@ -11,8 +11,8 @@ function safeEqual(a = "", b = "") {
   return crypto.timingSafeEqual(left, right);
 }
 
-function verifyMetaSignature({ appSecret, rawBody, signature, production = false }) {
-  if (!production && !signature) return true;
+function verifyMetaSignature({ appSecret, rawBody, signature, required = false }) {
+  if (!required && !signature) return true;
   if (!appSecret || !signature) return false;
   const expected = `sha256=${hmacSha256(appSecret, rawBody)}`;
   return safeEqual(expected, signature);

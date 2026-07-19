@@ -5,9 +5,6 @@ function corsOptions(req, callback) {
   if (!origin) return callback(null, { origin: false, credentials: true });
   const allowed = env.allowedOrigins.includes(origin);
   if (allowed) return callback(null, { origin, credentials: true });
-  if (!env.isProduction && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) {
-    return callback(null, { origin, credentials: true });
-  }
   return callback(null, { origin: false, credentials: true });
 }
 

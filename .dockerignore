@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+.codex
+debug
+docs
+scripts
+services
+tests
+data/backups
+*.log
+*.tmp
+__pycache__
+*.pyc

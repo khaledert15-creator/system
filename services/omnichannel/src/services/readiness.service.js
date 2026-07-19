@@ -1,4 +1,4 @@
-const { env, publicConfig, validateProductionEnvironment } = require("../config/env");
+const { env, publicConfig, inspectRuntimeEnvironment } = require("../config/env");
 
 function accountMode(account = {}) {
   const status = `${account.status || ""} ${account.connectionStatus || ""}`;
@@ -11,6 +11,7 @@ function accountMode(account = {}) {
 async function readiness(container) {
   const checks = {};
   const errors = [];
+  const warnings = [];
   try {
     if (container.repository.db?.$queryRaw) await container.repository.db.$queryRaw`SELECT 1`;
     else await container.repository.channels();
@@ -20,16 +21,16 @@ async function readiness(container) {
     errors.push("PostgreSQL is not reachable");
   }
 
-  const config = validateProductionEnvironment();
-  checks.productionConfig = config.ok ? "ok" : "error";
-  errors.push(...config.errors);
+  const config = inspectRuntimeEnvironment();
+  checks.runtimeConfig = config.warnings.length ? "warning" : "ok";
+  warnings.push(...config.warnings);
 
   try {
     const accounts = await container.repository.channelAccounts();
     const activeAccounts = accounts.filter(account => account.isActive !== false);
     const unsafeMock = activeAccounts.filter(account => accountMode(account) === "mock");
-    if (env.isProduction && !env.allowMockInProduction && unsafeMock.length) {
-      errors.push(`Mock channel accounts are active in production: ${unsafeMock.map(item => item.id).join(",")}`);
+    if (!env.allowMockEndpoints && unsafeMock.length) {
+      warnings.push(`Mock channel accounts are inactive because mock endpoints are disabled: ${unsafeMock.map(item => item.id).join(",")}`);
     }
     for (const account of activeAccounts.filter(account => accountMode(account) === "real")) {
       const hasToken = Boolean(await container.repository.channelAccountCredential(account.id, "access_token"));
@@ -46,6 +47,7 @@ async function readiness(container) {
     ok: errors.length === 0,
     checks,
     errors,
+    warnings,
     config: publicConfig()
   };
 }

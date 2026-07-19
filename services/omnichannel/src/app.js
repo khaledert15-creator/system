@@ -88,7 +88,7 @@ function createApp(container = buildContainer()) {
   app.use(requestId);
   app.use(requireHttps);
   app.use(helmet({
-    hsts: env.isProduction && env.enableHsts ? { maxAge: 15552000, includeSubDomains: true, preload: false } : false,
+    hsts: env.enableHsts ? { maxAge: 15552000, includeSubDomains: true, preload: false } : false,
     contentSecurityPolicy: false
   }));
   app.use(cors(corsOptions));
