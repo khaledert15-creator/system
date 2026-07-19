@@ -3465,7 +3465,9 @@ function productMovementReportData(state = productMovementState) {
   const incoming = periodRows.reduce((sum, row) => sum + row.incoming, 0);
   const outgoing = periodRows.reduce((sum, row) => sum + row.outgoing, 0);
   const closing = opening + incoming - outgoing;
-  const expected = periodRows.length ? periodRows[periodRows.length - 1].after : opening;
+  const expected = range.to
+    ? (periodRows.length ? periodRows[periodRows.length - 1].after : opening)
+    : Number(book.stock || 0);
   const salesRows = periodRows.filter(row => row.kind === "sale");
   const canSeeCost = canAction("view-item-cost-profit");
   const cogsKnown = salesRows.every(row => row.cogs !== null && row.cogs !== undefined);
