@@ -119,6 +119,8 @@ if (apply) {
   fs.writeFileSync(backupFile, originalText, "utf8");
   const temporary = `${databasePath}.backfill.tmp`; fs.writeFileSync(temporary, JSON.stringify(database, null, 2), "utf8"); fs.renameSync(temporary, databasePath);
 }
-fs.mkdirSync(path.dirname(reportPath), { recursive:true });
-fs.writeFileSync(reportPath, reportMarkdown(review, apply ? "APPLY" : "DRY RUN", backupFile), "utf8");
+if (apply) {
+  fs.mkdirSync(path.dirname(reportPath), { recursive:true });
+  fs.writeFileSync(reportPath, reportMarkdown(review, "APPLY", backupFile), "utf8");
+}
 process.stdout.write(JSON.stringify({ mode:apply ? "apply" : "dry-run", databasePath, reportPath, backupFile, ...review }, null, 2) + "\n");
