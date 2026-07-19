@@ -13,7 +13,8 @@ const DATA_ROOT = path.join(ROOT, "data");
 const BACKUP_ROOT = path.join(DATA_ROOT, "backups");
 const DEBUG_ROOT = path.join(ROOT, "debug", "tracking");
 const DB_PATH = path.join(DATA_ROOT, "database.json");
-const PORT = 8765;
+const PORT = Number(process.env.PORT || 8765);
+const HOST = process.env.HOST || "127.0.0.1";
 const SESSION_HOURS = 12;
 const EGYPT_POST_TRACKING_URL = "https://egyptpost.gov.eg/ar-eg/home/eservices/track-and-trace/";
 const TRACKING_PROVIDER_NAME = "EgyptPostBrowserProvider";
@@ -1735,7 +1736,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`DotCom Library server running: http://127.0.0.1:${PORT}/`);
+server.listen(PORT, HOST, () => {
+  console.log(`DotCom Library server running: http://${HOST}:${PORT}/`);
   scheduleTrackingWorker();
 });
