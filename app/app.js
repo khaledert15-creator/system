@@ -3395,7 +3395,7 @@ function productMovementLineValue(movement, document, bookId) {
 }
 
 function productMovementRows(bookId) {
-  return (data.stockMovements || []).filter(item => item.bookId === bookId).map(item => {
+  const rows = (data.stockMovements || []).filter(item => item.bookId === bookId).map(item => {
     const document = productMovementDocument(item.documentId || item.documentNo || "");
     const kind = productMovementType(item.type);
     const value = productMovementLineValue(item, document, bookId);
@@ -3406,10 +3406,13 @@ function productMovementRows(bookId) {
       partyId:document?.partyId || item.customerId || item.supplierId || "", partyName:document?.partyName || item.partyName || item.note || "",
       supplierId:item.supplierId || (document?.kind === "purchase" ? document.partyId : ""), customerId:item.customerId || (document?.kind === "sale" ? document.partyId : ""),
       incoming:quantity > 0 ? quantity : 0, outgoing:quantity < 0 ? Math.abs(quantity) : 0,
-      before:Number(item.before || 0), after:Number(item.after || 0), unitPrice:value.unitPrice, totalValue:value.totalValue, unitCost:value.unitCost, cogs:value.cogs,
+      before:Number(item.before ?? item.calculatedBefore ?? 0), after:Number(item.after ?? item.calculatedAfter ?? 0), unitPrice:value.unitPrice, totalValue:value.totalValue, unitCost:value.unitCost, cogs:value.cogs,
       employee:item.employeeName || item.user || "النظام", username:item.username || "", note:item.note || ""
     };
   }).sort((a, b) => new Date(a.date) - new Date(b.date) || String(a.id).localeCompare(String(b.id)));
+  let balance = rows.length && rows[0].kind !== "opening" && Number.isFinite(rows[0].before) ? rows[0].before : 0;
+  rows.forEach(row => { row.before = balance; balance += row.incoming - row.outgoing; row.after = balance; });
+  return rows;
 }
 
 function productMovementRange(state = productMovementState) {
