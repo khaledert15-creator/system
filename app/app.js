@@ -1985,7 +1985,6 @@ function showDashboardStatDetails(type) {
 
   const attention = data.books.filter(book => book.stock <= book.reorder).sort((a, b) => a.stock - b.stock);
   openModal("أصناف تحتاج انتباه", "لوحة المتابعة", `
-    ${item.trackingDebug?.screenshotFile ? `<div class="alert-item warning"><div class="alert-badge gold">⚑</div><div><strong>لقطة فشل التتبع محفوظة</strong><span>يمكن مراجعة الصورة وHTML snapshot لتحديد سبب عدم قراءة النتيجة.</span></div><button class="btn ghost small" data-action="show-tracking-debug" data-id="${item.id}">عرض لقطة فشل التتبع</button></div>` : ""}
     <div class="metric-strip">
       <div class="mini-metric"><span>صفري أو سالب</span><strong>${attention.filter(book => book.stock <= 0).length}</strong></div>
       <div class="mini-metric"><span>تحت حد الطلب</span><strong>${attention.filter(book => book.stock > 0).length}</strong></div>
