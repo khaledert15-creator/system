@@ -22,7 +22,7 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - ./services/omnichannel/.env.production
+      - ./services/omnichannel/.env.example
     environment:
       NODE_ENV: production
       OMNI_START_RETRY_WORKER: "false"
@@ -41,7 +41,7 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - ./services/omnichannel/.env.production
+      - ./services/omnichannel/.env.example
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://dotcom:change-this-password@postgres:5432/dotcom_omnichannel?schema=public
