@@ -1564,8 +1564,11 @@ function latestApprovedPurchaseCost(productId) {
   const line = matchingLines.at(-1);
   if (!line) return null;
   const quantity = Number(line.qty || line.quantity || 0);
-  const total = Number(line.totalCost ?? line.finalNet ?? line.total ?? 0);
-  const unitCost = Number(line.unitPurchaseCost ?? line.cost ?? (quantity > 0 && total > 0 ? total / quantity : NaN));
+  const explicitTotal = line.totalCost ?? line.finalNet ?? line.total;
+  const total = explicitTotal === undefined || explicitTotal === null ? NaN : Number(explicitTotal);
+  const unitCost = quantity > 0 && Number.isFinite(total)
+    ? total / quantity
+    : Number(line.unitPurchaseCost ?? line.cost ?? NaN);
   return Number.isFinite(unitCost) && unitCost >= 0 ? unitCost : null;
 }
 
