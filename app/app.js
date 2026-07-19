@@ -1554,16 +1554,28 @@ function activeInventoryBatches(productId) {
     .sort((a, b) => String(a.purchaseDate || "").localeCompare(String(b.purchaseDate || "")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.batchId || a.id).localeCompare(String(b.batchId || b.id)));
 }
 
+function latestApprovedPurchaseCost(productId) {
+  const approved = (data.purchases || [])
+    .filter(purchase => !purchase.deletedAt && !/ملغاة|بانتظار|قيد/.test(String(purchase.status || "")) && (purchase.lines || []).some(line => (line.bookId || line.productId) === productId))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.id || "").localeCompare(String(b.id || "")));
+  const purchase = approved.at(-1);
+  if (!purchase) return null;
+  const matchingLines = (purchase.lines || []).filter(line => (line.bookId || line.productId) === productId);
+  const line = matchingLines.at(-1);
+  if (!line) return null;
+  const quantity = Number(line.qty || line.quantity || 0);
+  const total = Number(line.totalCost ?? line.finalNet ?? line.total ?? 0);
+  const unitCost = Number(line.unitPurchaseCost ?? line.cost ?? (quantity > 0 && total > 0 ? total / quantity : NaN));
+  return Number.isFinite(unitCost) && unitCost >= 0 ? unitCost : null;
+}
+
 function productInventorySummary(productId) {
   const book = getBook(productId) || {};
   const batches = activeInventoryBatches(productId);
   const currentStockQty = batches.reduce((sum, batch) => sum + Number(batch.remainingQty || 0), 0);
   const currentInventoryValue = batches.reduce((sum, batch) => sum + Number(batch.remainingQty || 0) * Number(batch.unitCost || 0), 0);
   const averageInventoryCost = currentStockQty > 0 ? currentInventoryValue / currentStockQty : 0;
-  const lastBatch = (data.inventoryBatches || [])
-    .filter(batch => !batch.deletedAt && (batch.productId || batch.bookId) === productId && batch.source !== "opening_balance")
-    .sort((a, b) => String(b.purchaseDate || "").localeCompare(String(a.purchaseDate || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
-  const lastPurchaseCost = Number(lastBatch?.unitCost ?? book.lastPurchasePrice ?? book.cost ?? 0);
+  const lastPurchaseCost = latestApprovedPurchaseCost(productId);
   const selling = productDefaultSellingPrice(book);
   const expectedMarginAtDefaultPrice = selling > 0 && averageInventoryCost > 0 ? ((selling - averageInventoryCost) / selling) * 100 : null;
   const hasIncompleteCost = batches.some(batch => !Number(batch.unitCost || 0) || batch.status === "cost_incomplete");
@@ -4273,7 +4285,7 @@ function addBookModal(book = null) {
   const summary = book ? productInventorySummary(book.id) : null;
   const coverPrice = Number(book?.coverPrice ?? book?.purchaseListPrice ?? book?.price ?? 0);
   const defaultSellingPrice = Number(book?.defaultSellingPrice ?? book?.price ?? 0);
-  const lastPurchaseCost = Number(summary?.lastPurchaseCost ?? book?.lastPurchasePrice ?? book?.cost ?? 0);
+  const lastPurchaseCost = summary?.lastPurchaseCost;
   const selectedType = itemTypeLabel(book);
   const selectedUnit = itemUnitLabel(book);
   openModal(book ? "تعديل بيانات الصنف" : "إضافة صنف جديد", "الأصناف والمخزون", `
@@ -4292,7 +4304,7 @@ function addBookModal(book = null) {
         <div class="form-field"><label class="required">المورد الأساسي</label><select name="supplierId" required>${data.suppliers.map(s => `<option value="${s.id}" ${book?.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
         <div class="form-field"><label class="required">سعر الغلاف</label><input name="coverPrice" type="number" min="0" step="0.01" required value="${coverPrice || ""}" placeholder="السعر المطبوع على المنتج"></div>
         <div class="form-field"><label class="required">سعر البيع الافتراضي</label><input name="defaultSellingPrice" type="number" min="0" step="0.01" required value="${defaultSellingPrice || ""}"></div>
-        <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" type="number" min="0" step="0.01" readonly value="${lastPurchaseCost || ""}"><small>لا يُدخل هنا. يتم تحديثه من آخر فاتورة شراء أو من الرصيد الافتتاحي.</small></div>
+        <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" readonly value="${lastPurchaseCost === null || lastPurchaseCost === undefined ? "غير متاح" : lastPurchaseCost}"><small>مشتق من آخر فاتورة شراء أو استلام معتمدة، ولا يمكن تعديله يدويًا.</small></div>
         <div class="form-field"><label>الرصيد الافتتاحي</label><input name="stock" type="number" value="${book?.stock ?? 0}"></div>
         <div class="form-field"><label>حد إعادة الطلب</label><input name="reorder" type="number" min="0" value="${book?.reorder ?? 5}"></div>
         <div class="form-field"><label>نوع الملكية</label><select name="owned"><option value="true" ${book?.owned !== false ? "selected" : ""}>مملوك</option><option value="false" ${book?.owned === false ? "selected" : ""}>أمانة / تصريف</option></select></div>
@@ -5634,8 +5646,8 @@ modalBody.addEventListener("submit", async event => {
       defaultSellingPrice: Number(formData.defaultSellingPrice || 0),
       purchaseListPrice: Number(formData.coverPrice || 0),
       purchaseDiscount: 0,
-      lastPurchasePrice: Number(formData.lastPurchasePrice || getBook(form.dataset.editId)?.lastPurchasePrice || getBook(form.dataset.editId)?.cost || 0),
-      cost: Number(formData.lastPurchasePrice || getBook(form.dataset.editId)?.cost || 0),
+      lastPurchasePrice: latestApprovedPurchaseCost(form.dataset.editId) ?? null,
+      cost: Number(getBook(form.dataset.editId)?.cost || 0),
       price: Number(formData.defaultSellingPrice || 0),
       stock: Number(formData.stock),
       reorder: Number(formData.reorder),
