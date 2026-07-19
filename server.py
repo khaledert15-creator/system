@@ -72,6 +72,55 @@ def password_hash(salt, password):
     return hashlib.sha256("{0}:{1}".format(salt, password).encode("utf-8")).hexdigest()
 
 
+def can_override_negative_stock(database, user):
+    role_aliases = {"owner": "مالك", "manager": "مدير", "accountant": "محاسب", "cashier": "كاشير", "warehouse": "مخزن", "shipping": "شحن"}
+    role = role_aliases.get(user.get("role"), user.get("role", ""))
+    if role == "مالك" or user.get("username") == "owner":
+        return True
+    permissions = database.get("settings", {}).get("permissions", {})
+    role_actions = permissions.get("roles", {}).get(role, {}).get("actions")
+    user_actions = permissions.get("users", {}).get(user.get("username"), {}).get("actions")
+    actions = user_actions if isinstance(user_actions, list) else role_actions if isinstance(role_actions, list) else []
+    return "allow-negative-stock" in actions
+
+
+def validate_negative_stock_write(current_db, next_db, user):
+    existing_sale_ids = {sale.get("id") for sale in current_db.get("sales", [])}
+    requested_by_book = {}
+    for sale in next_db.get("sales", []):
+        if sale.get("deletedAt") or sale.get("status") == "ملغاة" or sale.get("id") in existing_sale_ids:
+            continue
+        for line in sale.get("lines", []):
+            book_id = line.get("bookId") or line.get("productId")
+            quantity = float(line.get("qty") or line.get("quantity") or 0)
+            if book_id and quantity > 0:
+                requested_by_book[book_id] = requested_by_book.get(book_id, 0) + quantity
+    violations = []
+    for book_id, requested in requested_by_book.items():
+        book = next((item for item in current_db.get("books", []) if item.get("id") == book_id), {})
+        available = float(book.get("stock") or 0)
+        if requested > available:
+            violations.append({"bookId": book_id, "name": book.get("name") or book_id, "available": available, "requested": requested})
+    allowed = not violations or (next_db.get("settings", {}).get("allowNegativeStock") is True and can_override_negative_stock(next_db, user))
+    return {"ok": allowed, "violations": violations}
+
+
+def append_negative_stock_audit(database, user, violations):
+    if not violations:
+        return
+    database.setdefault("audit", [])
+    now = datetime.now(timezone.utc).isoformat()
+    for row in violations:
+        database["audit"].append({
+            "id": "AUD-NEG-{0}".format(uuid.uuid4().hex), "date": now, "createdAt": now,
+            "action": "تجاوز المخزون السالب بصلاحية", "operationType": "تجاوز المخزون السالب",
+            "entity": "المخزون", "entityId": row["bookId"], "documentNo": "",
+            "user": user.get("name") or user.get("username"), "username": user.get("username"), "role": user.get("role"),
+            "sourceKey": "negative-stock:{0}:{1}:{2}".format(now, user.get("username"), row["bookId"]),
+            "details": "{0}: المتاح {1}، المطلوب {2}".format(row["name"], row["available"], row["requested"])
+        })
+
+
 def get_users():
     if os.path.exists(DATABASE_PATH):
         try:
@@ -297,7 +346,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_text(200, body, "application/json; charset=utf-8", extra={"X-DB-Revision": database_revision()})
 
     def handle_db_put(self):
-        if self.require_auth() is None:
+        user = self.require_auth()
+        if user is None:
             return
         expected_revision = self.headers.get("If-Match")
         current_revision = database_revision()
@@ -305,6 +355,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(409, {"ok": False, "message": "Data was modified in another window. Reload before saving.", "revision": current_revision})
             return
         body = self.read_body()
+        try:
+            next_database = json.loads(body)
+        except (TypeError, ValueError):
+            self.send_json(400, {"ok": False, "message": "Invalid database structure."})
+            return
+        current_database = {}
+        if os.path.exists(DATABASE_PATH):
+            with open(DATABASE_PATH, "r", encoding="utf-8") as handle:
+                current_database = json.load(handle)
+        stock_validation = validate_negative_stock_write(current_database, next_database, user)
+        if not stock_validation["ok"]:
+            row = stock_validation["violations"][0]
+            self.send_json(403, {"ok": False, "code": "NEGATIVE_STOCK_FORBIDDEN", "message": "لا يمكن إتمام البيع. الرصيد المتاح من «{0}» هو {1:g} والكمية المطلوبة {2:g}.".format(row["name"], row["available"], row["requested"]), "violations": stock_validation["violations"]})
+            return
+        append_negative_stock_audit(next_database, user, stock_validation["violations"])
+        body = json.dumps(next_database, ensure_ascii=False)
         with SAVE_LOCK:
             if os.path.exists(DATABASE_PATH):
                 new_backup()

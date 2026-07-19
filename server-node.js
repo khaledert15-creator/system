@@ -72,6 +72,48 @@ function writeDb(db) {
   fs.renameSync(`${DB_PATH}.tmp`, DB_PATH);
 }
 
+function canOverrideNegativeStock(db, user) {
+  const roleAliases = { owner:"مالك", manager:"مدير", accountant:"محاسب", cashier:"كاشير", warehouse:"مخزن", shipping:"شحن" };
+  const role = roleAliases[user?.role] || user?.role || "";
+  if (role === "مالك" || user?.username === "owner") return true;
+  const permissions = db.settings?.permissions || {};
+  const roleActions = permissions.roles?.[role]?.actions;
+  const userActions = permissions.users?.[user?.username]?.actions;
+  const actions = Array.isArray(userActions) ? userActions : Array.isArray(roleActions) ? roleActions : [];
+  return actions.includes("allow-negative-stock");
+}
+
+function validateNegativeStockWrite(currentDb, nextDb, user) {
+  const existingSaleIds = new Set((currentDb.sales || []).map(sale => sale.id));
+  const requestedByBook = new Map();
+  for (const sale of (nextDb.sales || []).filter(item => !item.deletedAt && item.status !== "ملغاة" && !existingSaleIds.has(item.id))) {
+    for (const line of sale.lines || []) {
+      const bookId = line.bookId || line.productId;
+      const quantity = Number(line.qty || line.quantity || 0);
+      if (bookId && quantity > 0) requestedByBook.set(bookId, Number(requestedByBook.get(bookId) || 0) + quantity);
+    }
+  }
+  const violations = [];
+  for (const [bookId, requested] of requestedByBook) {
+    const book = (currentDb.books || []).find(item => item.id === bookId);
+    const available = Number(book?.stock || 0);
+    if (requested > available) violations.push({ bookId, name:book?.name || bookId, available, requested });
+  }
+  if (!violations.length) return { ok:true, violations:[] };
+  const allowed = nextDb.settings?.allowNegativeStock === true && canOverrideNegativeStock(nextDb, user);
+  return { ok:allowed, violations };
+}
+
+function appendNegativeStockAudit(db, user, violations) {
+  if (!violations.length) return;
+  db.audit = Array.isArray(db.audit) ? db.audit : [];
+  const now = new Date().toISOString();
+  for (const row of violations) {
+    const sourceKey = `negative-stock:${now}:${user.username}:${row.bookId}`;
+    db.audit.push({ id:`AUD-NEG-${crypto.randomUUID()}`, date:now, createdAt:now, action:"تجاوز المخزون السالب بصلاحية", operationType:"تجاوز المخزون السالب", entity:"المخزون", entityId:row.bookId, documentNo:"", user:user.name || user.username, username:user.username, role:user.role, sourceKey, details:`${row.name}: المتاح ${row.available}، المطلوب ${row.requested}` });
+  }
+}
+
 function ensureDirs() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
   fs.mkdirSync(BACKUP_ROOT, { recursive: true });
@@ -1542,13 +1584,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "/api/db" && req.method === "PUT") {
-      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
       const expected = req.headers["if-match"];
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, message:"Data was modified in another window. Reload before saving.", revision: current });
       const body = await readBody(req);
       const parsed = ensureTrackingDb(JSON.parse(body));
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
+      const currentDb = fs.existsSync(DB_PATH) ? ensureTrackingDb(readDb()) : { books:[], sales:[], settings:{} };
+      const stockValidation = validateNegativeStockWrite(currentDb, parsed, user);
+      if (!stockValidation.ok) {
+        const row = stockValidation.violations[0];
+        return send(res, 403, { ok:false, code:"NEGATIVE_STOCK_FORBIDDEN", message:`لا يمكن إتمام البيع. الرصيد المتاح من «${row.name}» هو ${row.available} والكمية المطلوبة ${row.requested}.`, violations:stockValidation.violations });
+      }
+      appendNegativeStockAudit(parsed, user, stockValidation.violations);
       writeDb(parsed);
       return send(res, 200, { ok:true, revision: dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }

@@ -255,6 +255,46 @@ try {
                 $body = $reader.ReadToEnd()
                 $reader.Dispose()
 
+                $nextDatabase = $body | ConvertFrom-Json
+                $currentDatabase = if (Test-Path -LiteralPath $DatabasePath) { Get-Content -LiteralPath $DatabasePath -Raw -Encoding UTF8 | ConvertFrom-Json } else { [pscustomobject]@{ books=@(); sales=@(); settings=[pscustomobject]@{} } }
+                $existingSaleIds = @{}
+                @($currentDatabase.sales) | ForEach-Object { $existingSaleIds[[string]$_.id] = $true }
+                $requestedByBook = @{}
+                @($nextDatabase.sales) | Where-Object { -not $_.deletedAt -and $_.status -ne "ملغاة" -and -not $existingSaleIds.ContainsKey([string]$_.id) } | ForEach-Object {
+                    @($_.lines) | ForEach-Object {
+                        $bookId = if ($_.bookId) { [string]$_.bookId } else { [string]$_.productId }
+                        $quantity = if ($_.qty) { [double]$_.qty } else { [double]$_.quantity }
+                        if ($bookId -and $quantity -gt 0) { $requestedByBook[$bookId] = [double]($requestedByBook[$bookId]) + $quantity }
+                    }
+                }
+                $violations = @()
+                foreach ($bookId in $requestedByBook.Keys) {
+                    $book = @($currentDatabase.books) | Where-Object { $_.id -eq $bookId } | Select-Object -First 1
+                    $available = [double]($book.stock)
+                    $requested = [double]$requestedByBook[$bookId]
+                    if ($requested -gt $available) { $violations += [pscustomobject]@{ bookId=$bookId; name=$(if ($book.name) { $book.name } else { $bookId }); available=$available; requested=$requested } }
+                }
+                $roleMap = @{ owner="مالك"; manager="مدير"; accountant="محاسب"; cashier="كاشير"; warehouse="مخزن"; shipping="شحن" }
+                $role = if ($roleMap.ContainsKey([string]$user.role)) { $roleMap[[string]$user.role] } else { [string]$user.role }
+                $roleActions = @($nextDatabase.settings.permissions.roles.$role.actions)
+                $userActions = @($nextDatabase.settings.permissions.users.$($user.username).actions)
+                $effectiveActions = if ($userActions.Count) { $userActions } else { $roleActions }
+                $canOverride = $user.username -eq "owner" -or $role -eq "مالك" -or $effectiveActions -contains "allow-negative-stock"
+                if ($violations.Count -and (-not ($nextDatabase.settings.allowNegativeStock -eq $true -and $canOverride))) {
+                    $row = $violations[0]
+                    Send-Json $context 403 @{ ok=$false; code="NEGATIVE_STOCK_FORBIDDEN"; message="لا يمكن إتمام البيع. الرصيد المتاح من «$($row.name)» هو $($row.available) والكمية المطلوبة $($row.requested)."; violations=$violations }
+                    continue
+                }
+                if ($violations.Count) {
+                    $auditRows = @($nextDatabase.audit)
+                    foreach ($row in $violations) {
+                        $now = [DateTime]::UtcNow.ToString("o")
+                        $auditRows += [pscustomobject]@{ id="AUD-NEG-$([guid]::NewGuid().ToString('N'))"; date=$now; createdAt=$now; action="تجاوز المخزون السالب بصلاحية"; operationType="تجاوز المخزون السالب"; entity="المخزون"; entityId=$row.bookId; user=$user.name; username=$user.username; role=$user.role; sourceKey="negative-stock:$now:$($user.username):$($row.bookId)"; details="$($row.name): المتاح $($row.available)، المطلوب $($row.requested)" }
+                    }
+                    $nextDatabase.audit = $auditRows
+                    $body = $nextDatabase | ConvertTo-Json -Depth 100 -Compress
+                }
+
                 if (Test-Path -LiteralPath $DatabasePath) {
                     New-Backup | Out-Null
                 }

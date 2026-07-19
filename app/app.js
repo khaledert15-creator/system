@@ -32,7 +32,7 @@ const ACTION_ROLES = {
   "delete-cash": ["مالك","مدير","محاسب"], "delete-employee": ["مالك","مدير"],
   "save-settings": ["مالك","مدير"], "restore-db": ["مالك","مدير"], "backup-db": ["مالك","مدير","محاسب"],
   "audit-log": ["مالك","مدير","محاسب"], "add-cash-in": ["مالك","مدير","محاسب"],
-  "view-item-cost-profit": ["مالك","مدير","محاسب"], "export-audit-log": ["مالك","مدير","محاسب"],
+  "view-item-cost-profit": ["مالك","مدير","محاسب"], "allow-negative-stock": ["مالك"], "export-audit-log": ["مالك","مدير","محاسب"],
   "view-best-customers": ["مالك","مدير","محاسب"], "view-best-suppliers": ["مالك","مدير","محاسب"],
   "add-cash-out": ["مالك","مدير","محاسب"], "add-employee": ["مالك","مدير"],
   "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"],
@@ -67,7 +67,7 @@ const VIEW_DEFINITIONS = [
 ];
 
 const PERMISSION_ACTIONS = [
-  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
+  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
   ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
@@ -253,6 +253,28 @@ function actorSnapshot() {
     name: currentUser?.name || currentUser?.username || "النظام",
     role: currentUser?.role || "نظام"
   };
+}
+
+function negativeStockError(book, requestedQuantity) {
+  const available = Number(book?.stock || 0);
+  const requested = Number(requestedQuantity || 0);
+  if (requested <= available) return "";
+  if (data.settings.allowNegativeStock && canAction("allow-negative-stock")) return "";
+  return `لا يمكن إتمام البيع. الرصيد المتاح من «${book?.name || "الصنف"}» هو ${available} والكمية المطلوبة ${requested}.`;
+}
+
+function recordNegativeStockOverride(book, requestedQuantity, documentId) {
+  if (Number(requestedQuantity || 0) <= Number(book?.stock || 0)) return;
+  data.audit.push(auditEntry({
+    action:"تجاوز المخزون السالب بصلاحية",
+    operationType:"تجاوز المخزون السالب",
+    moduleName:"المبيعات",
+    entityType:"المخزون",
+    entity:"المخزون",
+    entityId:book.id,
+    documentNo:documentId,
+    details:`${book.name}: المتاح ${Number(book.stock || 0)}، المطلوب ${Number(requestedQuantity || 0)}`
+  }));
 }
 
 function actorLabel(item = {}) {
@@ -6176,7 +6198,8 @@ function convertOnlineOrderToSale(id, options = {}) {
   for (const computed of totals.lines) {
     const book = getBook(computed.bookId);
     if (!book) return toast("أحد أصناف الطلب غير موجود.", "error");
-    if (!data.settings.allowNegativeStock && book.stock < computed.qty) return toast(`الرصيد غير كافٍ: ${book.name}`, "error");
+    const stockError = negativeStockError(book, computed.qty);
+    if (stockError) return toast(stockError, "error");
     const netUnit = computed.qty > 0 ? computed.finalNet / computed.qty : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن تحويل الطلب: صافي سعر «${book.name}» (${money(netUnit)}) أقل من متوسط التكلفة (${money(summary.averageInventoryCost)}).`, "error");
@@ -6197,6 +6220,7 @@ function convertOnlineOrderToSale(id, options = {}) {
     createdByUserId: actor.userId, createdByName: actor.name, createdByUsername: actor.username, createdByRole: actor.role,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null
   };
+  sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   sale.lines.forEach(line => {
     const book = getBook(line.bookId);
     const costing = allocateInventoryFIFO(book.id, line.qty);
@@ -6308,7 +6332,8 @@ function saveSale({ printAfter = false } = {}) {
     const netUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.price) * Number(line.qty || 0))) / Number(line.qty || 1) : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن بيع «${book.name}» بأقل من متوسط التكلفة.`, "error");
-    if (!data.settings.allowNegativeStock && book.stock < line.qty) return toast(`الرصيد غير كافٍ للصنف «${book.name}».`, "error");
+    const stockError = negativeStockError(book, line.qty);
+    if (stockError) return toast(stockError, "error");
   }
   const payment = document.getElementById("sale-payment").value;
   const paid = Math.max(0, Math.min(Number(draftSale.paid || 0), totals.total));
@@ -6348,6 +6373,7 @@ function saveSale({ printAfter = false } = {}) {
     updatedAt: new Date().toISOString(),
     deletedAt: null
   };
+  sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   validEntries.forEach(({ line }, index) => {
     const book = getBook(line.bookId);
     const costing = allocateInventoryFIFO(book.id, line.qty);
