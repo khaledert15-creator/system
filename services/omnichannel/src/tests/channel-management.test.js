@@ -5,6 +5,8 @@ const { createApp, buildContainer } = require("../app");
 const { env } = require("../config/env");
 const { InMemoryRepository } = require("../repositories/in-memory.repository");
 
+env.verifyWebhookSignatures = false;
+
 function signedUser(user) {
   const header = Buffer.from(JSON.stringify(user)).toString("base64url");
   const signature = crypto.createHmac("sha256", env.sessionBridgeSecret).update(header).digest("hex");

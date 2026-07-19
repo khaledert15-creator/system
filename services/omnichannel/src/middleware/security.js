@@ -1,7 +1,7 @@
 const { env } = require("../config/env");
 
 function requireHttps(req, res, next) {
-  if (!env.isProduction || !env.forceHttps) return next();
+  if (!env.forceHttps) return next();
   const proto = req.headers["x-forwarded-proto"] || req.protocol;
   if (String(proto).split(",")[0].trim() === "https") return next();
   if (["GET", "HEAD"].includes(req.method)) {
@@ -11,8 +11,8 @@ function requireHttps(req, res, next) {
 }
 
 function blockMockInProduction(req, res, next) {
-  if (!env.isProduction || env.allowMockInProduction) return next();
-  return res.status(403).json({ ok: false, code: "MOCK_DISABLED", message: "Mock endpoints are disabled in production", requestId: req.requestId });
+  if (env.allowMockEndpoints) return next();
+  return res.status(403).json({ ok: false, code: "MOCK_DISABLED", message: "Mock endpoints are disabled", requestId: req.requestId });
 }
 
 module.exports = { requireHttps, blockMockInProduction };

@@ -1,13 +1,10 @@
 const { buildContainer } = require("./app");
-const { env, validateProductionEnvironment } = require("./config/env");
+const { env, inspectRuntimeEnvironment } = require("./config/env");
 const { disconnectPrisma } = require("./config/database");
 const { log } = require("./utils/logger");
 
-const validation = validateProductionEnvironment();
-if (!validation.ok) {
-  log("error", "Invalid production configuration", { errors: validation.errors });
-  process.exit(1);
-}
+const runtimeInspection = inspectRuntimeEnvironment();
+if (runtimeInspection.warnings.length) log("warn", "Runtime configuration needs attention", { warnings: runtimeInspection.warnings });
 
 const container = buildContainer();
 container.retryJob.start();

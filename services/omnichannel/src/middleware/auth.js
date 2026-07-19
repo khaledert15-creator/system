@@ -73,7 +73,7 @@ async function fetchExistingSession(token) {
 async function auth(req, res, next) {
   try {
     const bridgeUser = verifyBridgeUser(req.headers["x-omni-user"], req.headers["x-omni-signature"]);
-    const queryToken = env.isProduction && !env.allowQuerySessionTokenInProduction ? null : req.query.token;
+    const queryToken = env.allowQuerySessionToken ? req.query.token : null;
     const sessionUser = bridgeUser || await fetchExistingSession(req.headers["x-session-token"] || queryToken);
     if (!sessionUser) return res.status(401).json({ ok: false, message: "Authentication required." });
     req.user = {

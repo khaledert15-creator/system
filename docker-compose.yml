@@ -1,0 +1,54 @@
+services:
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${APP_PORT:-8765}
+    volumes:
+      - app_data:/app/data
+    ports:
+      - "${APP_PORT:-8765}:${APP_PORT:-8765}"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dotcom_omnichannel}
+      POSTGRES_USER: ${POSTGRES_USER:-dotcom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dotcom} -d ${POSTGRES_DB:-dotcom_omnichannel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  omnichannel:
+    build:
+      context: ./services/omnichannel
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      OMNICHANNEL_PORT: ${OMNICHANNEL_PORT:-8775}
+      EXISTING_APP_BASE_URL: http://app:${APP_PORT:-8765}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dotcom}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dotcom_omnichannel}?schema=public
+      OMNI_START_RETRY_WORKER: "true"
+    volumes:
+      - omni_uploads:/app/storage/uploads
+    ports:
+      - "${OMNICHANNEL_PORT:-8775}:${OMNICHANNEL_PORT:-8775}"
+    command: ["sh", "-c", "npx prisma migrate deploy && node src/server.js"]
+
+volumes:
+  app_data:
+  postgres_data:
+  omni_uploads:

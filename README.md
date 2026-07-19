@@ -4,6 +4,37 @@
 
 ## التشغيل
 
+### التشغيل الموحد باستخدام Docker
+
+لا توجد بيئات Test وProduction منفصلة. يوجد ملف إعداد واحد في جذر المشروع:
+
+```bash
+cp .env.example .env
+```
+
+عدّل كلمات المرور والأسرار والروابط داخل `.env`، ثم شغّل النظام وقاعدة PostgreSQL وخدمة Omnichannel معًا:
+
+```bash
+docker compose up -d --build
+```
+
+لمراجعة الحالة:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 omnichannel
+```
+
+إيقاف الخدمات دون حذف البيانات:
+
+```bash
+docker compose down
+```
+
+لا تستخدم `docker compose down -v` لأنه يحذف Volumes وقواعد البيانات.
+
+### التشغيل المباشر على Windows
+
 1. فك ضغط الحزمة في مجلد عادي على Windows.
 2. اضغط مرتين على `START-HERE.cmd`.
 3. يبدأ خادم قاعدة البيانات في الخلفية، ثم يفتح النظام تلقائيًا على:

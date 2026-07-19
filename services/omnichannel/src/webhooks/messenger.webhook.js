@@ -20,9 +20,9 @@ function messengerWebhookRouter(container) {
         appSecret: env.metaAppSecret,
         rawBody: req.rawBody,
         signature: req.headers["x-hub-signature-256"],
-        production: env.isProduction
+        required: env.verifyWebhookSignatures
       });
-      if (env.isProduction && !signatureValid) return res.status(401).json({ ok: false, message: "Invalid signature" });
+      if (env.verifyWebhookSignatures && !signatureValid) return res.status(401).json({ ok: false, message: "Invalid signature" });
 
       const mapped = mapMessengerWebhook(req.body);
       const externalEventId = mapped?.type === "message.status"

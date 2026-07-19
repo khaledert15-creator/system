@@ -34,7 +34,6 @@ services/local-tracking-rpa/.rpa-profile/
 .env
 .env.*
 !.env.example
-!.env.production.example
 services/**/.env
 services/**/.env.*
 !services/**/.env.example

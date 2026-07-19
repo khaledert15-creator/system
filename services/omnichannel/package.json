@@ -5,20 +5,15 @@
   "description": "Omnichannel Customer Service Center for DotCom Library System",
   "main": "src/server.js",
   "scripts": {
-    "dev": "node src/server.js",
     "start": "node src/server.js",
-    "start:prod": "NODE_ENV=production node src/server.js",
     "worker": "node src/worker.js",
-    "worker:prod": "NODE_ENV=production node src/worker.js",
     "migrate": "prisma migrate deploy",
-    "migrate:deploy": "prisma migrate deploy",
-    "migrate:dev": "prisma migrate dev",
     "generate": "prisma generate",
     "seed": "node scripts/seed-dev.js",
     "test": "node --test src/tests/*.test.js",
     "test:e2e:channels": "node scripts/e2e-channel-routing-runtime.js",
     "test:e2e:messaging": "node scripts/e2e-messaging-core-runtime.js",
-    "smoke:prod": "node scripts/smoke-production-readiness.js"
+    "smoke": "node scripts/smoke-readiness.js"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

@@ -74,11 +74,9 @@ test("SSE uses short-lived tickets instead of long-lived query session tokens", 
   }
 });
 
-test("mock endpoints are disabled in production unless explicitly allowed", async () => {
-  const previousProduction = env.isProduction;
-  const previousAllow = env.allowMockInProduction;
-  env.isProduction = true;
-  env.allowMockInProduction = false;
+test("mock endpoints are disabled unless explicitly allowed", async () => {
+  const previousAllow = env.allowMockEndpoints;
+  env.allowMockEndpoints = false;
   const { server, baseUrl } = runtime();
   try {
     const response = await fetch(`${baseUrl}/api/mock/whatsapp/incoming`, {
@@ -88,8 +86,7 @@ test("mock endpoints are disabled in production unless explicitly allowed", asyn
     });
     assert.equal([401, 403].includes(response.status), true);
   } finally {
-    env.isProduction = previousProduction;
-    env.allowMockInProduction = previousAllow;
+    env.allowMockEndpoints = previousAllow;
     server.close();
   }
 });
