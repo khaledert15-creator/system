@@ -810,6 +810,37 @@ textarea { resize: vertical; min-height: 80px; }
 .choice-card input { margin-top: 4px; }
 .choice-card span { display: grid; gap: 3px; }
 .choice-card small { color: var(--muted); font-size: 9px; }
+.shipping-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.shipping-choice-card {
+  direction: rtl;
+  width: 100%;
+  min-width: 0;
+  min-height: 88px;
+  box-sizing: border-box;
+  align-items: flex-start;
+  text-align: right;
+  overflow: hidden;
+}
+.shipping-choice-card input {
+  flex: 0 0 auto;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  margin: 4px 0 0;
+}
+.shipping-choice-card span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.shipping-choice-card strong,
+.shipping-choice-card small { display: block; line-height: 1.65; }
+@media (max-width: 720px) {
+  .shipping-choice-grid { grid-template-columns: minmax(0, 1fr); }
+}
 #sale-book-suggestions { position:absolute; z-index:8; top:43px; right:0; left:98px; display:grid; background:#fff; border-radius:12px; box-shadow:0 12px 30px rgba(0,0,0,.15); overflow:hidden; }
 #sale-book-suggestions button { padding:10px 12px; border:0; border-bottom:1px solid var(--line); background:#fff; text-align:right; cursor:pointer; }
 #sale-book-suggestions button:hover { background:var(--green-50); }

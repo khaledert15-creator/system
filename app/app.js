@@ -617,7 +617,8 @@ async function reloadRemoteData() {
 async function runTrackingApi(path, successMessage) {
   if (!serverConnected) return toast("التتبع الفعلي يحتاج تشغيل النظام من START-HERE.cmd لأن الطلب يتم من السيرفر.", "error");
   try {
-    const response = await fetch(path, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }) });
+    const requestId = globalThis.crypto?.randomUUID?.() || `web-${Date.now()}`;
+    const response = await fetch(path, { method: "POST", headers: authHeaders({ "Content-Type": "application/json", "X-Request-ID":requestId }) });
     const result = await response.json().catch(() => ({}));
     dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
     await reloadRemoteData();
@@ -631,7 +632,7 @@ async function runTrackingApi(path, successMessage) {
       toast(result.errors?.[0]?.error || "تعذر تحديث التتبع. لم يتم تغيير حالة الشحنة.", "error");
       return result;
     }
-    toast(successMessage || "تم تنفيذ طلب التتبع.");
+    toast(Number(result.successful || 0) > 0 ? "تم تحديث التتبع وحفظ النتيجة." : (successMessage || "تم تنفيذ طلب التتبع."));
     return result;
   } catch (error) {
     await reloadRemoteData().catch(() => {});
@@ -1542,6 +1543,10 @@ function configureNumericInput(input) {
     input.inputMode = input.dataset.numericKind === "integer" ? "numeric" : "decimal";
   }
   return true;
+}
+
+function numericFieldAttributes({ id = "", name = "", value = 0, kind = "decimal", min = 0 } = {}) {
+  return `${id ? `id="${esc(id)}" ` : ""}name="${esc(name)}" type="text" inputmode="${kind === "integer" ? "numeric" : "decimal"}" data-numeric-input="true" data-numeric-kind="${kind}" data-allow-negative="false" min="${min}" value="${esc(value)}"`;
 }
 
 function sanitizeNumericInputValue(input, { commit = false } = {}) {
@@ -4448,7 +4453,7 @@ function addShipmentModal(item = null) {
         <div class="form-field"><label class="required">المحافظة</label><select name="governorate" required>${governorateOptions(item?.governorate)}</select></div>
         <div class="form-field"><label>المدينة</label><input name="city" value="${esc(item?.city || "")}"></div>
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(item?.address || "")}"></div>
-        <div class="form-field"><label>تكلفة الشحن</label><input name="cost" type="number" min="0" value="${item?.cost ?? 0}"></div>
+        <div class="form-field"><label for="shipment-extra-cost">تكلفة الشحن الإضافية</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.cost ?? 0 })}></div>
         <div class="form-field full"><label>الحالة</label><select name="status">${["جديدة","تم التجهيز","تم التسليم للشركة","في الطريق","تم التسليم","مرتجع"].map(status => `<option ${item?.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></div>
       </div>
       <div class="form-actions"><button class="btn" type="submit">حفظ الشحنة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
@@ -5842,7 +5847,7 @@ modalBody.addEventListener("submit", async event => {
       company: formData.company,
       tracking: formData.tracking,
       status: formData.status,
-      cost: Number(formData.cost || 0)
+      cost: Math.max(0, Number(normalizeArabicNumericText(formData.cost)) || 0)
     });
     return;
   }
@@ -5915,12 +5920,18 @@ modalBody.addEventListener("submit", async event => {
       governorate: snapshot.governorate || governorate || existing?.governorate || "",
       city: snapshot.city || formData.city,
       address: snapshot.address || formData.address || existing?.address || "",
-      cost: Number(formData.cost), updated: now, updatedAt: now, createdAt: existing?.createdAt || now, deletedAt: existing?.deletedAt ?? null
+      cost: Math.max(0, Number(normalizeArabicNumericText(formData.cost)) || 0), updated: now, updatedAt: now, createdAt: existing?.createdAt || now, deletedAt: existing?.deletedAt ?? null
     };
     if (index >= 0) data.shipments[index] = item;
     else {
       data.shipments.unshift(item);
       if (linkedSale) linkedSale.shipmentId = item.id;
+    }
+    const invoice = linkedSale || data.sales.find(sale => sale.id === item.invoiceId || sale.id === item.orderId);
+    if (invoice) {
+      invoice.shipmentId = item.id;
+      invoice.shippingCost = item.cost;
+      invoice.updatedAt = now;
     }
     saveData(index >= 0 ? "تعديل شحنة" : "إنشاء شحنة", "الشحن", item.id);
     closeModal();
@@ -6384,9 +6395,9 @@ function postInvoiceShippingChoice(orderId, saleId) {
   openModal("هل تم الشحن؟", "ما بعد تسجيل الفاتورة", `
     <form id="post-invoice-shipping-choice" data-order-id="${order.id}" data-sale-id="${sale.id}">
       <div class="workflow-strip"><strong>الربط:</strong><span>${esc(order.id)}</span><b>→</b><span>${esc(sale.id)}</span><b>→</b><span>قرار الشحن</span></div>
-      <div class="form-grid">
-        <label class="choice-card"><input type="radio" name="shippingChoice" value="no" checked><span><strong>لا، لم يتم الشحن بعد</strong><small>تبقى الفاتورة موجودة ويظهر زر إنشاء شحنة لاحقًا.</small></span></label>
-        <label class="choice-card"><input type="radio" name="shippingChoice" value="yes"><span><strong>نعم، تم إنشاء الشحنة</strong><small>سيتم فتح نموذج الشحنة لاختيار شركة الشحن ورقم التتبع.</small></span></label>
+      <div class="shipping-choice-grid" dir="rtl">
+        <label class="choice-card shipping-choice-card"><input type="radio" name="shippingChoice" value="no" checked><span><strong>لا، لم يتم الشحن بعد</strong><small>تبقى الفاتورة موجودة ويظهر زر إنشاء شحنة لاحقًا.</small></span></label>
+        <label class="choice-card shipping-choice-card"><input type="radio" name="shippingChoice" value="yes"><span><strong>نعم، تم إنشاء الشحنة</strong><small>سيتم فتح نموذج الشحنة لاختيار شركة الشحن ورقم التتبع.</small></span></label>
       </div>
       <div class="form-actions"><button class="btn" type="submit">متابعة</button><button class="btn ghost" type="button" data-action="close-modal">لاحقًا</button></div>
     </form>`);
@@ -6425,6 +6436,8 @@ function createShipmentFromOrder(id, details = null) {
   };
   data.shipments.unshift(shipment);
   sale.shipmentId = shipment.id;
+  sale.shippingCost = shipment.cost;
+  sale.updatedAt = now;
   const orderShipmentStatus = { "جديدة":"تم إنشاء الشحنة", "تم التجهيز":"تم إنشاء الشحنة", "خرج للتوصيل":"خرج للتوصيل", "تم التسليم":"تم التسليم", "مرتجع":"مرتجع" };
   order.shipmentId = shipment.id; order.tracking = shipment.tracking; order.status = orderShipmentStatus[shipment.status] || "تم إنشاء الشحنة"; order.updatedAt = now;
   saveData("إنشاء شحنة من طلب أونلاين", "طلبات الأونلاين", order.id);
@@ -6444,7 +6457,7 @@ function shipmentFromOrderModal(order, sale) {
         <div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions()}</select></div>
         <div class="form-field"><label>رقم التتبع</label><input name="tracking" value="${esc(order.tracking || "")}" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا"></div>
         <div class="form-field"><label>الحالة</label><select name="status">${["تم التجهيز","خرج للتوصيل","تم التسليم","مرتجع"].map(status => `<option>${status}</option>`).join("")}</select></div>
-        <div class="form-field"><label>تكلفة الشحن</label><input name="cost" type="number" min="0" value="${Number(order.shippingCost || sale.shipping || 0)}"></div>
+        <div class="form-field"><label for="order-shipment-extra-cost">تكلفة الشحن الإضافية</label><input ${numericFieldAttributes({ id:"order-shipment-extra-cost", name:"cost", value:Number(order.shippingCost || sale.shippingCost || sale.shipping || 0) })}></div>
       </div>
       <div class="customer-summary" style="margin-top:14px"><strong>${esc(snapshot.name)}</strong><span><span dir="ltr">${esc(snapshot.phone || "—")}</span></span><span>${esc([snapshot.governorate, snapshot.city, snapshot.address].filter(Boolean).join("، "))}</span></div>
       <div class="form-actions"><button class="btn" type="submit">إنشاء الشحنة وربطها بالفاتورة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
@@ -8991,6 +9004,18 @@ async function runSelfTest() {
     check("حقول الكمية أعداد صحيحة فقط", sanitizeNumericInputValue(quantityInput, { commit:true }) === "12" && quantityInput.inputMode === "numeric");
     decimalInput.value = "-5";
     check("منع السالب في الحقول المالية العامة", sanitizeNumericInputValue(decimalInput, { commit:true }) === "5");
+    const shippingCostInput = document.createElement("input");
+    shippingCostInput.name = "cost";
+    shippingCostInput.type = "text";
+    shippingCostInput.inputMode = "decimal";
+    shippingCostInput.dataset.numericInput = "true";
+    shippingCostInput.dataset.numericKind = "decimal";
+    shippingCostInput.dataset.allowNegative = "false";
+    shippingCostInput.min = "0";
+    shippingCostInput.value = "١٢٫٥٠";
+    check("تكلفة الشحن الديناميكية تقبل العربية والكسور", sanitizeNumericInputValue(shippingCostInput, { commit:true }) === "12.5");
+    shippingCostInput.value = "-12.50";
+    check("تكلفة الشحن لا تقبل السالب", sanitizeNumericInputValue(shippingCostInput, { commit:true }) === "12.5");
     check("دور المالك يفتح كل الصفحات", ROLE_VIEWS["مالك"].length === VIEW_DEFINITIONS.length);
     const ownerUser = currentUser;
     currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
@@ -9199,7 +9224,8 @@ async function runSelfTest() {
     check("عكس أثر الإيصال عند الإلغاء", receiptCustomer.balance === receiptBalanceBefore && testReceipt.status === "ملغى");
 
     check("بحث الفواتير برقم الفاتورة", findSalesInvoices("INV-1047").some(invoice => invoice.id === "INV-1047"));
-    check("بحث الفواتير بكود التتبع", findSalesInvoices("BST-908173").some(invoice => invoice.id === "INV-1047"));
+    const linkedTracking = data.shipments.find(shipment => shipment.invoiceId === "INV-1047" || shipment.orderId === "INV-1047")?.tracking;
+    check("بحث الفواتير بكود التتبع", Boolean(linkedTracking && findSalesInvoices(linkedTracking).some(invoice => invoice.id === "INV-1047")));
     check("بحث الفواتير برقم الموبايل", findSalesInvoices("01000000001").some(invoice => invoice.id === "INV-1047"));
     check("بحث الفواتير باسم العميل", findSalesInvoices("مكتبة المستقبل").some(invoice => invoice.id === "INV-1047"));
     check("البحث في الفواتير بدون نتائج", findSalesInvoices("لا-توجد-فاتورة-بهذا-الرقم").length === 0);

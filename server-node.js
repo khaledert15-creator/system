@@ -366,7 +366,22 @@ function requestTextDetailed(url, options = {}, timeoutMs = 15000) {
   });
 }
 
-async function requestLocalRpa(pathname, payload = null, timeoutMs = TRACKING_RPA_TIMEOUT_MS) {
+function trackingLog(stage, details = {}) {
+  const safe = {
+    timestamp: new Date().toISOString(),
+    level: details.level || "info",
+    service: "tracking",
+    stage,
+    requestId: details.requestId || "",
+    shipmentId: details.shipmentId || "",
+    ok: details.ok,
+    eventCount: details.eventCount,
+    message: details.message || ""
+  };
+  console.log(JSON.stringify(Object.fromEntries(Object.entries(safe).filter(([, value]) => value !== undefined && value !== ""))));
+}
+
+async function requestLocalRpa(pathname, payload = null, timeoutMs = TRACKING_RPA_TIMEOUT_MS, requestId = crypto.randomUUID()) {
   if (!TRACKING_RPA_ENABLED || !TRACKING_RPA_BASE_URL || !TRACKING_RPA_SHARED_SECRET) {
     const error = new Error("خدمة التتبع غير مهيأة على السيرفر.");
     error.code = "TRACKING_AGENT_OFFLINE";
@@ -374,7 +389,6 @@ async function requestLocalRpa(pathname, payload = null, timeoutMs = TRACKING_RP
   }
   const target = new URL(pathname, `${TRACKING_RPA_BASE_URL.replace(/\/$/, "")}/`);
   const body = payload ? JSON.stringify(payload) : "";
-  const requestId = crypto.randomUUID();
   let response;
   try {
     response = await requestTextDetailed(target.toString(), {
@@ -420,12 +434,14 @@ function localRpaTimelineToEvents(result = {}, shipment = {}) {
   }).filter(event => event.statusText || event.location);
 }
 
-async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber) {
+async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId) {
+  trackingLog("agent_request", { requestId, shipmentId:shipment.id });
   const { statusCode, data } = await requestLocalRpa("/track", {
     shipmentId: shipment.id,
     trackingNumber,
-    provider: "egypt_post"
-  }, TRACKING_RPA_TIMEOUT_MS);
+    provider: "egypt_post",
+    requestId
+  }, TRACKING_RPA_TIMEOUT_MS, requestId);
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
     error.code = data.failureCode || "LOCAL_RPA_FAILED";
@@ -449,6 +465,7 @@ async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber) {
     error.payload = data;
     throw error;
   }
+  trackingLog("agent_result", { requestId, shipmentId:shipment.id, ok:true, eventCount:events.length });
   return {
     payload: data,
     events,
@@ -1117,7 +1134,7 @@ async function fetch17TrackTracking(db, shipment, settings, trackingNumber) {
   };
 }
 
-async function fetchTrackingFromProvider(db, shipment) {
+async function fetchTrackingFromProvider(db, shipment, requestId) {
   const settings = defaultTrackingSettings(db.settings || {});
   const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -1127,7 +1144,7 @@ async function fetchTrackingFromProvider(db, shipment) {
     throw error;
   }
   if (TRACKING_RPA_ENABLED) {
-    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber);
+    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId);
   }
   return fetchEgyptPostBrowserTracking(db, shipment, settings, trackingNumber);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -1288,7 +1305,26 @@ function syncLinkedOrder(db, shipment) {
   order.updatedAt = new Date().toISOString();
 }
 
-async function trackShipment(db, shipment, { manual = false } = {}) {
+function businessShipmentStatus(normalizedStatus, currentStatus = "") {
+  const map = {
+    accepted_by_carrier:"تم التسليم للشركة",
+    at_sorting_center:"في الطريق",
+    in_transit:"في الطريق",
+    out_for_delivery:"خرج للتوصيل",
+    delivery_attempted:"في الطريق",
+    customer_unavailable:"في الطريق",
+    address_issue:"في الطريق",
+    delayed:"في الطريق",
+    held:"في الطريق",
+    return_initiated:"مرتجع",
+    return_in_transit:"مرتجع",
+    returned_to_sender:"مرتجع",
+    delivered:"تم التسليم"
+  };
+  return map[normalizedStatus] || currentStatus;
+}
+
+async function trackShipment(db, shipment, { manual = false, requestId = crypto.randomUUID() } = {}) {
   if (trackingActiveShipmentIds.has(shipment.id)) {
     return { ok: false, changed: false, duplicate: true, failureCode: "TRACKING_JOB_ALREADY_RUNNING", error: "يتم تتبع هذه الشحنة حاليًا." };
   }
@@ -1299,8 +1335,9 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
   shipment.tracking = shipment.trackingNumber;
   shipment.lastTrackingAt = started;
   shipment.trackingProvider = settings.providerName;
+  trackingLog("backend_received", { requestId, shipmentId:shipment.id });
   try {
-    const result = await fetchTrackingFromProvider(db, shipment);
+    const result = await fetchTrackingFromProvider(db, shipment, requestId);
     shipment.lastTrackingSource = result.source || settings.providerEndpoint || "";
     shipment.lastTrackingHttpStatus = result.httpStatus || "";
     shipment.lastTrackingResponseAt = started;
@@ -1329,6 +1366,7 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       location: cleanTrackingText(event.location)
     })).filter(event => event.statusText || event.location);
     shipment.lastTrackingEventCount = confirmedEvents.length;
+    const newHistoryFingerprints = [];
     for (const event of confirmedEvents) {
       const entry = {
         id: nextId("TRK-", db.trackingHistory),
@@ -1339,6 +1377,7 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       entry.eventFingerprint = eventFingerprint(entry);
       if (!db.trackingHistory.some(old => old.eventFingerprint === entry.eventFingerprint)) {
         db.trackingHistory.push(entry);
+        newHistoryFingerprints.push(entry.eventFingerprint);
         changed = true;
       }
     }
@@ -1348,8 +1387,15 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       shipment.normalizedStatus = latest.normalizedStatus;
       shipment.currentLocation = latest.location;
       shipment.currentStatus = latest.statusText;
+      shipment.status = businessShipmentStatus(latest.normalizedStatus, shipment.status);
+      shipment.trackingStatus = latest.normalizedStatus;
+      shipment.trackingMessage = latest.statusText;
+      shipment.lastEvent = latest;
+      shipment.lastTrackedAt = started;
+      if (latest.normalizedStatus === "delivered") shipment.deliveredAt = shipment.deliveredAt || latest.eventAt || started;
       if (changed) shipment.lastMovementAt = latest.eventAt;
     }
+    trackingLog("history_updated", { requestId, shipmentId:shipment.id, ok:true, eventCount:newHistoryFingerprints.length });
     shipment.trackingError = "";
     shipment.trackingErrorCount = 0;
     shipment.trackingRetryPending = false;
@@ -1359,6 +1405,7 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
     syncLinkedOrder(db, shipment);
     shipment.updatedAt = new Date().toISOString();
     shipment.updated = shipment.updatedAt.slice(0, 10);
+    trackingLog("shipment_updated", { requestId, shipmentId:shipment.id, ok:true, eventCount:confirmedEvents.length });
     return {
       ok: true,
       changed,
@@ -1369,18 +1416,25 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       providerActual: result.providerActual || settings.providerName,
       eventCount: Number(confirmedEvents.length || result.eventCount || 0),
       events: confirmedEvents,
+      requestId,
+      newHistoryFingerprints,
       rawResult: result.payload || null,
       parsedResult: {
         confirmedStatus: latest?.statusText || "",
         statusCode: latest?.normalizedStatus || "",
         statusLabel: latest?.statusText || "",
         timeline: confirmedEvents,
+        events: confirmedEvents,
+        normalizedStatus: latest?.normalizedStatus || "",
+        lastEvent: latest || null,
+        deliveredAt: latest?.normalizedStatus === "delivered" ? (shipment.deliveredAt || latest?.eventAt || "") : "",
         delivered: latest?.normalizedStatus === "delivered",
         lastEventAt: latest?.eventAt || ""
       },
       diagnostics: result.diagnostics || result.payload?.diagnostics || null
     };
   } catch (error) {
+    trackingLog("tracking_failed", { requestId, shipmentId:shipment.id, ok:false, level:"error", message:error.code || "TRACKING_FAILED" });
     const offline = error.code === "TRACKING_AGENT_OFFLINE" || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT"].includes(error.code);
     shipment.trackingError = offline ? "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا." : (error.message || "تعذر تحديث التتبع");
     if (!shipment.trackingError || /طھط¹ط°ط±|Tracking request/i.test(shipment.trackingError)) shipment.trackingError = error.message || "تعذر تحديث التتبع";
@@ -1467,12 +1521,12 @@ function buildTrackingRunRecord(settings, shipment, startedAt, result) {
   };
 }
 
-async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds = [] } = {}) {
+async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds = [], requestId = crypto.randomUUID() } = {}) {
   if (trackingRunning) return { ok: false, message: "Tracking worker is already running." };
   trackingRunning = true;
   const startedAt = new Date().toISOString();
   const batchId = `TRB-${Date.now()}`;
-  const summary = { ok: true, batchId, checked: 0, successful: 0, failed: 0, manualIntervention: 0, changed: 0, unchanged: 0, startedAt, finishedAt: null, errors: [] };
+  const summary = { ok: true, requestId, batchId, checked: 0, successful: 0, failed: 0, manualIntervention: 0, changed: 0, unchanged: 0, startedAt, finishedAt: null, errors: [] };
   try {
     if (!fs.existsSync(DB_PATH)) return { ...summary, ok: false, message: "Database not initialized." };
     const db = ensureTrackingDb(readDb());
@@ -1482,13 +1536,23 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
     trackingRuntime.source = settings.providerEndpoint || "Not Available";
     const selected = [shipmentId, ...(Array.isArray(shipmentIds) ? shipmentIds : [])].filter(Boolean);
     const list = selected.length ? db.shipments.filter(item => selected.includes(item.id)) : activeTrackableShipments(db, { manual });
+    if (selected.length && list.length !== new Set(selected).size) {
+      summary.ok = false;
+      summary.finishedAt = new Date().toISOString();
+      summary.message = "لم يتم العثور على الشحنة المطلوبة للحفظ.";
+      trackingLog("shipment_not_found", { requestId, ok:false, level:"error", message:"SHIPMENT_NOT_FOUND" });
+      return summary;
+    }
+    const persistenceExpectations = [];
     for (const shipment of list) {
       summary.checked += 1;
       const shipmentRunStartedAt = new Date().toISOString();
-      const result = await trackShipment(db, shipment, { manual });
+      const result = await trackShipment(db, shipment, { manual, requestId });
       const runRecord = buildTrackingRunRecord(settings, shipment, shipmentRunStartedAt, result);
       db.trackingRuns = db.trackingRuns || [];
-      db.trackingRuns.push({ id: nextId("TRUN-", db.trackingRuns), batchId: summary.batchId, manual: Boolean(manual), ...runRecord });
+      const run = { id: nextId("TRUN-", db.trackingRuns), batchId: summary.batchId, requestId, manual: Boolean(manual), ...runRecord };
+      db.trackingRuns.push(run);
+      persistenceExpectations.push({ shipmentId:shipment.id, runId:run.id, successful:result.ok, fingerprints:result.newHistoryFingerprints || [], lastTrackedAt:shipment.lastTrackedAt || "" });
       if (result.ok) summary.successful += 1;
       else {
         summary.failed += 1;
@@ -1507,6 +1571,22 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
     db.trackingRunBatches.push({ id: summary.batchId, ...summary, manual, provider: settings.providerName });
     db.trackingRunBatches = db.trackingRunBatches.slice(-100);
     writeDb(db);
+    const persisted = ensureTrackingDb(readDb());
+    for (const expected of persistenceExpectations) {
+      const savedShipment = persisted.shipments.find(item => item.id === expected.shipmentId);
+      const savedRun = persisted.trackingRuns.some(item => item.id === expected.runId && item.requestId === requestId);
+      const savedHistory = expected.fingerprints.every(fingerprint => persisted.trackingHistory.some(item => item.eventFingerprint === fingerprint));
+      const savedStatus = !expected.successful || Boolean(savedShipment?.lastTrackedAt && savedShipment?.trackingStatus && savedShipment?.trackingMessage);
+      if (!savedShipment || !savedRun || !savedHistory || !savedStatus) {
+        summary.ok = false;
+        summary.persistenceFailed = true;
+        summary.message = "وصلت نتيجة التتبع ولكن تعذر حفظها بالكامل.";
+        summary.errors.push({ shipmentId:expected.shipmentId, error:summary.message });
+        trackingLog("persistence_failed", { requestId, shipmentId:expected.shipmentId, ok:false, level:"error", message:"PERSISTENCE_VERIFICATION_FAILED" });
+      } else {
+        trackingLog("persistence_verified", { requestId, shipmentId:expected.shipmentId, ok:true, eventCount:expected.fingerprints.length });
+      }
+    }
     trackingRuntime.lastRun = summary.finishedAt;
     trackingRuntime.lastSummary = summary;
     trackingRuntime.lastError = summary.errors[0]?.error || "";
@@ -1692,7 +1772,7 @@ const server = http.createServer(async (req, res) => {
       const db = ensureTrackingDb(readDb());
       const shipmentIds = (db.shipments || []).filter(item => item.trackingRetryPending).map(item => item.id);
       if (!shipmentIds.length) return send(res, 200, { ok:true, checked:0, message:"لا توجد مهام تتبع معلقة." });
-      const result = await runTrackingCycle({ manual: true, shipmentIds });
+      const result = await runTrackingCycle({ manual: true, shipmentIds, requestId:String(req.headers["x-request-id"] || crypto.randomUUID()) });
       return send(res, result.ok ? 200 : 503, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
@@ -1700,14 +1780,14 @@ const server = http.createServer(async (req, res) => {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       let payload = {};
       try { payload = JSON.parse(await readBody(req) || "{}"); } catch {}
-      const result = await runTrackingCycle({ manual: true, shipmentIds: Array.isArray(payload.shipmentIds) ? payload.shipmentIds : [] });
+      const result = await runTrackingCycle({ manual: true, shipmentIds: Array.isArray(payload.shipmentIds) ? payload.shipmentIds : [], requestId:String(req.headers["x-request-id"] || crypto.randomUUID()) });
       return send(res, result.ok ? 200 : 500, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
     if (route.startsWith("/api/tracking/shipment/") && req.method === "POST") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       const id = route.split("/").pop();
-      const result = await runTrackingCycle({ manual: true, shipmentId: id });
+      const result = await runTrackingCycle({ manual: true, shipmentId: id, requestId:String(req.headers["x-request-id"] || crypto.randomUUID()) });
       return send(res, result.ok ? 200 : 500, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
