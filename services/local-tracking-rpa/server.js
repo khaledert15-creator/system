@@ -214,7 +214,7 @@ function classifyBlock(text = "", title = "", url = "") {
 function normalizeStatus(text = "") {
   const lower = String(text || "").toLowerCase();
   if (/برجاء إدخال|ادخل باركود|كيفية الاستخدام|المكان المخصص|please enter|enter tracking/i.test(lower)) return "unknown";
-  if (/delivered|تم\s+ال?تسليم|التسليم والتحصيل|اكتمل|اكتمال/.test(lower)) return "delivered";
+  if (/delivered|تم\s+(?:ال)?تسليم|التسليم والتحصيل|اكتمل|اكتمال/.test(lower)) return "delivered";
   if (/out for delivery|خارج للتسليم|خرج للتوصيل/.test(lower)) return "out_for_delivery";
   if (/transit|نقل|معالجة|في الطريق|الشحن/.test(lower)) return "in_transit";
   if (/registered|accepted|تسجيل|استلام/.test(lower)) return "registered";
