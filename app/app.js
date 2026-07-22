@@ -1489,6 +1489,66 @@ function normalizeSmartSearch(value) {
     .trim();
 }
 
+function normalizeArabicNumericText(value = "") {
+  return String(value)
+    .replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[٫،]/g, ".")
+    .replace(/٬/g, "")
+    .replace(/[−–—]/g, "-")
+    .replace(/\s+/g, "");
+}
+
+function isIntegerNumericInput(input) {
+  return input.matches([
+    ".sale-qty", ".purchase-qty", ".ool-qty", ".count-actual-stock",
+    ".customer-return-qty", ".supplier-return-qty", ".sale-return-qty",
+    "#sale-quick-qty", "#purchase-quick-qty", "#tracking-min-delay",
+    "#tracking-max-attempts", "#tracking-no-movement", "#tracking-complaint-hours",
+    "[name^='qty-']", "[name^='returnQty-']", "[name^='actual-']",
+    "[name='stock']", "[name='reorder']", "[name='terms']"
+  ].join(","));
+}
+
+function configureNumericInput(input) {
+  if (!(input instanceof HTMLInputElement) || (input.type !== "number" && input.dataset.numericInput !== "true")) return false;
+  if (input.dataset.numericInput !== "true") {
+    input.dataset.numericInput = "true";
+    input.dataset.numericKind = isIntegerNumericInput(input) ? "integer" : "decimal";
+    input.dataset.allowNegative = ["balance", "openingBalance"].includes(input.name) ? "true" : "false";
+    input.type = "text";
+    input.inputMode = input.dataset.numericKind === "integer" ? "numeric" : "decimal";
+  }
+  return true;
+}
+
+function sanitizeNumericInputValue(input, { commit = false } = {}) {
+  if (!configureNumericInput(input)) return "";
+  const integer = input.dataset.numericKind === "integer";
+  const allowNegative = input.dataset.allowNegative === "true";
+  let value = normalizeArabicNumericText(input.value);
+  const negative = allowNegative && value.startsWith("-");
+  value = value.replace(/-/g, "").replace(/[^0-9.]/g, "");
+  const parts = value.split(".");
+  value = integer ? parts[0] : `${parts.shift() || ""}${parts.length ? `.${parts.join("")}` : ""}`;
+  if (negative) value = `-${value}`;
+  if (!commit && ["", "-", ".", "-.", "0.", "-0."].includes(value)) return value;
+  if (!commit) return value;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  const min = input.hasAttribute("min") ? Number(input.getAttribute("min")) : null;
+  const max = input.hasAttribute("max") ? Number(input.getAttribute("max")) : null;
+  let normalized = integer ? Math.trunc(number) : number;
+  if (!allowNegative && normalized < 0) normalized = 0;
+  if (Number.isFinite(min)) normalized = Math.max(min, normalized);
+  if (Number.isFinite(max)) normalized = Math.min(max, normalized);
+  return String(normalized);
+}
+
+function isEditableElement(target) {
+  return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
+}
+
 function bookSearchText(book = {}) {
   return normalizeSmartSearch([
     book.id, book.name, book.barcode, book.extraBarcode, book.internalCode,
@@ -4623,6 +4683,23 @@ document.getElementById("menu-btn").addEventListener("click", () => document.get
 document.getElementById("notification-btn").addEventListener("click", showNotificationCenter);
 document.getElementById("close-modal").addEventListener("click", closeModal);
 modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
+document.addEventListener("focusin", event => {
+  configureNumericInput(event.target);
+}, true);
+document.addEventListener("input", event => {
+  const input = event.target;
+  if (!configureNumericInput(input)) return;
+  const normalized = sanitizeNumericInputValue(input);
+  if (input.value === normalized) return;
+  const cursor = input.selectionStart;
+  input.value = normalized;
+  if (cursor !== null) input.setSelectionRange(Math.min(cursor, normalized.length), Math.min(cursor, normalized.length));
+}, true);
+document.addEventListener("change", event => {
+  const input = event.target;
+  if (!configureNumericInput(input)) return;
+  input.value = sanitizeNumericInputValue(input, { commit:true });
+}, true);
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !modal.hidden) {
     event.preventDefault();
@@ -4904,7 +4981,7 @@ root.addEventListener("keydown", event => {
     return;
   }
   const card = event.target.closest('.stat-card.interactive[data-action="dashboard-stat"], .stat-card.interactive[data-action="online-order-stat"], .stat-card.interactive[data-action="shipping-stat"], .stat-card.interactive[data-action="sales-stat"]');
-  if (card && (event.key === "Enter" || event.key === " ")) {
+  if (card && event.target === card && (event.key === "Enter" || event.key === " ")) {
     event.preventDefault();
     if (card.dataset.action === "online-order-stat") applyOnlineOrderQuickFilter(card.dataset.stat);
     else if (card.dataset.action === "shipping-stat") applyShippingStatFilter(card.dataset.stat);
@@ -4979,13 +5056,17 @@ root.addEventListener("input", event => {
   if (event.target.classList.contains("purchase-cover")) {
     draftPurchase.lines[index].coverPriceAtPurchase = Number(event.target.value);
     syncPurchaseLineCost(index, "discount");
-    renderPurchases();
+    const costInput = document.querySelector(`.purchase-cost[data-index="${index}"]`);
+    if (costInput) costInput.value = draftPurchase.lines[index].cost;
+    updatePurchaseSummary();
     return;
   }
   if (event.target.classList.contains("purchase-supplier-discount")) {
     draftPurchase.lines[index].supplierDiscountPercent = Number(event.target.value);
     syncPurchaseLineCost(index, "discount");
-    renderPurchases();
+    const costInput = document.querySelector(`.purchase-cost[data-index="${index}"]`);
+    if (costInput) costInput.value = draftPurchase.lines[index].cost;
+    updatePurchaseSummary();
     return;
   }
   if (event.target.classList.contains("purchase-cost")) {
@@ -8868,6 +8949,22 @@ async function runSelfTest() {
 
   try {
     check("جلسة مستخدم موثقة", Boolean(currentUser?.id && sessionToken));
+    check("تطبيع الأرقام العربية والكسور", normalizeArabicNumericText("١٢٥٫٥٠") === "125.50" && normalizeArabicNumericText("۱۲۵.۵۰") === "125.50");
+    const decimalInput = document.createElement("input");
+    decimalInput.type = "number";
+    decimalInput.name = "amount";
+    configureNumericInput(decimalInput);
+    decimalInput.value = "١٢٥٫٥٠";
+    check("الإدخال المالي يقبل العربية", sanitizeNumericInputValue(decimalInput, { commit:true }) === "125.5" && decimalInput.inputMode === "decimal");
+    const quantityInput = document.createElement("input");
+    quantityInput.type = "number";
+    quantityInput.className = "sale-qty";
+    quantityInput.min = "1";
+    configureNumericInput(quantityInput);
+    quantityInput.value = "١٢٫٥";
+    check("حقول الكمية أعداد صحيحة فقط", sanitizeNumericInputValue(quantityInput, { commit:true }) === "12" && quantityInput.inputMode === "numeric");
+    decimalInput.value = "-5";
+    check("منع السالب في الحقول المالية العامة", sanitizeNumericInputValue(decimalInput, { commit:true }) === "5");
     check("دور المالك يفتح كل الصفحات", ROLE_VIEWS["مالك"].length === VIEW_DEFINITIONS.length);
     const ownerUser = currentUser;
     currentUser = { id:"QA", username:"cashier", name:"كاشير اختبار", role:"كاشير" };
