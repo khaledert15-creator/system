@@ -434,13 +434,14 @@ function localRpaTimelineToEvents(result = {}, shipment = {}) {
   }).filter(event => event.statusText || event.location);
 }
 
-async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId) {
+async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false } = {}) {
   trackingLog("agent_request", { requestId, shipmentId:shipment.id });
   const { statusCode, data } = await requestLocalRpa("/track", {
     shipmentId: shipment.id,
     trackingNumber,
     provider: "egypt_post",
-    requestId
+    requestId,
+    force: Boolean(manual)
   }, TRACKING_RPA_TIMEOUT_MS, requestId);
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
@@ -1134,7 +1135,7 @@ async function fetch17TrackTracking(db, shipment, settings, trackingNumber) {
   };
 }
 
-async function fetchTrackingFromProvider(db, shipment, requestId) {
+async function fetchTrackingFromProvider(db, shipment, requestId, { manual = false } = {}) {
   const settings = defaultTrackingSettings(db.settings || {});
   const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -1144,7 +1145,7 @@ async function fetchTrackingFromProvider(db, shipment, requestId) {
     throw error;
   }
   if (TRACKING_RPA_ENABLED) {
-    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId);
+    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual });
   }
   return fetchEgyptPostBrowserTracking(db, shipment, settings, trackingNumber);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -1337,7 +1338,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
   shipment.trackingProvider = settings.providerName;
   trackingLog("backend_received", { requestId, shipmentId:shipment.id });
   try {
-    const result = await fetchTrackingFromProvider(db, shipment, requestId);
+    const result = await fetchTrackingFromProvider(db, shipment, requestId, { manual });
     shipment.lastTrackingSource = result.source || settings.providerEndpoint || "";
     shipment.lastTrackingHttpStatus = result.httpStatus || "";
     shipment.lastTrackingResponseAt = started;
