@@ -6,6 +6,10 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${APP_PORT:-8765}
+      TRACKING_RPA_ENABLED: ${TRACKING_RPA_ENABLED:-false}
+      TRACKING_RPA_BASE_URL: ${TRACKING_RPA_BASE_URL:-}
+      TRACKING_RPA_SHARED_SECRET: ${TRACKING_RPA_SHARED_SECRET:-}
+      TRACKING_RPA_TIMEOUT_MS: ${TRACKING_RPA_TIMEOUT_MS:-120000}
     volumes:
       - app_data:/app/data
     ports:

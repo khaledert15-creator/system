@@ -1,9 +1,13 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
-const PORT = Number(process.env.LOCAL_TRACKING_RPA_PORT || 8788);
-const HOST = process.env.LOCAL_TRACKING_RPA_HOST || "127.0.0.1";
+const PORT = 8788;
+const HOST = "127.0.0.1";
+const AGENT_VERSION = require("./package.json").version;
+const SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
+const ALLOW_MOCKS = String(process.env.TRACKING_RPA_ALLOW_MOCKS || "").toLowerCase() === "true";
 const EGYPT_POST_URL = "https://egyptpost.gov.eg/ar-eg/home/eservices/track-and-trace/";
 const SERVICE_ROOT = __dirname;
 const DOTCOM_ROOT = path.resolve(SERVICE_ROOT, "..", "..");
@@ -18,15 +22,17 @@ const DEFAULT_TIMEOUT_MS = Number(process.env.LOCAL_TRACKING_RPA_TIMEOUT || 1200
 let activeJobs = 0;
 let lastAttemptByTrackingNumber = new Map();
 let lastAttempt = null;
+let lastSuccessfulRunAt = null;
+let lastFailureAt = null;
+const rateLimitBuckets = new Map();
 
-function json(res, status, body) {
+function json(res, status, body, requestId = "") {
   const payload = Buffer.from(JSON.stringify(body, null, 2), "utf8");
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": payload.length,
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Cache-Control": "no-store",
+    "X-Request-ID": requestId
   });
   res.end(payload);
 }
@@ -34,7 +40,16 @@ function json(res, status, body) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", chunk => chunks.push(chunk));
+    let size = 0;
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > 16384) {
+        reject(Object.assign(new Error("Request body is too large"), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
       const text = Buffer.concat(chunks).toString("utf8");
       try { resolve(text ? JSON.parse(text) : {}); }
@@ -42,6 +57,38 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function authorized(req) {
+  if (!SHARED_SECRET) return false;
+  const supplied = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const expected = Buffer.from(SHARED_SECRET, "utf8");
+  const actual = Buffer.from(supplied, "utf8");
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function withinRateLimit(req) {
+  const key = req.socket.remoteAddress || "local";
+  const now = Date.now();
+  const bucket = rateLimitBuckets.get(key) || [];
+  const recent = bucket.filter(stamp => now - stamp < 60000);
+  recent.push(now);
+  rateLimitBuckets.set(key, recent);
+  return recent.length <= 30;
+}
+
+function browserAvailable() {
+  const candidates = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+  ];
+  if (candidates.some(file => fs.existsSync(file))) return true;
+  try {
+    const { chromium } = require("playwright");
+    return Boolean(chromium.executablePath() && fs.existsSync(chromium.executablePath()));
+  } catch {
+    return false;
+  }
 }
 
 function normalizeTrackingNumber(value = "") {
@@ -382,8 +429,12 @@ async function track(payload = {}) {
   if (!/^[A-Z0-9]{8,30}$/.test(trackingNumber)) {
     return baseResponse({ trackingNumber, failureCode: "INVALID_TRACKING_NUMBER", failureMessage: "رقم التتبع غير صالح", manualReviewRequired: true });
   }
-  const mock = mockResponse(payload.provider, trackingNumber, payload.shipmentId);
-  if (mock) return mock;
+  const mock = ALLOW_MOCKS ? mockResponse(payload.provider, trackingNumber, payload.shipmentId) : null;
+  if (mock) {
+    if (mock.success) lastSuccessfulRunAt = new Date().toISOString();
+    else lastFailureAt = new Date().toISOString();
+    return mock;
+  }
   const now = Date.now();
   const previous = lastAttemptByTrackingNumber.get(trackingNumber);
   if (!payload.force && previous && now - previous < MIN_REPEAT_INTERVAL_MS) {
@@ -407,48 +458,51 @@ async function track(payload = {}) {
     }
     lastAttemptByTrackingNumber.set(trackingNumber, Date.now());
     lastAttempt = Date.now();
-    return await realTrack({ ...payload, trackingNumber });
+    const result = await realTrack({ ...payload, trackingNumber });
+    if (result.success) lastSuccessfulRunAt = new Date().toISOString();
+    else lastFailureAt = new Date().toISOString();
+    return result;
+  } catch (error) {
+    lastFailureAt = new Date().toISOString();
+    throw error;
   } finally {
     activeJobs -= 1;
   }
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === "OPTIONS") return json(res, 204, {});
+  const requestId = String(req.headers["x-request-id"] || crypto.randomUUID()).slice(0, 128);
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   try {
+    if (!authorized(req)) return json(res, 401, { status: "unauthorized", requestId }, requestId);
+    if (!withinRateLimit(req)) return json(res, 429, { status: "rate_limited", requestId }, requestId);
     if (url.pathname === "/health" && req.method === "GET") {
-      let playwrightAvailable = false;
-      try { require.resolve("playwright"); playwrightAvailable = true; } catch {}
       return json(res, 200, {
-        ok: true,
-        service: "local-tracking-rpa",
-        url: `http://${HOST}:${PORT}`,
-        browserMode: "headed_chrome",
-        profilePath: PROFILE_ROOT,
-        debugPath: DEBUG_ROOT,
-        maxConcurrent: MAX_CONCURRENT,
-        repeatWindowHours: MIN_REPEAT_INTERVAL_MS / 3600000,
-        playwrightAvailable,
-        activeJobs,
-        lastAttemptAt: lastAttempt ? new Date(lastAttempt).toISOString() : null
-      });
+        status: "ok",
+        agentVersion: AGENT_VERSION,
+        browserAvailable: browserAvailable(),
+        activeJob: activeJobs > 0,
+        lastSuccessfulRunAt,
+        lastFailureAt
+      }, requestId);
     }
     if (url.pathname === "/track" && req.method === "POST") {
       const payload = await readBody(req);
       const result = await track(payload);
-      const status = result.success ? 200 : 200;
-      return json(res, status, result);
+      console.log(JSON.stringify({ event: "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
+      return json(res, 200, { ...result, requestId }, requestId);
     }
-    return json(res, 404, { ok: false, message: "Not Found" });
+    return json(res, 404, { status: "not_found", requestId }, requestId);
   } catch (error) {
-    return json(res, 500, baseResponse({ failureCode: "UNKNOWN_ERROR", failureMessage: error.message || String(error), manualReviewRequired: true }));
+    lastFailureAt = new Date().toISOString();
+    return json(res, error.statusCode || 500, { ...baseResponse({ failureCode: "UNKNOWN_ERROR", failureMessage: error.message || String(error), manualReviewRequired: true }), requestId }, requestId);
   }
 });
 
 server.listen(PORT, HOST, () => {
   ensureDirs();
-  console.log(`Local Tracking RPA Agent listening on http://${HOST}:${PORT}`);
-  console.log(`Chrome mode: headed_chrome`);
-  console.log(`Profile: ${PROFILE_ROOT}`);
+  if (!SHARED_SECRET) {
+    console.error("TRACKING_RPA_SHARED_SECRET is required. The agent will reject every request until it is configured.");
+  }
+  console.log(`Tracking Agent ${AGENT_VERSION} listening on http://${HOST}:${PORT}`);
 });

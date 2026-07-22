@@ -36,6 +36,7 @@ const ACTION_ROLES = {
   "view-best-customers": ["مالك","مدير","محاسب"], "view-best-suppliers": ["مالك","مدير","محاسب"],
   "add-cash-out": ["مالك","مدير","محاسب"], "add-employee": ["مالك","مدير"],
   "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"],
+  "show-tracking-debug": ["مالك","مدير"],
   "omni-refresh": ["مالك","مدير","كاشير","شحن"], "omni-open": ["مالك","مدير","كاشير","شحن"],
   "omni-claim": ["مالك","مدير","كاشير","شحن"], "omni-send": ["مالك","مدير","كاشير","شحن"],
   "omni-simulate-whatsapp": ["مالك","مدير"], "omni-simulate-messenger": ["مالك","مدير"]
@@ -73,7 +74,7 @@ const PERMISSION_ACTIONS = [
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
-  ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["delete-shipment","حذف شحنة"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
+  ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["delete-shipment","حذف شحنة"],["update-tracking-now","تتبع شحنة الآن"],["update-all-tracking","تتبع الشحنات النشطة"],["test-local-rpa","اختبار خدمة التتبع"],["retry-pending-tracking","إعادة محاولة مهام التتبع"],["show-tracking-debug","عرض بيانات تشخيص التتبع"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
   ["الحسابات والخزائن", [["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
@@ -649,26 +650,33 @@ function updateAllTrackingNow() {
 }
 
 async function testLocalRpaService() {
-  if (!serverConnected) return toast("اختبار RPA يحتاج تشغيل السيرفر الأساسي.", "error");
+  if (!serverConnected) return toast("اختبار خدمة التتبع يحتاج تشغيل السيرفر الأساسي.", "error");
   try {
     const response = await fetch("/api/tracking/rpa/test", {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ trackingNumber: "ENO33289190EG", provider: "mock_success" })
+      body: "{}"
     });
     const result = await response.json().catch(() => ({}));
     const rpa = result.localRpa || {};
     if (response.ok && result.ok) {
-      toast(rpa.connected ? "اختبار RPA نجح والخدمة متصلة." : "اختبار Mock نجح، لكن خدمة RPA غير متصلة فعليًا.", rpa.connected ? "" : "error");
+      toast("خدمة التتبع متصلة وجاهزة.");
     } else {
-      toast(result.result?.failureMessage || rpa.error || "خدمة التتبع المحلية غير مفعّلة. افتح START-TRACKING-RPA.cmd", "error");
+      toast(rpa.message || "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا.", "error");
     }
     if (currentView === "shipping") updateTrackingWorkerNotice();
     return result;
   } catch (error) {
-    toast(error.message || "تعذر اختبار خدمة RPA المحلية.", "error");
+    toast(error.message || "تعذر اختبار خدمة التتبع.", "error");
     return null;
   }
+}
+
+async function retryPendingTracking() {
+  if (!serverConnected) return toast("يلزم الاتصال بالسيرفر لإعادة المحاولة.", "error");
+  const result = await runTrackingApi("/api/tracking/retry-pending", "تمت إعادة محاولة مهام التتبع المعلقة.");
+  if (currentView === "shipping") updateTrackingWorkerNotice();
+  return result;
 }
 
 async function showTrackingDebug(id) {
@@ -715,6 +723,20 @@ async function fetchTrackingStatus() {
   } catch {
     return null;
   }
+}
+
+async function updateSettingsTrackingStatus() {
+  const state = document.getElementById("settings-tracking-state");
+  if (!state) return;
+  const status = await fetchTrackingStatus();
+  if (!state.isConnected) return;
+  const service = status?.localRpa || {};
+  state.textContent = service.connected ? "متصل" : "غير متصل";
+  state.className = service.connected ? "text-success" : "text-danger";
+  const lastSuccess = document.getElementById("settings-tracking-last-success");
+  const pending = document.getElementById("settings-tracking-pending");
+  if (lastSuccess) lastSuccess.textContent = dateTimeLabel(service.lastSuccessfulRunAt);
+  if (pending) pending.textContent = String(Number(status?.queue?.pending || 0));
 }
 
 async function testTrackingConnection() {
@@ -3222,7 +3244,7 @@ function renderShipping() {
   root.innerHTML = `
     <div class="section-title">
       <div><h2>مركز متابعة الشحنات</h2><p>متابعة تلقائية للشحنات النشطة، تنبيهات تشغيلية، وسجل حركة التتبع.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="update-all-tracking">تحديث جميع الشحنات النشطة</button><button class="btn secondary" data-action="test-local-rpa">تشغيل اختبار RPA</button><button class="btn secondary" data-action="shipping-companies">شركات الشحن</button></div>
+      <div class="actions"><button class="btn ghost" data-action="update-all-tracking">تحديث جميع الشحنات النشطة</button><button class="btn secondary" data-action="test-local-rpa">اختبار خدمة التتبع</button><button class="btn secondary" data-action="retry-pending-tracking">إعادة محاولة المهام المعلقة</button><button class="btn secondary" data-action="shipping-companies">شركات الشحن</button></div>
     </div>
     <div class="stats-grid">
       ${statCard("شحنات نشطة", active.length, "قابلة للمتابعة", "▣", "", "", "shipping:active")}
@@ -3260,7 +3282,7 @@ function shipmentsTable(list) {
     const delay = Number(item.delayHours || 0) > 0 ? `${Math.round(item.delayHours)} ساعة` : "—";
     const alert = item.manualInterventionNeeded || item.manual_review_required ? badge("تحتاج مراجعة يدوية", "warning") : item.trackingError ? badge("تعذر تحديث التتبع", "danger") : item.requiresComplaint ? badge("شكوى", "danger") : item.requiresCustomerCall ? badge("اتصال عميل", "warning") : item.returnRisk ? badge("خطر مرتجع", "warning") : badge(item.alertLevel || "info", item.alertLevel === "high" || item.alertLevel === "critical" ? "danger" : "");
     const action = item.manualInterventionNeeded ? "مراجعة موقع البريد المصري" : item.trackingError ? "اختبار/مراجعة المصدر" : item.requiresComplaint ? "تجهيز شكوى" : item.requiresCustomerCall ? "اتصال بالعميل" : item.returnRisk ? "متابعة المرتجع" : "متابعة دورية";
-    const debugButton = (item.trackingDebug?.screenshotFile || tracking.lastRun?.screenshotPath) ? `<button class="row-action" data-action="show-tracking-debug" data-id="${item.id}">لقطة الفشل</button>` : "";
+    const debugButton = canAction("show-tracking-debug") && (item.trackingDebug?.screenshotFile || tracking.lastRun?.screenshotPath) ? `<button class="row-action" data-action="show-tracking-debug" data-id="${item.id}">بيانات التشخيص</button>` : "";
     return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${item.id}</strong><br><span class="muted">${fmtDate(item.updatedAt || item.updated)}</span></td><td>${esc(item.onlineOrderId || "—")}<br><span class="muted">${esc(item.invoiceId || item.orderId || "—")}</span></td><td>${esc(item.customerName || item.customer)}<br><span class="muted">${esc(item.customerPhone || item.phone || item.governorate || item.city || "")}</span></td><td><strong>${esc(item.trackingNumber || item.tracking)}</strong><br><span class="muted">${esc(item.carrier || item.company)} · ${item.trackingEnabled ? "متابعة مفعلة" : "غير مفعلة"}</span></td><td>${badge(cleanDisplayText(item.status, "غير متاح", "غير متاح"), item.status === "مرتجع" ? "danger" : item.status === "في الطريق" ? "blue" : "")}<br><span class="muted">${esc(tracking.statusText)}</span>${tracking.siteBlocked ? `<br><span class="muted">الكود: SITE_BLOCKED</span>` : ""}</td><td>${esc(tracking.location)}</td><td>${esc(tracking.movement)}</td><td>${delay}</td><td>${alert}</td><td>${esc(action)}</td><td><div class="row-actions"><button class="row-action" data-action="view-shipment" data-id="${item.id}">عرض</button><button class="row-action" data-action="update-tracking-now" data-id="${item.id}">تحديث التتبع الآن</button>${debugButton}<button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل</button><button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></td></tr>`;
   }).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
@@ -3271,9 +3293,10 @@ async function updateTrackingWorkerNotice() {
   const status = await fetchTrackingStatus();
   if (!target.isConnected) return;
   const rpa = status?.localRpa || {};
+  const pending = Number(status?.queue?.pending || 0);
   const rpaLine = rpa.enabled
-    ? (rpa.connected ? `خدمة RPA المحلية: متصلة — ${esc(rpa.url || "")}` : `خدمة RPA المحلية غير متصلة. افتح START-TRACKING-RPA.cmd`)
-    : `خدمة RPA المحلية غير مفعّلة في السيرفر. فعّل LOCAL_TRACKING_RPA_ENABLED=true ثم أعد تشغيل النظام.`;
+    ? (rpa.connected ? `خدمة التتبع: متصلة${rpa.lastSuccessfulRunAt ? ` — آخر نجاح ${esc(dateTimeLabel(rpa.lastSuccessfulRunAt))}` : ""}` : `خدمة التتبع غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا. المهام المعلقة: ${pending}`)
+    : `خدمة التتبع غير مفعّلة على السيرفر.`;
   if (!status?.worker?.running) {
     target.className = "alert-item warning";
     target.innerHTML = `<div class="alert-badge gold">!</div><div><strong>التتبع التلقائي غير مفعّل حاليًا</strong><span>${rpaLine}</span><span>استخدم زر تحديث التتبع الآن لتشغيل محاولة فورية على الشحنة المطلوبة.</span></div>`;
@@ -3729,12 +3752,13 @@ function renderSettings() {
         <div class="alert-item"><div class="alert-badge blue">◎</div><div><strong>تقارير WhatsApp</strong><span>يحتاج رقم المستلم وحساب WhatsApp Business API.</span></div>${badge("بانتظار الربط","warning")}</div>
       </div></article>
     </div>
-    <article class="card" style="margin-top:18px"><div class="card-header"><div><h3>حالة خدمة التتبع</h3><p>مصدر التتبع الفعلي والـ Background Worker والتنبيهات.</p></div>${badge(data.settings.tracking.providerType || "Not Available", data.settings.tracking.providerEndpoint ? "blue" : "warning")}</div>
+    <article class="card" style="margin-top:18px"><div class="card-header"><div><h3>حالة خدمة التتبع</h3><p>الاتصال، آخر تحديث، والمهام المعلقة.</p></div></div>
       <div class="metric-strip">
-        <div class="mini-metric"><span>Tracking Worker</span><strong>Running</strong></div>
-        <div class="mini-metric"><span>Provider</span><strong>${esc(data.settings.tracking.providerName)}</strong></div>
-        <div class="mini-metric"><span>Last Run</span><strong>${esc(dateTimeLabel((data.trackingRuns || []).at(-1)?.finishedAt) || "—")}</strong></div>
-        <div class="mini-metric"><span>Shipments Checked</span><strong>${Number((data.trackingRuns || []).at(-1)?.checked || 0)}</strong></div>
+        <div class="mini-metric"><span>حالة الخدمة</span><strong id="settings-tracking-state">جارٍ التحقق...</strong></div>
+        <div class="mini-metric"><span>آخر اتصال ناجح</span><strong id="settings-tracking-last-success">—</strong></div>
+        <div class="mini-metric"><span>آخر عملية تتبع</span><strong>${esc(dateTimeLabel((data.trackingRuns || []).at(-1)?.finishedAt) || "—")}</strong></div>
+        <div class="mini-metric"><span>المهام المعلقة</span><strong id="settings-tracking-pending">—</strong></div>
+        <div class="mini-metric"><span>إجراءات</span><strong><button class="row-action" data-action="test-local-rpa">اختبار الاتصال</button> <button class="row-action" data-action="retry-pending-tracking">إعادة المحاولة</button></strong></div>
       </div>
       <div class="form-grid" style="margin-top:14px">
         <div class="form-field"><label>أقل فاصل لنفس الشحنة</label><select id="tracking-min-interval">${[1,3,6,12,24].map(h => `<option value="${h}" ${Number(data.settings.tracking.minIntervalHours) === h ? "selected" : ""}>${h} ساعة</option>`).join("")}</select></div>
@@ -3763,6 +3787,7 @@ function renderSettings() {
         return `<tr><td><strong>${esc(role.label)}</strong><br><span class="muted">${esc(role.id)}</span></td><td>${esc(role.scope)}</td><td><strong>${permissionSummary(perms)}</strong><br><span class="muted">${isCustom ? "تم تخصيص الدور" : "إعداد افتراضي"}</span></td><td>${badge("مفعّل")}</td><td><button class="row-action" data-action="customize-role" data-role="${esc(role.id)}">تخصيص الدور</button></td></tr>`;
       }).join("")}
     </tbody></table></div></article>`;
+  updateSettingsTrackingStatus();
 }
 
 function omniHeaders(extra = {}) {
@@ -4779,6 +4804,7 @@ root.addEventListener("click", event => {
   if (action === "refresh-dashboard-shipments") refreshDashboardShipments();
   if (action === "dashboard-view-shipment") navigateToRecord("shipment", target.dataset.id, "view");
   if (action === "test-local-rpa") testLocalRpaService();
+  if (action === "retry-pending-tracking") retryPendingTracking();
   if (action === "add-book") addBookModal();
   if (action === "register-sale-customer") addPartyModal("customer", null, { returnToSale: true });
   if (action === "new-sale-invoice") {
@@ -7275,7 +7301,7 @@ function viewShipment(id) {
       <div class="mini-metric"><span>آخر حركة</span><strong>${esc(tracking.movement)}</strong></div>
       <div class="mini-metric"><span>مستوى التنبيه</span><strong>${esc(item.alertLevel || "info")}</strong></div>
     </div>
-    <div class="alert-item"><div class="alert-badge blue">▣</div><div><strong>كود التتبع: ${esc(item.trackingNumber || item.tracking)}</strong><span>الفاتورة ${esc(item.invoiceId || item.orderId || "—")}${item.onlineOrderId ? ` · الطلب ${esc(item.onlineOrderId)}` : ""} · ${esc(item.customerName || item.customer)}</span><span>${esc([item.governorate, item.city, item.address].filter(Boolean).join("، "))}</span><span>المصدر: ${esc(item.trackingProvider || data.settings.tracking.providerName)} · ${item.trackingEnabled ? "المتابعة مفعلة" : "المتابعة غير مفعلة"}</span></div></div>
+    <div class="alert-item"><div class="alert-badge blue">▣</div><div><strong>كود التتبع: ${esc(item.trackingNumber || item.tracking)}</strong><span>الفاتورة ${esc(item.invoiceId || item.orderId || "—")}${item.onlineOrderId ? ` · الطلب ${esc(item.onlineOrderId)}` : ""} · ${esc(item.customerName || item.customer)}</span><span>${esc([item.governorate, item.city, item.address].filter(Boolean).join("، "))}</span><span>شركة الشحن: ${esc(item.carrier || item.company || "—")} · ${item.trackingEnabled ? "المتابعة مفعلة" : "المتابعة غير مفعلة"}</span></div></div>
     ${tracking.siteBlocked ? `<div class="alert-item warning"><div class="alert-badge gold">!</div><div><strong>فشل التتبع الآلي</strong><span>السبب: موقع البريد يمنع التشغيل الآلي</span><span>الكود: SITE_BLOCKED — تحتاج مراجعة يدوية</span></div></div>` : item.trackingError ? `<div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>تعذر تحديث التتبع</strong><span>${esc(cleanDisplayText(item.trackingError, "غير متاح", "تعذر تحديث التتبع"))}</span></div></div>` : ""}
     <div class="metric-strip">
       <div class="mini-metric"><span>آخر نص حالة</span><strong>${esc(tracking.statusText)}</strong></div>
@@ -7306,12 +7332,12 @@ function viewShipment(id) {
     <button class="row-action" data-action="quick-manual-tracking" data-status="unknown" data-id="${item.id}">يحتاج متابعة</button>
   `);
   if (item.trackingDebug?.screenshotFile) {
-    modalBody.querySelector(".form-actions")?.insertAdjacentHTML("afterbegin", `<button class="btn secondary" data-action="show-tracking-debug" data-id="${item.id}">عرض لقطة فشل التتبع</button>`);
+    if (canAction("show-tracking-debug")) modalBody.querySelector(".form-actions")?.insertAdjacentHTML("afterbegin", `<button class="btn secondary" data-action="show-tracking-debug" data-id="${item.id}">عرض بيانات تشخيص التتبع</button>`);
   }
 }
 
 /*  if (item.trackingDebug?.screenshotFile) {
-    modalBody.querySelector(".form-actions")?.insertAdjacentHTML("afterbegin", `<button class="btn secondary" data-action="show-tracking-debug" data-id="${item.id}">عرض لقطة فشل التتبع</button>`);
+    if (canAction("show-tracking-debug")) modalBody.querySelector(".form-actions")?.insertAdjacentHTML("afterbegin", `<button class="btn secondary" data-action="show-tracking-debug" data-id="${item.id}">عرض بيانات تشخيص التتبع</button>`);
   }
 */
 function deleteShipment(id) {
@@ -9377,7 +9403,7 @@ function appHasActionHandler(action) {
     "dashboard-view-shipment": navigateToRecord, "add-online-order": onlineOrderModal,
     "view-online-order": viewOnlineOrder, "edit-online-order": onlineOrderModal,
     "convert-order-sale": convertOnlineOrderToSale, "create-order-shipment": createShipmentFromOrder,
-    "update-tracking-now": updateShipmentTrackingNow, "update-all-tracking": updateAllTrackingNow, "test-local-rpa": testLocalRpaService, "show-tracking-debug": showTrackingDebug,
+    "update-tracking-now": updateShipmentTrackingNow, "update-all-tracking": updateAllTrackingNow, "test-local-rpa": testLocalRpaService, "retry-pending-tracking": retryPendingTracking, "show-tracking-debug": showTrackingDebug,
     "copy-tracking-code": copyShipmentTrackingCode, "open-egypt-post": openEgyptPostTrackingSite,
     "open-egypt-post-with-code": openEgyptPostWithCode, "manual-tracking-result": manualTrackingResultModal,
     "quick-manual-tracking": quickManualTracking,

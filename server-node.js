@@ -18,12 +18,14 @@ const HOST = process.env.HOST || "127.0.0.1";
 const SESSION_HOURS = 12;
 const EGYPT_POST_TRACKING_URL = "https://egyptpost.gov.eg/ar-eg/home/eservices/track-and-trace/";
 const TRACKING_PROVIDER_NAME = "EgyptPostBrowserProvider";
-const LOCAL_TRACKING_RPA_ENABLED = String(process.env.LOCAL_TRACKING_RPA_ENABLED || "").toLowerCase() === "true";
-const LOCAL_TRACKING_RPA_URL = process.env.LOCAL_TRACKING_RPA_URL || "http://127.0.0.1:8788";
-const LOCAL_TRACKING_RPA_TIMEOUT = Number(process.env.LOCAL_TRACKING_RPA_TIMEOUT || 120000);
+const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLowerCase() === "true";
+const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
+const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
+const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
 const sessions = new Map();
 let trackingTimer = null;
 let trackingRunning = false;
+const trackingActiveShipmentIds = new Set();
 let trackingRuntime = {
   running: false,
   provider: TRACKING_PROVIDER_NAME,
@@ -364,18 +366,42 @@ function requestTextDetailed(url, options = {}, timeoutMs = 15000) {
   });
 }
 
-async function requestLocalRpa(pathname, payload = null, timeoutMs = LOCAL_TRACKING_RPA_TIMEOUT) {
-  const target = new URL(pathname, LOCAL_TRACKING_RPA_URL);
+async function requestLocalRpa(pathname, payload = null, timeoutMs = TRACKING_RPA_TIMEOUT_MS) {
+  if (!TRACKING_RPA_ENABLED || !TRACKING_RPA_BASE_URL || !TRACKING_RPA_SHARED_SECRET) {
+    const error = new Error("خدمة التتبع غير مهيأة على السيرفر.");
+    error.code = "TRACKING_AGENT_OFFLINE";
+    throw error;
+  }
+  const target = new URL(pathname, `${TRACKING_RPA_BASE_URL.replace(/\/$/, "")}/`);
   const body = payload ? JSON.stringify(payload) : "";
-  const response = await requestTextDetailed(target.toString(), {
-    method: payload ? "POST" : "GET",
-    headers: payload ? { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) } : {},
-    body
-  }, timeoutMs);
+  const requestId = crypto.randomUUID();
+  let response;
+  try {
+    response = await requestTextDetailed(target.toString(), {
+      method: payload ? "POST" : "GET",
+      headers: {
+        "Authorization": `Bearer ${TRACKING_RPA_SHARED_SECRET}`,
+        "X-Request-ID": requestId,
+        ...(payload ? { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) } : {})
+      },
+      body
+    }, timeoutMs);
+  } catch (cause) {
+    const error = new Error("خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا.");
+    error.code = "TRACKING_AGENT_OFFLINE";
+    error.cause = cause;
+    throw error;
+  }
   let data = {};
   try { data = JSON.parse(response.text || "{}"); }
   catch { throw new Error(`Local RPA returned invalid JSON: ${String(response.text || "").slice(0, 200)}`); }
-  return { statusCode: response.statusCode, data };
+  if (response.statusCode === 401 || response.statusCode >= 500) {
+    const error = new Error(response.statusCode === 401 ? "تعذر توثيق الاتصال بخدمة التتبع." : "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا.");
+    error.code = "TRACKING_AGENT_OFFLINE";
+    error.httpStatus = response.statusCode;
+    throw error;
+  }
+  return { statusCode: response.statusCode, data, requestId };
 }
 
 function localRpaTimelineToEvents(result = {}, shipment = {}) {
@@ -399,7 +425,7 @@ async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber) {
     shipmentId: shipment.id,
     trackingNumber,
     provider: "egypt_post"
-  }, LOCAL_TRACKING_RPA_TIMEOUT);
+  }, TRACKING_RPA_TIMEOUT_MS);
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
     error.code = data.failureCode || "LOCAL_RPA_FAILED";
@@ -426,7 +452,7 @@ async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber) {
   return {
     payload: data,
     events,
-    source: LOCAL_TRACKING_RPA_URL,
+    source: TRACKING_RPA_BASE_URL,
     httpStatus: statusCode,
     carrierCode: "EGYPT_POST",
     acceptedNumber: data.trackingNumber || trackingNumber,
@@ -437,12 +463,13 @@ async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber) {
 }
 
 async function getLocalRpaHealth() {
-  const base = { enabled: LOCAL_TRACKING_RPA_ENABLED, url: LOCAL_TRACKING_RPA_URL, connected: false, ok: false };
+  const base = { enabled: TRACKING_RPA_ENABLED, connected: false, status: "offline", browserAvailable: false, activeJob: false, lastSuccessfulRunAt: null, lastFailureAt: null };
   try {
     const { statusCode, data } = await requestLocalRpa("/health", null, 3000);
-    return { ...base, connected: statusCode >= 200 && statusCode < 300 && Boolean(data.ok), ok: Boolean(data.ok), statusCode, ...data };
+    const connected = statusCode >= 200 && statusCode < 300 && data.status === "ok";
+    return { ...base, ...data, connected, status: connected ? "connected" : "offline" };
   } catch (error) {
-    return { ...base, error: error.message || String(error) };
+    return { ...base, failureCode: "TRACKING_AGENT_OFFLINE", message: "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا." };
   }
 }
 
@@ -1099,7 +1126,7 @@ async function fetchTrackingFromProvider(db, shipment) {
     error.manualIntervention = true;
     throw error;
   }
-  if (LOCAL_TRACKING_RPA_ENABLED) {
+  if (TRACKING_RPA_ENABLED) {
     return fetchLocalRpaTracking(db, shipment, settings, trackingNumber);
   }
   return fetchEgyptPostBrowserTracking(db, shipment, settings, trackingNumber);
@@ -1262,6 +1289,10 @@ function syncLinkedOrder(db, shipment) {
 }
 
 async function trackShipment(db, shipment, { manual = false } = {}) {
+  if (trackingActiveShipmentIds.has(shipment.id)) {
+    return { ok: false, changed: false, duplicate: true, failureCode: "TRACKING_JOB_ALREADY_RUNNING", error: "يتم تتبع هذه الشحنة حاليًا." };
+  }
+  trackingActiveShipmentIds.add(shipment.id);
   const settings = defaultTrackingSettings(db.settings || {});
   const started = new Date().toISOString();
   shipment.trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
@@ -1321,6 +1352,8 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
     }
     shipment.trackingError = "";
     shipment.trackingErrorCount = 0;
+    shipment.trackingRetryPending = false;
+    shipment.trackingFailureCode = "";
     shipment.nextTrackingAt = new Date(Date.now() + settings.intervalHours * 3600000).toISOString();
     applyTrackingAlerts(db, shipment);
     syncLinkedOrder(db, shipment);
@@ -1348,7 +1381,8 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       diagnostics: result.diagnostics || result.payload?.diagnostics || null
     };
   } catch (error) {
-    shipment.trackingError = error.message || "تعذر تحديث التتبع";
+    const offline = error.code === "TRACKING_AGENT_OFFLINE" || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT"].includes(error.code);
+    shipment.trackingError = offline ? "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا." : (error.message || "تعذر تحديث التتبع");
     if (!shipment.trackingError || /طھط¹ط°ط±|Tracking request/i.test(shipment.trackingError)) shipment.trackingError = error.message || "تعذر تحديث التتبع";
     shipment.lastTrackingHttpStatus = error.httpStatus || error.statusCode || "";
     shipment.manualInterventionNeeded = Boolean(error.manualIntervention);
@@ -1358,8 +1392,11 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       shipment.lastTrackingDebugAt = new Date().toISOString();
     }
     if (error.diagnostics) shipment.trackingDiagnostics = error.diagnostics;
-    shipment.trackingErrorCount = Number(shipment.trackingErrorCount || 0) + 1;
-    shipment.nextTrackingAt = new Date(Date.now() + Math.min(24, settings.intervalHours * Math.pow(2, Math.min(4, shipment.trackingErrorCount))) * 3600000).toISOString();
+    shipment.trackingErrorCount = offline ? Number(shipment.trackingErrorCount || 0) : Number(shipment.trackingErrorCount || 0) + 1;
+    const retryHours = offline ? settings.intervalHours : Math.min(24, settings.intervalHours * Math.pow(2, Math.min(4, shipment.trackingErrorCount)));
+    shipment.nextTrackingAt = new Date(Date.now() + retryHours * 3600000).toISOString();
+    shipment.trackingRetryPending = offline;
+    shipment.trackingFailureCode = offline ? "TRACKING_AGENT_OFFLINE" : (error.code || error.failureCode || "");
     shipment.updatedAt = new Date().toISOString();
     addNotification(db, {
       key: `${error.manualIntervention ? "shipment-tracking-manual" : "shipment-tracking-error"}:${shipment.id}`,
@@ -1367,20 +1404,22 @@ async function trackShipment(db, shipment, { manual = false } = {}) {
       priority: error.manualIntervention ? "high" : "warning",
       shipmentId: shipment.id,
       trackingNumber: shipment.trackingNumber,
-      message: "تعذر تحديث التتبع من المصدر الفعلي",
+      message: offline ? "خدمة التتبع غير متصلة؛ ستتم إعادة المحاولة تلقائيًا" : "تعذر تحديث التتبع من المصدر الفعلي",
       action: "اختبار الاتصال"
     });
     return {
       ok: false,
       changed: false,
       error: shipment.trackingError,
-      failureCode: error.code || error.failureCode || "",
+      failureCode: offline ? "TRACKING_AGENT_OFFLINE" : (error.code || error.failureCode || ""),
       manualIntervention: Boolean(error.manualIntervention),
       debug: error.debug || null,
       diagnostics: error.diagnostics || null,
       rawResult: error.payload || error.responseText || null,
       parsedResult: null
     };
+  } finally {
+    trackingActiveShipmentIds.delete(shipment.id);
   }
 }
 
@@ -1605,7 +1644,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route.startsWith("/api/tracking/debug/") && req.method === "GET") {
-      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!["مالك", "مدير"].includes(user.role) && user.username !== "owner") return send(res, 403, { ok:false, message:"ليس لديك صلاحية لعرض بيانات التشخيص." });
       const fileName = path.basename(decodeURIComponent(route.split("/").pop() || ""));
       const file = path.join(DEBUG_ROOT, fileName);
       if (!fileName || !file.startsWith(DEBUG_ROOT) || !fs.existsSync(file)) return send(res, 404, { ok:false, message:"Debug file not found." });
@@ -1615,7 +1656,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/tracking/status" && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       let settings = {};
-      let queue = { eligible: 0, manualReview: 0, failed: 0, delivered: 0, updatedToday: 0 };
+      let queue = { eligible: 0, pending: 0, manualReview: 0, failed: 0, delivered: 0, updatedToday: 0 };
       const localRpa = await getLocalRpaHealth();
       try {
         if (fs.existsSync(DB_PATH)) {
@@ -1624,6 +1665,7 @@ const server = http.createServer(async (req, res) => {
           const todayKey = new Date().toISOString().slice(0, 10);
           queue = {
             eligible: activeTrackableShipments(db, { manual: false }).length,
+            pending: (db.shipments || []).filter(item => item.trackingRetryPending).length,
             manualReview: (db.shipments || []).filter(item => item.manualInterventionNeeded || item.manual_review_required).length,
             failed: (db.shipments || []).filter(item => item.trackingError).length,
             delivered: (db.shipments || []).filter(item => item.normalizedStatus === "delivered" || item.status === "طھظ… ط§ظ„طھط³ظ„ظٹظ…").length,
@@ -1631,7 +1673,7 @@ const server = http.createServer(async (req, res) => {
           };
         }
       } catch {}
-      return send(res, 200, { ok:true, worker: { ...trackingRuntime, running: true, inProgress: trackingRunning }, queue, settings, localRpa, apiKeyConfigured: false, subscriptionRequired: false, cost: "Free" });
+      return send(res, 200, { ok:true, worker: { ...trackingRuntime, running: true, inProgress: trackingRunning }, queue, settings, localRpa });
     }
 
     if (route === "/api/tracking/rpa/status" && req.method === "GET") {
@@ -1641,16 +1683,17 @@ const server = http.createServer(async (req, res) => {
 
     if (route === "/api/tracking/rpa/test" && req.method === "POST") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
-      let payload = {};
-      try { payload = JSON.parse(await readBody(req) || "{}"); } catch {}
-      const trackingNumber = normalizeTrackingNumber(payload.trackingNumber || "ENO33289190EG");
-      const { statusCode, data } = await requestLocalRpa("/track", {
-        shipmentId: payload.shipmentId || "RPA-TEST",
-        trackingNumber,
-        provider: payload.provider || "mock_success",
-        force: true
-      }, LOCAL_TRACKING_RPA_TIMEOUT).catch(error => ({ statusCode: 0, data: { success:false, failureCode:"LOCAL_RPA_UNAVAILABLE", failureMessage:error.message || String(error), manualReviewRequired:false } }));
-      return send(res, statusCode && statusCode < 500 ? 200 : 503, { ok:Boolean(data.success), trackingNumber, localRpa: await getLocalRpaHealth(), result:data });
+      const localRpa = await getLocalRpaHealth();
+      return send(res, localRpa.connected ? 200 : 503, { ok:localRpa.connected, localRpa });
+    }
+
+    if (route === "/api/tracking/retry-pending" && req.method === "POST") {
+      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = ensureTrackingDb(readDb());
+      const shipmentIds = (db.shipments || []).filter(item => item.trackingRetryPending).map(item => item.id);
+      if (!shipmentIds.length) return send(res, 200, { ok:true, checked:0, message:"لا توجد مهام تتبع معلقة." });
+      const result = await runTrackingCycle({ manual: true, shipmentIds });
+      return send(res, result.ok ? 200 : 503, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
     if (route === "/api/tracking/run" && req.method === "POST") {
