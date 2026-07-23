@@ -222,6 +222,7 @@ function ensureTrackingDb(db) {
     const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking || "");
     const carrier = shipment.carrier || shipment.company || "";
     const enabledDefault = isEgyptPostShipment({ ...shipment, carrier }) && Boolean(trackingNumber);
+    const shippingStatus = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus) || "shipped";
     return {
       shipmentNo: shipment.shipmentNo || shipment.id,
       carrier,
@@ -232,7 +233,8 @@ function ensureTrackingDb(db) {
       customerName: shipment.customerName || shipment.customer || "",
       customerPhone: shipment.customerPhone || shipment.phone || "",
       currentStatus: shipment.currentStatus || shipment.status || "",
-      normalizedStatus: shipment.normalizedStatus || normalizeTrackingStatus(shipment.currentStatus || shipment.status || ""),
+      normalizedStatus: shippingStatus,
+      shippingStatus,
       alertLevel: shipment.alertLevel || "info",
       trackingErrorCount: Number(shipment.trackingErrorCount || 0),
       manual_review_required: Boolean(shipment.manual_review_required || shipment.manualInterventionNeeded),
@@ -247,6 +249,8 @@ function ensureTrackingDb(db) {
       trackingNumber,
       tracking: trackingNumber || shipment.tracking || "",
       carrier,
+      normalizedStatus: shippingStatus,
+      shippingStatus,
       trackingEnabled: shipment.trackingEnabled ?? enabledDefault
     };
   });
@@ -266,16 +270,48 @@ function normalizeTrackingStatus(text = "", customMap = {}) {
     ["delivered", ["delivered", "تم التسليم", "سلمت", "تم تسليم"]],
     ["address_issue", ["address", "عنوان", "العنوان غير صحيح", "مشكلة عنوان"]],
     ["customer_unavailable", ["unavailable", "not available", "لم يستلم", "غير متواجد", "غير موجود"]],
+    ["delivery_attempt_3", ["third delivery attempt", "محاولة تسليم ثالثة", "المحاولة الثالثة"]],
+    ["delivery_attempt_2", ["second delivery attempt", "محاولة تسليم ثانية", "المحاولة الثانية"]],
+    ["delivery_attempt_1", ["first delivery attempt", "محاولة تسليم أولى", "المحاولة الأولى"]],
     ["delivery_attempted", ["attempt", "محاولة تسليم", "تعذر التسليم"]],
-    ["out_for_delivery", ["out for delivery", "خارج للتسليم", "خرج للتوصيل"]],
+    ["out_for_delivery", ["out for delivery", "خارج للتسليم", "خرج للتوصيل", "جاري التسليم"]],
     ["at_sorting_center", ["sorting", "فرز", "مركز"]],
-    ["in_transit", ["transit", "في الطريق", "تم التحرك", "مرحلة النقل"]],
+    ["in_transit", ["transit", "في الطريق", "تم التحرك", "مرحلة النقل", "في مرحلة نقل"]],
     ["accepted_by_carrier", ["accepted", "received", "استلام", "تم الاستلام"]],
     ["held", ["held", "محتجز", "انتظار"]],
     ["delayed", ["delay", "تأخير", "متأخر"]]
   ];
   const hit = checks.find(([, words]) => words.some(word => lower.includes(word)));
   return hit ? hit[0] : "unknown";
+}
+
+function canonicalShippingStatus(value = "", fallbackText = "") {
+  const status = String(value || "");
+  if (["shipped", "in_transit", "out_for_delivery", "delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3", "delivered", "returned"].includes(status)) return status;
+  const map = {
+    accepted_by_carrier:"shipped",
+    registered:"shipped",
+    at_sorting_center:"in_transit",
+    delayed:"in_transit",
+    held:"in_transit",
+    delivery_attempted:"delivery_attempt_1",
+    customer_unavailable:"delivery_attempt_1",
+    address_issue:"delivery_attempt_1",
+    returned_to_sender:"returned",
+    return_initiated:"returned",
+    return_in_transit:"returned"
+  };
+  if (map[status]) return map[status];
+  const normalized = normalizeTrackingStatus(fallbackText || status);
+  return map[normalized] || (["in_transit", "out_for_delivery", "delivered"].includes(normalized) ? normalized : "");
+}
+
+function trackingIntervalHoursForShipment(shipment = {}) {
+  const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
+  if (status === "shipped") return 4;
+  if (status === "in_transit") return 6;
+  if (["out_for_delivery", "delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3"].includes(status)) return 2;
+  return 0;
 }
 
 function eventFingerprint(event = {}) {
@@ -1199,12 +1235,12 @@ function applyTrackingAlerts(db, shipment) {
   const now = Date.now();
   const lastMovementAt = shipment.lastMovementAt || shipment.shippedAt || shipment.createdAt;
   const noMovementHours = lastMovementAt ? (now - new Date(lastMovementAt).getTime()) / 3600000 : 0;
-  shipment.delayHours = shipment.expectedDeliveryAt && !["delivered", "returned_to_sender"].includes(shipment.normalizedStatus)
+  shipment.delayHours = shipment.expectedDeliveryAt && !["delivered", "returned"].includes(canonicalShippingStatus(shipment.shippingStatus || shipment.normalizedStatus, shipment.status))
     ? Math.max(0, (now - new Date(shipment.expectedDeliveryAt).getTime()) / 3600000)
     : 0;
   shipment.delayDays = Math.floor(shipment.delayHours / 24);
   shipment.alertLevel = shipment.delayHours > 0 ? "high" : "info";
-  if (noMovementHours >= settings.noMovementHours && !["delivered", "returned_to_sender"].includes(shipment.normalizedStatus)) {
+  if (noMovementHours >= settings.noMovementHours && !["delivered", "returned"].includes(canonicalShippingStatus(shipment.shippingStatus || shipment.normalizedStatus, shipment.status))) {
     shipment.alertLevel = "warning";
     addNotification(db, {
       key: `shipment-no-movement:${shipment.id}`,
@@ -1240,7 +1276,7 @@ function applyTrackingAlerts(db, shipment) {
       action: "تجهيز شكوى"
     });
   }
-  if (["delivery_attempted", "customer_unavailable", "address_issue"].includes(shipment.normalizedStatus)) {
+  if (["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3"].includes(shipment.normalizedStatus)) {
     shipment.requiresCustomerCall = true;
     addNotification(db, {
       key: `shipment-customer-call:${shipment.id}`,
@@ -1252,7 +1288,7 @@ function applyTrackingAlerts(db, shipment) {
       action: "اتصال بالعميل"
     });
   }
-  if (["return_initiated", "return_in_transit"].includes(shipment.normalizedStatus)) {
+  if (shipment.normalizedStatus === "returned") {
     shipment.returnRisk = true;
     addNotification(db, {
       key: `shipment-return-risk:${shipment.id}`,
@@ -1264,7 +1300,7 @@ function applyTrackingAlerts(db, shipment) {
       action: "متابعة المرتجع"
     });
   }
-  if (shipment.normalizedStatus === "returned_to_sender") {
+  if (shipment.normalizedStatus === "returned") {
     shipment.status = "مرتجع";
     shipment.currentStatus = "مرتجع";
     shipment.returnedAt = shipment.returnedAt || new Date().toISOString();
@@ -1300,27 +1336,21 @@ function syncLinkedOrder(db, shipment) {
   const order = db.onlineOrders?.find(item => item.id === shipment.onlineOrderId);
   if (!order) return;
   if (shipment.normalizedStatus === "delivered") order.status = "تم التسليم";
-  if (["return_initiated", "return_in_transit"].includes(shipment.normalizedStatus)) order.status = "مرتجع قيد الطريق";
-  if (shipment.normalizedStatus === "returned_to_sender") order.status = "مرتجع";
-  if (["delivery_attempted", "customer_unavailable", "address_issue"].includes(shipment.normalizedStatus)) order.requiresCustomerFollowUp = true;
+  if (shipment.normalizedStatus === "returned") order.status = "مرتجع";
+  if (["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3"].includes(shipment.normalizedStatus)) order.requiresCustomerFollowUp = true;
   order.updatedAt = new Date().toISOString();
 }
 
 function businessShipmentStatus(normalizedStatus, currentStatus = "") {
   const map = {
-    accepted_by_carrier:"تم التسليم للشركة",
-    at_sorting_center:"في الطريق",
-    in_transit:"في الطريق",
-    out_for_delivery:"خرج للتوصيل",
-    delivery_attempted:"في الطريق",
-    customer_unavailable:"في الطريق",
-    address_issue:"في الطريق",
-    delayed:"في الطريق",
-    held:"في الطريق",
-    return_initiated:"مرتجع",
-    return_in_transit:"مرتجع",
-    returned_to_sender:"مرتجع",
-    delivered:"تم التسليم"
+    shipped:"تم الشحن",
+    in_transit:"في مرحلة نقل",
+    out_for_delivery:"جاري التسليم",
+    delivery_attempt_1:"محاولة تسليم أولى",
+    delivery_attempt_2:"محاولة تسليم ثانية",
+    delivery_attempt_3:"محاولة تسليم ثالثة",
+    delivered:"تم التسليم",
+    returned:"مرتجع"
   };
   return map[normalizedStatus] || currentStatus;
 }
@@ -1361,11 +1391,17 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     }
     let changed = false;
     db.trackingHistory = db.trackingHistory || [];
-    const confirmedEvents = (result.events || []).map(event => ({
-      ...event,
-      statusText: cleanTrackingText(event.statusText),
-      location: cleanTrackingText(event.location)
-    })).filter(event => event.statusText || event.location);
+    const confirmedEvents = (result.events || []).map(event => {
+      const sourceNormalizedStatus = event.normalizedStatus || normalizeTrackingStatus(event.statusText, settings.statusMapping);
+      const canonicalStatus = canonicalShippingStatus(sourceNormalizedStatus, event.statusText);
+      return {
+        ...event,
+        statusText: cleanTrackingText(event.statusText),
+        location: cleanTrackingText(event.location),
+        sourceNormalizedStatus,
+        normalizedStatus: canonicalStatus || "unknown"
+      };
+    }).filter(event => event.statusText || event.location);
     shipment.lastTrackingEventCount = confirmedEvents.length;
     const newHistoryFingerprints = [];
     for (const event of confirmedEvents) {
@@ -1383,33 +1419,48 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
       }
     }
     const latest = confirmedEvents.slice().sort((a, b) => new Date(b.eventAt) - new Date(a.eventAt))[0];
-    if (latest) {
+    const confirmedStatus = latest ? canonicalShippingStatus(latest.normalizedStatus, latest.statusText) : "";
+    if (latest && confirmedStatus) {
       shipment.lastStatusText = latest.statusText;
-      shipment.normalizedStatus = latest.normalizedStatus;
+      shipment.normalizedStatus = confirmedStatus;
+      shipment.shippingStatus = confirmedStatus;
       shipment.currentLocation = latest.location;
       shipment.currentStatus = latest.statusText;
-      shipment.status = businessShipmentStatus(latest.normalizedStatus, shipment.status);
-      shipment.trackingStatus = latest.normalizedStatus;
+      shipment.status = businessShipmentStatus(confirmedStatus, shipment.status);
+      shipment.trackingStatus = confirmedStatus;
       shipment.trackingMessage = latest.statusText;
       shipment.lastEvent = latest;
       shipment.lastTrackedAt = started;
-      if (latest.normalizedStatus === "delivered") shipment.deliveredAt = shipment.deliveredAt || latest.eventAt || started;
+      if (confirmedStatus === "delivered") shipment.deliveredAt = shipment.deliveredAt || latest.eventAt || started;
       if (changed) shipment.lastMovementAt = latest.eventAt;
+    } else if (latest) {
+      shipment.trackingMessage = latest.statusText;
+      shipment.lastTrackedAt = started;
+      shipment.manualInterventionNeeded = true;
+      shipment.manual_review_required = true;
+      shipment.trackingError = "وصلت نتيجة غير معروفة وتحتاج مراجعة، ولم تتغير حالة الشحنة.";
+      shipment.trackingFailureCode = "UNKNOWN_TRACKING_STATUS";
     }
     trackingLog("history_updated", { requestId, shipmentId:shipment.id, ok:true, eventCount:newHistoryFingerprints.length });
-    shipment.trackingError = "";
-    shipment.trackingErrorCount = 0;
-    shipment.trackingRetryPending = false;
-    shipment.trackingFailureCode = "";
-    shipment.nextTrackingAt = new Date(Date.now() + settings.intervalHours * 3600000).toISOString();
-    applyTrackingAlerts(db, shipment);
-    syncLinkedOrder(db, shipment);
+    if (confirmedStatus) {
+      shipment.trackingError = "";
+      shipment.trackingErrorCount = 0;
+      shipment.trackingRetryPending = false;
+      shipment.trackingFailureCode = "";
+      const intervalHours = trackingIntervalHoursForShipment(shipment);
+      shipment.nextTrackingAt = intervalHours ? new Date(Date.now() + intervalHours * 3600000).toISOString() : "";
+      applyTrackingAlerts(db, shipment);
+      syncLinkedOrder(db, shipment);
+    }
     shipment.updatedAt = new Date().toISOString();
     shipment.updated = shipment.updatedAt.slice(0, 10);
     trackingLog("shipment_updated", { requestId, shipmentId:shipment.id, ok:true, eventCount:confirmedEvents.length });
     return {
-      ok: true,
+      ok: Boolean(confirmedStatus),
       changed,
+      error: confirmedStatus ? "" : "وصلت نتيجة غير معروفة وتحتاج مراجعة، ولم تتغير حالة الشحنة.",
+      failureCode: confirmedStatus ? "" : "UNKNOWN_TRACKING_STATUS",
+      manualIntervention: !confirmedStatus,
       source: result.source,
       httpStatus: result.httpStatus || "",
       carrierCode: result.carrierCode || "",
@@ -1438,7 +1489,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     trackingLog("tracking_failed", { requestId, shipmentId:shipment.id, ok:false, level:"error", message:error.code || "TRACKING_FAILED" });
     const offline = error.code === "TRACKING_AGENT_OFFLINE" || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT"].includes(error.code);
     shipment.trackingError = offline ? "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا." : (error.message || "تعذر تحديث التتبع");
-    if (!shipment.trackingError || /طھط¹ط°ط±|Tracking request/i.test(shipment.trackingError)) shipment.trackingError = error.message || "تعذر تحديث التتبع";
+    if (!shipment.trackingError || /تعذر|Tracking request/i.test(shipment.trackingError)) shipment.trackingError = error.message || "تعذر تحديث التتبع";
     shipment.lastTrackingHttpStatus = error.httpStatus || error.statusCode || "";
     shipment.manualInterventionNeeded = Boolean(error.manualIntervention);
     shipment.manual_review_required = Boolean(error.manualIntervention);
@@ -1482,20 +1533,23 @@ function activeTrackableShipments(db, { manual = false } = {}) {
   const settings = defaultTrackingSettings(db.settings || {});
   const now = Date.now();
   const maxAgeMs = settings.activeShipmentMaxAgeDays * 24 * 3600000;
-  return (db.shipments || []).filter(shipment =>
-    !shipment.deletedAt &&
+  return (db.shipments || []).filter(shipment => {
+    const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
+    const intervalHours = trackingIntervalHoursForShipment(shipment);
+    return !shipment.deletedAt &&
     shipment.trackingEnabled !== false &&
     isEgyptPostShipment(shipment) &&
     isValidTrackingNumber(shipment.trackingNumber || shipment.tracking) &&
-    !["delivered", "returned_to_sender", "cancelled"].includes(shipment.normalizedStatus) &&
+    !["delivered", "returned"].includes(status) &&
+    intervalHours > 0 &&
     (manual || !shipment.manualInterventionNeeded) &&
     (manual || !shipment.manual_review_required) &&
     (manual || Number(shipment.trackingErrorCount || 0) < settings.maxAttempts) &&
     (manual || !shipment.nextTrackingAt || new Date(shipment.nextTrackingAt).getTime() <= now) &&
-    (manual || !shipment.lastTrackingAt || (now - new Date(shipment.lastTrackingAt).getTime()) >= settings.minIntervalHours * 3600000) &&
+    (manual || !shipment.lastTrackingAt || (now - new Date(shipment.lastTrackingAt).getTime()) >= intervalHours * 3600000) &&
     (manual || !shipment.createdAt || Number.isNaN(new Date(shipment.createdAt).getTime()) || (now - new Date(shipment.createdAt).getTime()) <= maxAgeMs) &&
-    !["تم التسليم", "مرتجع", "ملغاة", "delivered", "returned", "cancelled"].includes(shipment.status)
-  );
+    !["تم التسليم", "مرتجع", "ملغاة", "delivered", "returned", "cancelled"].includes(shipment.status);
+  });
 }
 
 function buildTrackingRunRecord(settings, shipment, startedAt, result) {
@@ -1606,10 +1660,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
 
 function scheduleTrackingWorker() {
   if (trackingTimer) clearTimeout(trackingTimer);
-  let intervalHours = 6;
-  try {
-    if (fs.existsSync(DB_PATH)) intervalHours = defaultTrackingSettings(readDb().settings || {}).intervalHours;
-  } catch {}
+  const intervalHours = 1;
   trackingRuntime.running = true;
   trackingRuntime.nextRun = new Date(Date.now() + intervalHours * 3600000).toISOString();
   trackingTimer = setTimeout(async () => {
@@ -1749,7 +1800,7 @@ const server = http.createServer(async (req, res) => {
             pending: (db.shipments || []).filter(item => item.trackingRetryPending).length,
             manualReview: (db.shipments || []).filter(item => item.manualInterventionNeeded || item.manual_review_required).length,
             failed: (db.shipments || []).filter(item => item.trackingError).length,
-            delivered: (db.shipments || []).filter(item => item.normalizedStatus === "delivered" || item.status === "طھظ… ط§ظ„طھط³ظ„ظٹظ…").length,
+            delivered: (db.shipments || []).filter(item => canonicalShippingStatus(item.normalizedStatus || item.shippingStatus || item.status) === "delivered").length,
             updatedToday: (db.shipments || []).filter(item => String(item.lastTrackingAt || "").slice(0, 10) === todayKey).length
           };
         }

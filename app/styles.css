@@ -969,6 +969,65 @@ tbody tr.target-highlight > td {
 .badge.blue { color: var(--blue); background: var(--blue-soft); }
 .badge.gray { color: #6a7471; background: #edf0ef; }
 .row-actions { display: flex; gap: 5px; }
+.shipping-table { min-width: 1040px; }
+.shipment-status-select {
+  width: 100%;
+  min-width: 150px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 700;
+}
+.shipment-status-preview { margin-top: 6px; }
+.shipment-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.shipment-status-badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+.shipment-status-badge.blue { color:#2563a7; background:#e8f2ff; }
+.shipment-status-badge.violet { color:#6750a4; background:#f0ebff; }
+.shipment-status-badge.warning { color:#b65d00; background:#fff1df; }
+.shipment-status-badge.attempt { color:#914a12; background:#ffe7cf; }
+.shipment-status-badge.success { color:#167548; background:#e2f6ea; }
+.shipment-status-badge.danger { color:#b42318; background:#fee9e7; }
+.shipping-row-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:260px; }
+.shipping-row-actions .row-action.primary { color:#fff; background:var(--blue); border-color:var(--blue); }
+.shipping-row-actions .row-action:disabled { opacity:.65; cursor:wait; }
+.shipping-more { position:relative; }
+.shipping-more > summary { cursor:pointer; list-style:none; color:var(--muted); padding:6px 8px; }
+.shipping-more > summary::-webkit-details-marker { display:none; }
+.shipping-more > div { position:absolute; z-index:20; top:calc(100% + 5px); left:0; display:grid; gap:4px; min-width:190px; padding:8px; border:1px solid var(--line); border-radius:12px; background:#fff; box-shadow:0 12px 28px rgba(18,38,32,.14); }
+.shipping-more > div .row-action { width:100%; text-align:right; }
+.shipment-update-hint { font-size:11px; }
+.shipment-update-hint.error { color:var(--danger); }
+.is-hidden { display:none !important; }
+.shipment-history-head { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:18px; }
+.shipment-history-head > div { display:grid; gap:6px; padding:12px; border-radius:12px; background:var(--canvas); }
+.shipment-history-head span { color:var(--muted); font-size:11px; }
+.tracking-timeline { position:relative; display:grid; gap:0; padding-right:18px; }
+.tracking-event { position:relative; display:grid; grid-template-columns:16px minmax(0,1fr); gap:10px; padding-bottom:18px; }
+.tracking-event::before { content:""; position:absolute; top:13px; right:7px; bottom:-5px; width:2px; background:var(--line); }
+.tracking-event:last-child::before { display:none; }
+.tracking-event-dot { position:relative; z-index:1; width:14px; height:14px; margin-top:3px; border:3px solid #fff; border-radius:50%; background:var(--blue); box-shadow:0 0 0 2px var(--blue-soft); }
+.tracking-event.success .tracking-event-dot { background:#167548; box-shadow:0 0 0 2px #e2f6ea; }
+.tracking-event.danger .tracking-event-dot { background:var(--danger); box-shadow:0 0 0 2px var(--danger-soft); }
+.tracking-event.attempt .tracking-event-dot,.tracking-event.warning .tracking-event-dot { background:var(--warning); box-shadow:0 0 0 2px var(--warning-soft); }
+.tracking-event-body { min-width:0; padding:0 0 2px; }
+.tracking-event-top { display:flex; justify-content:space-between; gap:12px; }
+.tracking-event-top time,.tracking-source { color:var(--muted); font-size:11px; }
+.tracking-event-body p { margin:6px 0 0; color:var(--ink); }
+.technical-details { margin-top:14px; padding:10px 12px; border:1px dashed var(--line); border-radius:12px; }
+.technical-details summary { cursor:pointer; color:var(--muted); }
+@media (max-width: 720px) {
+  .shipment-history-head { grid-template-columns:1fr; }
+  .tracking-event-top { display:grid; gap:3px; }
+}
 .row-action { border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; color: var(--muted); background: #fff; font-size: 9px; }
 
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }

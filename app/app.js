@@ -554,7 +554,7 @@ function showNotificationCenter() {
 
 function shipmentRefreshText() {
   if (!lastShipmentRefresh) return "في انتظار أول تحديث تلقائي";
-  return `آخر تحديث ${lastShipmentRefresh.toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · تلقائي كل دقيقة`;
+  return `آخر تحديث ${lastShipmentRefresh.toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · تلقائي حسب حالة الشحنة`;
 }
 
 function dashboardShipmentsMarkup() {
@@ -616,6 +616,9 @@ async function reloadRemoteData() {
 
 async function runTrackingApi(path, successMessage) {
   if (!serverConnected) return toast("التتبع الفعلي يحتاج تشغيل النظام من START-HERE.cmd لأن الطلب يتم من السيرفر.", "error");
+  const shipmentId = decodeURIComponent(String(path).split("/").pop() || "");
+  const buttons = shipmentId ? [...document.querySelectorAll(`[data-action="update-tracking-now"][data-id="${CSS.escape(shipmentId)}"]`)] : [];
+  buttons.forEach(button => { button.disabled = true; button.dataset.originalText = button.textContent; button.textContent = "جارٍ التحديث..."; });
   try {
     const requestId = globalThis.crypto?.randomUUID?.() || `web-${Date.now()}`;
     const response = await fetch(path, { method: "POST", headers: authHeaders({ "Content-Type": "application/json", "X-Request-ID":requestId }) });
@@ -623,13 +626,15 @@ async function runTrackingApi(path, successMessage) {
     dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
     await reloadRemoteData();
     if (currentView === "shipping") renderShipping();
-    if (result.ok === false) throw new Error(result.message || result.errors?.[0]?.error || "تعذر تحديث التتبع");
+    if (result.ok === false) throw new Error(result.persistenceFailed ? "وصلت النتيجة ولكن تعذر حفظها." : (result.message || result.errors?.[0]?.error || "تعذر تحديث التتبع"));
     if (Number(result.manualIntervention || 0) > 0) {
       toast("فشل التتبع الآلي: موقع البريد يمنع التشغيل الآلي. تم تعليم الشحنة كمراجعة يدوية.", "error");
       return result;
     }
     if (Number(result.failed || 0) > 0) {
-      toast(result.errors?.[0]?.error || "تعذر تحديث التتبع. لم يتم تغيير حالة الشحنة.", "error");
+      const code = result.errors?.[0]?.failureCode || result.failureCode || "";
+      const message = code === "TRACKING_AGENT_OFFLINE" ? "خدمة التتبع غير متصلة." : code === "RESULT_NOT_FOUND" ? "لم يتم العثور على نتيجة." : (result.errors?.[0]?.error || "تعذر تحديث التتبع. لم يتم تغيير حالة الشحنة.");
+      toast(message, "error");
       return result;
     }
     toast(Number(result.successful || 0) > 0 ? "تم تحديث التتبع وحفظ النتيجة." : (successMessage || "تم تنفيذ طلب التتبع."));
@@ -639,6 +644,8 @@ async function runTrackingApi(path, successMessage) {
     if (currentView === "shipping") renderShipping();
     toast(error.message || "تعذر تحديث التتبع من المصدر الفعلي.", "error");
     return null;
+  } finally {
+    buttons.forEach(button => { button.disabled = false; button.textContent = button.dataset.originalText || "تحديث إلكتروني"; delete button.dataset.originalText; });
   }
 }
 
@@ -876,15 +883,54 @@ function isEgyptPostCarrier(value = "") {
 function normalizeTrackingStatusText(text = "") {
   const lower = String(text || "").toLowerCase();
   if (/delivered|تم التسليم|سلمت/.test(lower)) return "delivered";
-  if (/returned to sender|رجوع للمرسل|رجعت للمرسل|عاد للمرسل/.test(lower)) return "returned_to_sender";
-  if (/return|مرتجع|عودة|إرجاع/.test(lower)) return "return_initiated";
-  if (/attempt|محاولة|تعذر/.test(lower)) return "delivery_attempted";
-  if (/unavailable|غير متواجد|لم يستلم/.test(lower)) return "customer_unavailable";
-  if (/address|عنوان/.test(lower)) return "address_issue";
-  if (/out for delivery|خرج للتوصيل|خارج للتسليم/.test(lower)) return "out_for_delivery";
-  if (/transit|في الطريق/.test(lower)) return "in_transit";
-  if (/accepted|استلام/.test(lower)) return "accepted_by_carrier";
+  if (/returned to sender|رجوع للمرسل|رجعت للمرسل|عاد للمرسل|return|مرتجع|عودة|إرجاع/.test(lower)) return "returned";
+  if (/محاولة تسليم ثالثة|attempt_3/.test(lower)) return "delivery_attempt_3";
+  if (/محاولة تسليم ثانية|attempt_2/.test(lower)) return "delivery_attempt_2";
+  if (/محاولة تسليم أولى|attempt|محاولة|تعذر/.test(lower)) return "delivery_attempt_1";
+  if (/unavailable|غير متواجد|لم يستلم|address|عنوان/.test(lower)) return "delivery_attempt_1";
+  if (/out for delivery|خرج للتوصيل|خارج للتسليم|جاري التسليم/.test(lower)) return "out_for_delivery";
+  if (/transit|في الطريق|في مرحلة نقل/.test(lower)) return "in_transit";
+  if (/accepted|استلام|تم الشحن/.test(lower)) return "shipped";
   return "unknown";
+}
+
+const SHIPPING_STATUSES = {
+  shipped: { label:"تم الشحن", legacy:"تم التسليم للشركة", tone:"blue" },
+  in_transit: { label:"في مرحلة نقل", legacy:"في الطريق", tone:"violet" },
+  out_for_delivery: { label:"جاري التسليم", legacy:"خرج للتوصيل", tone:"warning" },
+  delivery_attempt_1: { label:"محاولة تسليم أولى", legacy:"في الطريق", tone:"attempt" },
+  delivery_attempt_2: { label:"محاولة تسليم ثانية", legacy:"في الطريق", tone:"attempt" },
+  delivery_attempt_3: { label:"محاولة تسليم ثالثة", legacy:"في الطريق", tone:"attempt" },
+  delivered: { label:"تم التسليم", legacy:"تم التسليم", tone:"success" },
+  returned: { label:"مرتجع", legacy:"مرتجع", tone:"danger" }
+};
+
+function shipmentStatusCode(item = {}) {
+  const direct = [item.shippingStatus, item.trackingStatus, item.normalizedStatus].find(value => SHIPPING_STATUSES[value]);
+  if (direct) return direct;
+  const text = String(item.status || item.currentStatus || "").trim();
+  if (/تم التسليم$|delivered/i.test(text)) return "delivered";
+  if (/مرتجع|returned|return_to_sender|returned_to_sender/i.test(text)) return "returned";
+  if (/محاولة.*ثالث|attempt_3/i.test(text)) return "delivery_attempt_3";
+  if (/محاولة.*ثان|attempt_2/i.test(text)) return "delivery_attempt_2";
+  if (/محاولة|تعذر التسليم|attempt/i.test(text)) return "delivery_attempt_1";
+  if (/جاري التسليم|خرج للتوصيل|out_for_delivery/i.test(text)) return "out_for_delivery";
+  if (/في مرحلة نقل|في الطريق|in_transit|sorting/i.test(text)) return "in_transit";
+  return "shipped";
+}
+
+function shipmentStatusMeta(item = {}) {
+  const code = shipmentStatusCode(item);
+  return { code, ...(SHIPPING_STATUSES[code] || SHIPPING_STATUSES.shipped) };
+}
+
+function shipmentStatusOptions(selected = "shipped") {
+  return Object.entries(SHIPPING_STATUSES).map(([code, meta]) => `<option value="${code}" ${selected === code ? "selected" : ""}>${meta.label}</option>`).join("");
+}
+
+function shipmentStatusBadge(item = {}) {
+  const meta = shipmentStatusMeta(item);
+  return `<span class="shipment-status-badge ${meta.tone}" data-status="${meta.code}">${meta.label}</span>`;
 }
 
 function normalizeGovernorate(value) {
@@ -1998,7 +2044,7 @@ function renderDashboard() {
       ${statCard("قيمة المخزون", money(inventoryCost), `${data.books.length} صنف مسجل`, "▤", "gold", "+4.1%", "inventory")}
       ${statCard("مديونية العملاء", money(customerDebt), "أرصدة آجلة قائمة", "👤", "blue", "", "customer-debt")}
       ${statCard("أصناف تحتاج انتباه", lowStock.length, "منخفضة أو سالبة المخزون", "!", "red", "", "stock-alerts")}
-      ${statCard("شحنات تحتاج مراجعة", manualReviewShipments.length, "Manual Review بعد فشل التتبع", "⚑", "gold", "", "shipping")}
+      ${statCard("شحنات تحتاج مراجعة", manualReviewShipments.length, "تحتاج مراجعة يدوية بعد تعذر التحديث", "⚑", "gold", "", "shipping")}
       ${statCard("تحديث يدوي اليوم", manualUpdatedToday, "نتائج تتبع سجلها الموظفون", "✓", "blue", "", "shipping")}
       ${statCard("متوسط عمر غير المحدث", `${avgNotUpdatedAge} يوم`, "شحنات بلا آخر تحديث تتبع", "⌁", "red", "", "shipping")}
     </div>
@@ -3240,56 +3286,39 @@ function applyShippingStatFilter(stat) {
 }
 
 function renderShipping() {
-  const statuses = ["جديدة", "تم التجهيز", "تم التسليم للشركة", "في الطريق", "تم التسليم", "مرتجع"];
+  const statuses = Object.entries(SHIPPING_STATUSES);
   const rows = data.shipments.filter(item => !item.deletedAt);
   const todayKey = new Date().toISOString().slice(0, 10);
   const active = rows.filter(item => !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status));
   const noMovement = rows.filter(item => item.lastMovementAt && (Date.now() - new Date(item.lastMovementAt).getTime()) / 3600000 >= data.settings.tracking.noMovementHours && !["تم التسليم", "مرتجع"].includes(item.status));
   const quickLabel = shippingQuickFilterLabel();
   root.innerHTML = `
-    <div class="section-title">
-      <div><h2>مركز متابعة الشحنات</h2><p>متابعة تلقائية للشحنات النشطة، تنبيهات تشغيلية، وسجل حركة التتبع.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="update-all-tracking">تحديث جميع الشحنات النشطة</button><button class="btn secondary" data-action="test-local-rpa">اختبار خدمة التتبع</button><button class="btn secondary" data-action="retry-pending-tracking">إعادة محاولة المهام المعلقة</button><button class="btn secondary" data-action="shipping-companies">شركات الشحن</button></div>
+    <div class="section-title shipping-page-title">
+      <div><h2>الشحن والتتبع</h2><p>تابع حالة الطلبات وحدّثها إلكترونيًا أو يدويًا من مكان واحد.</p></div>
+      <div class="actions"><button class="btn" data-action="update-all-tracking">تحديث إلكتروني للكل</button><button class="btn secondary" data-action="shipping-companies">شركات الشحن</button></div>
     </div>
     <div class="stats-grid">
       ${statCard("شحنات نشطة", active.length, "قابلة للمتابعة", "▣", "", "", "shipping:active")}
       ${statCard("متأخرة", rows.filter(s => Number(s.delayHours || 0) > 0).length, "تجاوزت SLA", "!", "red", "", "shipping:delayed")}
-      ${statCard("بدون حركة", noMovement.length, `أكثر من ${data.settings.tracking.noMovementHours} ساعة`, "◇", "gold", "", "shipping:no-movement")}
-      ${statCard("تحتاج اتصال عميل", rows.filter(s => s.requiresCustomerCall).length, "محاولة تسليم أو عنوان", "☎", "blue", "", "shipping:call")}
-      ${statCard("تحتاج شكوى", rows.filter(s => s.requiresComplaint).length, "مرشحة لشكوى", "□", "red", "", "shipping:complaint")}
-      ${statCard("خطر مرتجع", rows.filter(s => s.returnRisk).length, "في مسار عودة", "↶", "gold", "", "shipping:return-risk")}
       ${statCard("مرتجعة", rows.filter(s => s.status === "مرتجع").length, "رجعت للمرسل", "↩", "red", "", "shipping:returned")}
-      ${statCard("أخطاء تتبع", rows.filter(s => s.trackingError).length, "فشل مزود أو اتصال", "!", "red", "", "shipping:error")}
-      ${statCard("تدخل يدوي", rows.filter(s => s.manualInterventionNeeded).length, "CAPTCHA أو تصميم الصفحة", "⚑", "gold", "", "shipping:manual")}
+      ${statCard("تحتاج متابعة", rows.filter(s => s.trackingError || s.manualInterventionNeeded).length, "تحديث لم يكتمل", "!", "gold", "", "shipping:error")}
     </div>
     <div id="shipping-filter-summary">${quickLabel ? `<div class="alert-item" style="margin:14px 0"><div class="alert-badge blue">i</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>الجدول بالأسفل يعرض الشحنات المطابقة، ويمكنك فتح أو تعديل أي شحنة مباشرة.</span></div><button class="row-action" data-action="shipping-stat" data-stat="shipping:all">عرض كل الشحنات</button></div>` : ""}</div>
-    <div id="tracking-worker-notice" class="alert-item warning" style="margin:14px 0">
-      <div class="alert-badge gold">i</div>
-      <div><strong>جاري فحص حالة التتبع التلقائي...</strong><span>يمكنك دائمًا استخدام زر تحديث التتبع الآن لتشغيل محاولة فورية للشحنة.</span></div>
-    </div>
     <article class="card">
-      <div class="toolbar"><div class="search"><input id="shipment-search" placeholder="بحث برقم الطلب أو كود التتبع أو العميل..."></div><select class="filter-select" id="shipment-status"><option value="">كل الحالات</option>${statuses.map(s => `<option>${s}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter"><option value="">كل المتابعة</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="no-movement">بدون حركة</option><option value="complaint">تحتاج شكوى</option><option value="call">تحتاج اتصال</option><option value="return-risk">خطر مرتجع</option><option value="manual">تحتاج مراجعة يدوية</option><option value="auto-failed">فشل تتبع آلي</option><option value="site-blocked">آخر محاولة SITE_BLOCKED</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">أخطاء تتبع</option></select></div>
-      <div class="metric-strip" style="margin:14px 0">
-        <div class="mini-metric"><span>تم تحديثها اليوم</span><strong>${rows.filter(s => String(s.lastTrackingAt || "").slice(0, 10) === todayKey).length}</strong></div>
-        <div class="mini-metric"><span>تحتاج مراجعة يدوية</span><strong>${rows.filter(s => s.manualInterventionNeeded || s.manual_review_required).length}</strong></div>
-        <div class="mini-metric"><span>آخر دورة تتبع</span><strong>${esc(dateTimeLabel((data.trackingRunBatches || data.trackingRuns || []).at(-1)?.finishedAt) || "—")}</strong></div>
-        <div class="mini-metric"><span>المصدر</span><strong>${esc(data.settings.tracking.providerName || TRACKING_PROVIDER_NAME)}</strong></div>
-      </div>
+      <div class="toolbar"><div class="search"><input id="shipment-search" placeholder="بحث برقم الطلب أو التتبع أو العميل..."></div><select class="filter-select" id="shipment-status"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select></div>
       <div class="table-wrap" id="shipments-table">${shipmentsTable(rows)}</div>
     </article>`;
-  updateTrackingWorkerNotice();
 }
 
 function shipmentsTable(list) {
-  return `<table><thead><tr><th>الشحنة</th><th>الطلب/الفاتورة</th><th>العميل</th><th>التتبع</th><th>الحالة الحالية</th><th>آخر موقع</th><th>آخر حركة</th><th>التأخير</th><th>التنبيه</th><th>الإجراء</th><th></th></tr></thead>
+  return `<table class="shipping-table"><thead><tr><th>رقم الطلب</th><th>العميل</th><th>رقم التتبع</th><th>شركة الشحن</th><th>الحالة الحالية</th><th>آخر تحديث</th><th>الإجراءات</th></tr></thead>
   <tbody>${list.map(item => {
     const tracking = shipmentTrackingSummary(item);
-    const delay = Number(item.delayHours || 0) > 0 ? `${Math.round(item.delayHours)} ساعة` : "—";
-    const alert = item.manualInterventionNeeded || item.manual_review_required ? badge("تحتاج مراجعة يدوية", "warning") : item.trackingError ? badge("تعذر تحديث التتبع", "danger") : item.requiresComplaint ? badge("شكوى", "danger") : item.requiresCustomerCall ? badge("اتصال عميل", "warning") : item.returnRisk ? badge("خطر مرتجع", "warning") : badge(item.alertLevel || "info", item.alertLevel === "high" || item.alertLevel === "critical" ? "danger" : "");
-    const action = item.manualInterventionNeeded ? "مراجعة موقع البريد المصري" : item.trackingError ? "اختبار/مراجعة المصدر" : item.requiresComplaint ? "تجهيز شكوى" : item.requiresCustomerCall ? "اتصال بالعميل" : item.returnRisk ? "متابعة المرتجع" : "متابعة دورية";
     const debugButton = canAction("show-tracking-debug") && (item.trackingDebug?.screenshotFile || tracking.lastRun?.screenshotPath) ? `<button class="row-action" data-action="show-tracking-debug" data-id="${item.id}">بيانات التشخيص</button>` : "";
-    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${item.id}</strong><br><span class="muted">${fmtDate(item.updatedAt || item.updated)}</span></td><td>${esc(item.onlineOrderId || "—")}<br><span class="muted">${esc(item.invoiceId || item.orderId || "—")}</span></td><td>${esc(item.customerName || item.customer)}<br><span class="muted">${esc(item.customerPhone || item.phone || item.governorate || item.city || "")}</span></td><td><strong>${esc(item.trackingNumber || item.tracking)}</strong><br><span class="muted">${esc(item.carrier || item.company)} · ${item.trackingEnabled ? "متابعة مفعلة" : "غير مفعلة"}</span></td><td>${badge(cleanDisplayText(item.status, "غير متاح", "غير متاح"), item.status === "مرتجع" ? "danger" : item.status === "في الطريق" ? "blue" : "")}<br><span class="muted">${esc(tracking.statusText)}</span>${tracking.siteBlocked ? `<br><span class="muted">الكود: SITE_BLOCKED</span>` : ""}</td><td>${esc(tracking.location)}</td><td>${esc(tracking.movement)}</td><td>${delay}</td><td>${alert}</td><td>${esc(action)}</td><td><div class="row-actions"><button class="row-action" data-action="view-shipment" data-id="${item.id}">عرض</button><button class="row-action" data-action="update-tracking-now" data-id="${item.id}">تحديث التتبع الآن</button>${debugButton}<button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل</button><button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></td></tr>`;
-  }).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
+    const current = shipmentStatusCode(item);
+    const lastUpdate = item.lastTrackedAt || item.lastTrackingAt || item.updatedAt || item.updated;
+    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td>${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}${item.trackingError ? `<br><span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}</td><td><div class="shipping-row-actions"><button class="row-action primary" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button><button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="row-action" data-action="shipment-history" data-id="${item.id}">سجل التتبع</button><details class="shipping-more"><summary>المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
 
 async function updateTrackingWorkerNotice() {
@@ -4454,7 +4483,7 @@ function addShipmentModal(item = null) {
         <div class="form-field"><label>المدينة</label><input name="city" value="${esc(item?.city || "")}"></div>
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(item?.address || "")}"></div>
         <div class="form-field"><label for="shipment-extra-cost">تكلفة الشحن الإضافية</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.cost ?? 0 })}></div>
-        <div class="form-field full"><label>الحالة</label><select name="status">${["جديدة","تم التجهيز","تم التسليم للشركة","في الطريق","تم التسليم","مرتجع"].map(status => `<option ${item?.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></div>
+        <div class="form-field full"><label>الحالة</label><select name="status">${Object.values(SHIPPING_STATUSES).map(meta => `<option ${shipmentStatusMeta(item || {}).label === meta.label ? "selected" : ""}>${meta.label}</option>`).join("")}</select></div>
       </div>
       <div class="form-actions"><button class="btn" type="submit">حفظ الشحنة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
     </form>`);
@@ -4918,6 +4947,8 @@ root.addEventListener("click", event => {
   if (action === "stock-count") stockCountModal();
   if (action === "statement") showStatement(target.dataset.id, target.dataset.kind);
   if (action === "update-shipment") addShipmentModal(data.shipments.find(item => item.id === target.dataset.id));
+  if (action === "edit-shipment-status") shipmentStatusQuickModal(target.dataset.id);
+  if (action === "shipment-history") shipmentHistoryModal(target.dataset.id);
   if (action === "update-tracking-now") updateShipmentTrackingNow(target.dataset.id);
   if (action === "show-tracking-debug") showTrackingDebug(target.dataset.id);
   if (action === "copy-tracking-code") copyShipmentTrackingCode(target.dataset.id);
@@ -5115,6 +5146,18 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   const index = Number(event.target.dataset.index);
+  if (event.target.matches("[data-shipment-status]")) {
+    const shipment = data.shipments.find(item => item.id === event.target.dataset.id);
+    const previous = shipmentStatusCode(shipment);
+    const next = event.target.value;
+    event.target.value = previous;
+    if (["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3", "returned"].includes(next)) {
+      shipmentStatusQuickModal(shipment?.id, next);
+    } else {
+      applyManualShipmentStatus(shipment?.id, next);
+    }
+    return;
+  }
   if (event.target.id === "movement-book-id") return selectProductMovementBook("id", event.target.value);
   if (event.target.id === "movement-book-name") return selectProductMovementBook("name", event.target.value);
   if (event.target.id === "movement-book-barcode") return selectProductMovementBook("barcode", event.target.value);
@@ -5594,6 +5637,12 @@ modalBody.addEventListener("input", event => {
 });
 
 modalBody.addEventListener("change", event => {
+  if (event.target.name === "shippingStatus" && event.target.closest("#quick-shipment-status-form")) {
+    const note = event.target.closest("form").querySelector(".shipment-status-note");
+    const needsNote = ["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3", "returned"].includes(event.target.value);
+    note?.classList.toggle("is-hidden", !needsNote);
+    return;
+  }
   if (event.target.name === "normalizedStatus" && event.target.closest("#manual-tracking-form")) {
     const form = event.target.closest("#manual-tracking-form");
     const labelInput = form.querySelector("[name='statusText']");
@@ -5917,6 +5966,7 @@ modalBody.addEventListener("submit", async event => {
       trackingProvider: isEgyptPostCarrier(company) ? data.settings.tracking.providerName : "",
       currentStatus: formData.status || existing?.currentStatus || "",
       normalizedStatus: normalizeTrackingStatusText(formData.status || existing?.currentStatus || ""),
+      shippingStatus: normalizeTrackingStatusText(formData.status || existing?.currentStatus || "") || existing?.shippingStatus || "shipped",
       governorate: snapshot.governorate || governorate || existing?.governorate || "",
       city: snapshot.city || formData.city,
       address: snapshot.address || formData.address || existing?.address || "",
@@ -5974,6 +6024,10 @@ modalBody.addEventListener("submit", async event => {
       updateOperationalStatus: form.elements.updateOperationalStatus?.checked,
       clearManualReview: form.elements.clearManualReview?.checked
     });
+    return;
+  }
+  if (form.id === "quick-shipment-status-form") {
+    await applyManualShipmentStatus(form.dataset.id, formData.shippingStatus, formData.notes || "");
     return;
   }
   if (form.id === "shipment-complaint-form") {
@@ -6230,7 +6284,7 @@ function filterShipments() {
       (trackingFilter === "auto-failed" && Boolean(s.trackingError)) ||
       (trackingFilter === "site-blocked" && (s.trackingDiagnostics?.failureCode === "SITE_BLOCKED" || s.trackingDebug?.failureCode === "SITE_BLOCKED")) ||
       (trackingFilter === "error" && s.trackingError);
-    return !s.deletedAt && haystack.includes(term) && (!status || s.status === status) && byFilter;
+    return !s.deletedAt && haystack.includes(term) && (!status || shipmentStatusCode(s) === status) && byFilter;
   });
   document.getElementById("shipments-table").innerHTML = shipmentsTable(list);
   scheduleStickyTableScrollbar();
@@ -6431,7 +6485,7 @@ function createShipmentFromOrder(id, details = null) {
     trackingProvider: isEgyptPostCarrier(company) ? data.settings.tracking.providerName : "",
     customerId: sale.customerId, customer: snapshot.name, customerName: snapshot.name, phone: snapshot.phone, customerPhone: snapshot.phone,
     governorate: snapshot.governorate, city: snapshot.city, address: snapshot.address,
-    cost: Number(details.cost ?? order.shippingCost ?? sale.shipping ?? 0), status: details.status || "تم التجهيز", currentStatus: details.status || "تم التجهيز", normalizedStatus: normalizeTrackingStatusText(details.status || "تم التجهيز"), updated: now,
+    cost: Number(details.cost ?? order.shippingCost ?? sale.shipping ?? 0), status: details.status || "تم الشحن", currentStatus: details.status || "تم الشحن", normalizedStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), shippingStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), updated: now,
     createdAt: now, updatedAt: now, deletedAt: null
   };
   data.shipments.unshift(shipment);
@@ -6456,7 +6510,7 @@ function shipmentFromOrderModal(order, sale) {
         <div class="form-field"><label>رقم الطلب</label><input value="${esc(order.id)}" readonly></div>
         <div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions()}</select></div>
         <div class="form-field"><label>رقم التتبع</label><input name="tracking" value="${esc(order.tracking || "")}" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا"></div>
-        <div class="form-field"><label>الحالة</label><select name="status">${["تم التجهيز","خرج للتوصيل","تم التسليم","مرتجع"].map(status => `<option>${status}</option>`).join("")}</select></div>
+        <div class="form-field"><label>الحالة</label><select name="status">${Object.values(SHIPPING_STATUSES).map(meta => `<option>${meta.label}</option>`).join("")}</select></div>
         <div class="form-field"><label for="order-shipment-extra-cost">تكلفة الشحن الإضافية</label><input ${numericFieldAttributes({ id:"order-shipment-extra-cost", name:"cost", value:Number(order.shippingCost || sale.shippingCost || sale.shipping || 0) })}></div>
       </div>
       <div class="customer-summary" style="margin-top:14px"><strong>${esc(snapshot.name)}</strong><span><span dir="ltr">${esc(snapshot.phone || "—")}</span></span><span>${esc([snapshot.governorate, snapshot.city, snapshot.address].filter(Boolean).join("، "))}</span></div>
@@ -7297,7 +7351,38 @@ function deleteParty(id, kind) {
   toast("تم حذف السجل.");
 }
 
+function shipmentHistoryModal(id) {
+  const item = data.shipments.find(row => row.id === id);
+  if (!item) return toast("لم يتم العثور على الشحنة.", "error");
+  const history = shipmentTrackingHistory(id);
+  const isAdmin = canAction("show-tracking-debug");
+  openModal(`سجل تتبع ${item.invoiceId || item.orderId || item.id}`, "الخط الزمني للشحنة", `
+    <div class="shipment-history-head">
+      <div><span>رقم التتبع</span><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></div>
+      <div><span>الحالة الحالية</span>${shipmentStatusBadge(item)}</div>
+      <div><span>آخر تحديث</span><strong>${item.lastTrackedAt || item.lastTrackingAt ? dateTimeLabel(item.lastTrackedAt || item.lastTrackingAt) : "—"}</strong></div>
+    </div>
+    <div class="tracking-timeline">
+      ${history.map(row => {
+        const meta = SHIPPING_STATUSES[row.normalizedStatus] || { label:cleanDisplayText(row.statusText, "غير واضح", "غير واضح"), tone:"blue" };
+        const manual = ["manual", "manual_review"].includes(row.source) || ["manual", "manual_review"].includes(row.provider);
+        return `<article class="tracking-event ${meta.tone}">
+          <div class="tracking-event-dot"></div>
+          <div class="tracking-event-body">
+            <div class="tracking-event-top"><strong>${esc(meta.label)}</strong><time>${dateTimeLabel(row.eventAt || row.fetchedAt || row.createdAt)}</time></div>
+            <span class="tracking-source">${manual ? "تعديل يدوي" : "تحديث إلكتروني"}${manual && row.reviewedBy ? ` · ${esc(row.reviewedBy)}` : ""}</span>
+            ${row.statusText && row.statusText !== meta.label ? `<p>نص البريد: ${esc(cleanDisplayText(row.statusText, "غير واضح", ""))}</p>` : ""}
+            ${row.notes ? `<p>ملاحظة: ${esc(row.notes)}</p>` : ""}
+          </div>
+        </article>`;
+      }).join("") || `<div class="empty-state"><strong>لا توجد تحديثات محفوظة بعد</strong><p>استخدم «تحديث إلكتروني» أو عدّل الحالة يدويًا.</p></div>`}
+    </div>
+    ${isAdmin ? `<details class="technical-details"><summary>التفاصيل التقنية للإدارة</summary><div class="metric-strip"><div class="mini-metric"><span>آخر Run</span><strong>${esc(latestShipmentTrackingRun(id)?.id || "—")}</strong></div><div class="mini-metric"><span>الحالة الداخلية</span><strong>${esc(item.normalizedStatus || "—")}</strong></div><div class="mini-metric"><span>Failure Code</span><strong>${esc(item.trackingFailureCode || "—")}</strong></div></div></details>` : ""}
+    <div class="form-actions"><button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button><button class="btn secondary" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+}
+
 function viewShipment(id) {
+  if (!canAction("show-tracking-debug")) return shipmentHistoryModal(id);
   const item = data.shipments.find(row => row.id === id);
   if (!item) return toast("لم يتم العثور على الشحنة.", "error");
   const history = shipmentTrackingHistory(id);
@@ -7412,18 +7497,96 @@ function prepareShipmentComplaint(id) {
 }
 
 const MANUAL_TRACKING_STATUSES = {
-  registered: { label: "تم التسجيل", operational: "تم التسليم للشركة" },
   shipped: { label: "تم الشحن", operational: "تم التسليم للشركة" },
-  in_transit: { label: "قيد النقل والمعالجة", operational: "في الطريق" },
-  out_for_delivery: { label: "خرج للتوصيل", operational: "خرج للتوصيل" },
+  in_transit: { label: "في مرحلة نقل", operational: "في الطريق" },
+  out_for_delivery: { label: "جاري التسليم", operational: "خرج للتوصيل" },
+  delivery_attempt_1: { label: "محاولة تسليم أولى", operational: "في الطريق" },
+  delivery_attempt_2: { label: "محاولة تسليم ثانية", operational: "في الطريق" },
+  delivery_attempt_3: { label: "محاولة تسليم ثالثة", operational: "في الطريق" },
   delivered: { label: "تم التسليم", operational: "تم التسليم" },
-  failed_attempt: { label: "فشل محاولة التسليم", operational: "في الطريق" },
   returned: { label: "مرتجع", operational: "مرتجع" },
   unknown: { label: "غير واضح / يحتاج متابعة", operational: "" }
 };
 
 function manualTrackingStatusOptions(selected = "unknown") {
-  return Object.entries(MANUAL_TRACKING_STATUSES).map(([key, item]) => `<option value="${key}" ${selected === key ? "selected" : ""}>${key} — ${esc(item.label)}</option>`).join("");
+  return Object.entries(MANUAL_TRACKING_STATUSES).filter(([key]) => key !== "unknown").map(([key, item]) => `<option value="${key}" ${selected === key ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+}
+
+function shipmentStatusQuickModal(id, selected = "") {
+  const shipment = data.shipments.find(item => item.id === id);
+  if (!shipment) return toast("لم يتم العثور على الشحنة.", "error");
+  const current = selected || shipmentStatusCode(shipment);
+  const needsNote = ["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3", "returned"].includes(current);
+  openModal("تعديل حالة الشحنة", shipment.invoiceId || shipment.orderId || shipment.id, `
+    <form id="quick-shipment-status-form" data-id="${esc(shipment.id)}">
+      <div class="form-field"><label>الحالة الجديدة</label><select name="shippingStatus">${shipmentStatusOptions(current)}</select></div>
+      <div class="form-field shipment-status-note ${needsNote ? "" : "is-hidden"}"><label>سبب المحاولة أو المرتجع <span class="muted">(اختياري)</span></label><textarea name="notes" placeholder="يمكن إضافة ملاحظة قصيرة للمتابعة"></textarea></div>
+      <div class="form-actions"><button class="btn" type="submit">حفظ الحالة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+}
+
+async function applyManualShipmentStatus(id, statusCode, notes = "") {
+  const shipment = data.shipments.find(item => item.id === id);
+  const meta = SHIPPING_STATUSES[statusCode];
+  if (!shipment || !meta) return toast("تعذر تحديد حالة الشحنة.", "error");
+  const now = new Date();
+  now.setMilliseconds(0);
+  const eventAt = now.toISOString();
+  const actor = actorSnapshot();
+  data.trackingHistory = data.trackingHistory || [];
+  const duplicate = data.trackingHistory.some(row =>
+    row.shipmentId === shipment.id &&
+    row.source === "manual" &&
+    row.normalizedStatus === statusCode &&
+    String(row.eventAt || "").slice(0, 19) === eventAt.slice(0, 19)
+  );
+  if (!duplicate) {
+    data.trackingHistory.push({
+      id: nextId("TRK-", data.trackingHistory),
+      shipmentId: shipment.id,
+      trackingNumber: normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking || ""),
+      source: "manual",
+      provider: "manual",
+      statusText: meta.label,
+      normalizedStatus: statusCode,
+      eventAt,
+      fetchedAt: eventAt,
+      notes: String(notes || "").trim(),
+      reviewedByUserId: actor.userId,
+      reviewedByUsername: actor.username,
+      reviewedBy: actor.name,
+      reviewedAt: eventAt,
+      createdAt: eventAt,
+      eventFingerprint: `${shipment.id}|manual|${statusCode}|${eventAt}`
+    });
+  }
+  shipment.shippingStatus = statusCode;
+  shipment.trackingStatus = statusCode;
+  shipment.normalizedStatus = statusCode;
+  shipment.status = meta.label;
+  shipment.currentStatus = meta.label;
+  shipment.lastStatusText = meta.label;
+  shipment.trackingMessage = meta.label;
+  shipment.lastTrackedAt = eventAt;
+  shipment.lastTrackingAt = eventAt;
+  shipment.lastTrackingSource = "manual";
+  shipment.manualReviewedAt = eventAt;
+  shipment.manualReviewedByUserId = actor.userId;
+  shipment.manualReviewedBy = actor.name;
+  shipment.manualReviewNotes = String(notes || "").trim();
+  shipment.manualInterventionNeeded = false;
+  shipment.manual_review_required = false;
+  shipment.trackingError = "";
+  shipment.updatedAt = eventAt;
+  shipment.updated = eventAt;
+  if (statusCode === "delivered") shipment.deliveredAt = shipment.deliveredAt || eventAt;
+  if (statusCode === "returned") shipment.returnedAt = shipment.returnedAt || eventAt;
+  data.audit.push(auditEntry({ action:`تغيير حالة الشحنة إلى ${meta.label}`, operationType:"manual_shipping_status", moduleName:"الشحن", entityType:"shipment", entity:"الشحن", entityId:shipment.id, documentNo:shipment.trackingNumber || shipment.id, notes:String(notes || "").trim() }));
+  const saved = await saveData();
+  if (!saved && serverConnected) return toast("تعذر حفظ الحالة. أعد المحاولة.", "error");
+  closeModal();
+  if (currentView === "shipping") renderShipping();
+  toast(`تم تحديث الحالة إلى «${meta.label}».`);
 }
 
 function copyShipmentTrackingCode(id) {
