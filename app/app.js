@@ -74,7 +74,7 @@ const PERMISSION_ACTIONS = [
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
-  ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["delete-shipment","حذف شحنة"],["update-tracking-now","تتبع شحنة الآن"],["update-all-tracking","تتبع الشحنات النشطة"],["test-local-rpa","اختبار خدمة التتبع"],["retry-pending-tracking","إعادة محاولة مهام التتبع"],["show-tracking-debug","عرض بيانات تشخيص التتبع"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
+  ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["add-shipment-complaint","إضافة شكوى شحنة"],["manage-shipment-complaints","إدارة شكاوى الشحنة"],["delete-shipment","حذف شحنة"],["update-tracking-now","تتبع شحنة الآن"],["update-all-tracking","تتبع الشحنات النشطة"],["test-local-rpa","اختبار خدمة التتبع"],["retry-pending-tracking","إعادة محاولة مهام التتبع"],["show-tracking-debug","عرض بيانات تشخيص التتبع"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
   ["الحسابات والخزائن", [["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
@@ -292,6 +292,15 @@ function dateTimeLabel(value) {
   return date.toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" });
 }
 
+function arabicDateTimeLabel(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fmtDate(value);
+  const day = new Intl.DateTimeFormat("ar-EG", { day:"numeric", month:"long", year:"numeric" }).format(date);
+  const time = new Intl.DateTimeFormat("ar-EG", { hour:"numeric", minute:"2-digit" }).format(date);
+  return `${day} – ${time}`;
+}
+
 function normalizeCashMovement(item = {}) {
   const normalized = { ...item };
   const fallbackStamp = normalized.createdAt || normalized.updatedAt || (normalized.date ? `${normalized.date}T00:00:00` : new Date().toISOString());
@@ -326,6 +335,7 @@ function canAction(action) {
   if (!currentUser) return false;
   if (action === "online-order-stat") return canView("onlineOrders");
   if (action === "shipping-stat") return canView("shipping");
+  if (["add-shipment-complaint", "manage-shipment-complaints"].includes(action)) return canView("shipping");
   if (!allPermissionActions().includes(action)) {
     const allowed = ACTION_ROLES[action];
     return !allowed || allowed.includes(currentUser.role);
@@ -605,7 +615,7 @@ async function refreshDashboardShipments({ silent = false } = {}) {
 
 async function reloadRemoteData() {
   if (!serverConnected) return false;
-  const response = await fetch(`/api/db-reload=${Date.now()}`, { headers: authHeaders(), cache: "no-store" });
+  const response = await fetch(`/api/db?reload=${Date.now()}`, { headers: authHeaders(), cache: "no-store" });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   data = normalizeData(await response.json());
   dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
@@ -3305,7 +3315,7 @@ function renderShipping() {
     </div>
     <div id="shipping-filter-summary">${quickLabel ? `<div class="alert-item" style="margin:14px 0"><div class="alert-badge blue">i</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>الجدول بالأسفل يعرض الشحنات المطابقة، ويمكنك فتح أو تعديل أي شحنة مباشرة.</span></div><button class="row-action" data-action="shipping-stat" data-stat="shipping:all">عرض كل الشحنات</button></div>` : ""}</div>
     <article class="card">
-      <div class="toolbar"><div class="search"><input id="shipment-search" placeholder="بحث برقم الطلب أو التتبع أو العميل..."></div><select class="filter-select" id="shipment-status"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select></div>
+      <div class="toolbar"><div class="search"><input id="shipment-search" placeholder="بحث بالطلب أو التتبع أو العميل أو رقم الشكوى..."></div><select class="filter-select" id="shipment-status"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select></div>
       <div class="table-wrap" id="shipments-table">${shipmentsTable(rows)}</div>
     </article>`;
 }
@@ -3317,7 +3327,9 @@ function shipmentsTable(list) {
     const debugButton = canAction("show-tracking-debug") && (item.trackingDebug?.screenshotFile || tracking.lastRun?.screenshotPath) ? `<button class="row-action" data-action="show-tracking-debug" data-id="${item.id}">بيانات التشخيص</button>` : "";
     const current = shipmentStatusCode(item);
     const lastUpdate = item.lastTrackedAt || item.lastTrackingAt || item.updatedAt || item.updated;
-    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td>${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}${item.trackingError ? `<br><span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}</td><td><div class="shipping-row-actions"><button class="row-action primary" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button><button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="row-action" data-action="shipment-history" data-id="${item.id}">سجل التتبع</button><details class="shipping-more"><summary>المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
+    const latestComplaint = shipmentComplaints(item.id)[0];
+    const complaintSummary = latestComplaint ? `<div class="complaint-latest"><strong>آخر شكوى: ${esc(latestComplaint.complaintNumber || latestComplaint.complaintReference)}</strong><span>${complaintStatusLabel(latestComplaint.status || latestComplaint.complaintStatus)} · ${arabicDateTimeLabel(latestComplaint.createdAt)}</span></div>` : "";
+    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td>${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}${item.trackingError ? `<br><span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}${complaintSummary}</td><td><div class="shipping-row-actions"><button class="row-action primary" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button><button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="row-action" data-action="shipment-history" data-id="${item.id}">سجل التتبع</button><button class="row-action complaint-action" data-action="add-shipment-complaint" data-id="${item.id}">إضافة شكوى</button><button class="row-action" data-action="shipment-complaints" data-id="${item.id}">سجل الشكاوى${shipmentComplaints(item.id).length ? ` (${shipmentComplaints(item.id).length})` : ""}</button><details class="shipping-more"><summary>المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
   }).join("") || `<tr><td colspan="7" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
 
@@ -4949,6 +4961,9 @@ root.addEventListener("click", event => {
   if (action === "update-shipment") addShipmentModal(data.shipments.find(item => item.id === target.dataset.id));
   if (action === "edit-shipment-status") shipmentStatusQuickModal(target.dataset.id);
   if (action === "shipment-history") shipmentHistoryModal(target.dataset.id);
+  if (action === "add-shipment-complaint") addShipmentComplaintModal(target.dataset.id);
+  if (action === "shipment-complaints") shipmentComplaintsModal(target.dataset.id);
+  if (action === "edit-shipment-complaint") editShipmentComplaintModal(target.dataset.id);
   if (action === "update-tracking-now") updateShipmentTrackingNow(target.dataset.id);
   if (action === "show-tracking-debug") showTrackingDebug(target.dataset.id);
   if (action === "copy-tracking-code") copyShipmentTrackingCode(target.dataset.id);
@@ -5349,6 +5364,18 @@ modalBody.addEventListener("click", event => {
   }
   if (appAction?.dataset.action === "prepare-complaint") {
     prepareShipmentComplaint(appAction.dataset.id);
+    return;
+  }
+  if (appAction?.dataset.action === "add-shipment-complaint") {
+    addShipmentComplaintModal(appAction.dataset.id);
+    return;
+  }
+  if (appAction?.dataset.action === "shipment-complaints") {
+    shipmentComplaintsModal(appAction.dataset.id);
+    return;
+  }
+  if (appAction?.dataset.action === "edit-shipment-complaint") {
+    editShipmentComplaintModal(appAction.dataset.id);
     return;
   }
   if (appAction?.dataset.action === "return-sale") {
@@ -6030,6 +6057,14 @@ modalBody.addEventListener("submit", async event => {
     await applyManualShipmentStatus(form.dataset.id, formData.shippingStatus, formData.notes || "");
     return;
   }
+  if (form.id === "add-shipment-complaint-form") {
+    await createShipmentComplaint(form.dataset.shipmentId, formData);
+    return;
+  }
+  if (form.id === "edit-shipment-complaint-form") {
+    await updateShipmentComplaint(form.dataset.id, formData);
+    return;
+  }
   if (form.id === "shipment-complaint-form") {
     const complaint = data.complaints.find(item => item.id === form.dataset.id);
     if (!complaint) return toast("لم يتم العثور على الشكوى.", "error");
@@ -6269,7 +6304,8 @@ function filterShipments() {
     card.classList.toggle("active", Boolean(shippingQuickFilter) && card.dataset.stat === `shipping:${shippingQuickFilter}`);
   });
   const list = data.shipments.filter(s => {
-    const haystack = `${s.id} ${s.orderId} ${s.invoiceId || ""} ${s.onlineOrderId || ""} ${s.tracking} ${s.trackingNumber || ""} ${s.customer} ${s.customerName || ""}`.toLowerCase();
+    const complaintNumbers = shipmentComplaints(s.id).map(item => item.complaintNumber || item.complaintReference || "").join(" ");
+    const haystack = `${s.id} ${s.orderId} ${s.invoiceId || ""} ${s.onlineOrderId || ""} ${s.tracking} ${s.trackingNumber || ""} ${s.customer} ${s.customerName || ""} ${complaintNumbers}`.toLowerCase();
     const byFilter =
       !trackingFilter ||
       (trackingFilter === "active" && !["تم التسليم","مرتجع","ملغاة"].includes(s.status)) ||
@@ -7455,45 +7491,115 @@ function deleteShipment(id) {
   toast("تم حذف الشحنة.");
 }
 
-function prepareShipmentComplaint(id) {
+const COMPLAINT_STATUSES = {
+  open: "مفتوحة",
+  in_progress: "قيد المتابعة",
+  closed: "مغلقة"
+};
+
+function complaintStatusLabel(value = "open") {
+  const aliases = { ready_to_submit:"open", draft:"open", submitted:"in_progress", under_follow_up:"in_progress", resolved:"closed" };
+  return COMPLAINT_STATUSES[aliases[value] || value] || COMPLAINT_STATUSES.open;
+}
+
+function shipmentComplaints(shipmentId) {
+  return (data.complaints || [])
+    .filter(item => item.shipmentId === shipmentId)
+    .sort((a, b) => new Date(b.createdAt || b.openedAt || 0) - new Date(a.createdAt || a.openedAt || 0));
+}
+
+async function complaintRequest(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: authHeaders({ "Content-Type":"application/json; charset=utf-8", ...(options.headers || {}) })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.message || "تعذر حفظ بيانات الشكوى.");
+  dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
+  await reloadRemoteData();
+  return result;
+}
+
+function addShipmentComplaintModal(id) {
+  if (!requireAction("add-shipment-complaint")) return;
   const shipment = data.shipments.find(row => row.id === id);
   if (!shipment) return toast("لم يتم العثور على الشحنة.", "error");
-  data.complaints = data.complaints || [];
-  let complaint = data.complaints.find(item => item.shipmentId === id && !["closed", "resolved"].includes(item.complaintStatus));
-  const now = new Date().toISOString();
-  if (!complaint) {
-    complaint = {
-      id: nextId("CMP-", data.complaints),
-      complaintId: nextId("CMP-", data.complaints),
-      shipmentId: id,
-      trackingNumber: shipment.trackingNumber || shipment.tracking,
-      complaintStatus: "ready_to_submit",
-      complaintReference: "",
-      reason: shipment.trackingError || shipment.lastStatusText || "تأخر أو توقف حركة الشحنة",
-      openedAt: now,
-      followUpAt: "",
-      resolvedAt: "",
-      notes: "",
-      createdBy: currentUser?.name || currentUser?.username || "النظام",
-      createdAt: now,
-      updatedAt: now
-    };
-    data.complaints.push(complaint);
-  }
-  shipment.requiresComplaint = true;
-  saveData("تجهيز شكوى شحنة", "الشحن", id);
-  openModal(`شكوى ${complaint.complaintId}`, "إدارة شكاوى الشحن", `
-    <form id="shipment-complaint-form" data-id="${complaint.id}">
-      <div class="alert-item"><div class="alert-badge red">□</div><div><strong>${esc(shipment.trackingNumber || shipment.tracking)}</strong><span>هذه شكوى داخلية جاهزة للتقديم يدويًا. لا يتم إرسالها تلقائيًا للبريد المصري بدون API رسمي.</span></div></div>
+  openModal("إضافة شكوى", shipment.orderId || shipment.invoiceId || shipment.id, `
+    <form id="add-shipment-complaint-form" data-shipment-id="${esc(shipment.id)}">
       <div class="form-grid">
-        <div class="form-field"><label>حالة الشكوى</label><select name="complaintStatus">${["draft","ready_to_submit","submitted","under_follow_up","resolved","closed"].map(s => `<option value="${s}" ${complaint.complaintStatus === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
-        <div class="form-field"><label>رقم الشكوى لدى البريد</label><input name="complaintReference" value="${esc(complaint.complaintReference || "")}"></div>
-        <div class="form-field full"><label>السبب</label><input name="reason" value="${esc(complaint.reason || "")}"></div>
-        <div class="form-field"><label>متابعة في</label><input name="followUpAt" type="date" value="${esc((complaint.followUpAt || "").slice(0,10))}"></div>
-        <div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(complaint.notes || "")}</textarea></div>
+        <div class="form-field"><label class="required">رقم الشكوى</label><input name="complaintNumber" required autocomplete="off" dir="ltr" placeholder="أدخل رقم الشكوى"></div>
+        <div class="form-field"><label>شركة الشحن</label><input value="${esc(shipment.carrier || shipment.company || "—")}" readonly></div>
+        <div class="form-field"><label>الحالة</label><input value="مفتوحة" readonly></div>
+        <div class="form-field full"><label>ملاحظة مختصرة <span class="muted">(اختيارية)</span></label><textarea name="notes" placeholder="أي تفاصيل تساعد في المتابعة"></textarea></div>
       </div>
-      <div class="form-actions"><button class="btn" type="submit">حفظ الشكوى</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>
+      <div class="form-actions"><button class="btn" type="submit">حفظ الشكوى</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
     </form>`);
+}
+
+async function createShipmentComplaint(shipmentId, formData) {
+  try {
+    await complaintRequest("/api/shipping/complaints", {
+      method:"POST",
+      body:JSON.stringify({ shipmentId, complaintNumber:String(formData.complaintNumber || "").trim(), notes:String(formData.notes || "").trim() })
+    });
+    closeModal();
+    renderShipping();
+    toast("تم تسجيل الشكوى وحفظها في السجل.");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function shipmentComplaintsModal(shipmentId) {
+  const shipment = data.shipments.find(row => row.id === shipmentId);
+  if (!shipment) return toast("لم يتم العثور على الشحنة.", "error");
+  const rows = shipmentComplaints(shipmentId);
+  openModal(`سجل شكاوى ${shipment.orderId || shipment.invoiceId || shipment.id}`, `${rows.length} شكوى مسجلة`, `
+    <div class="complaints-history">
+      ${rows.map(item => `<article class="complaint-card">
+        <div class="complaint-card-head"><div><strong dir="ltr">${esc(item.complaintNumber || item.complaintReference || "—")}</strong><span>${arabicDateTimeLabel(item.createdAt || item.openedAt)}</span></div><span class="complaint-status ${item.status || item.complaintStatus || "open"}">${complaintStatusLabel(item.status || item.complaintStatus)}</span></div>
+        <div class="complaint-meta"><span>سجلها: ${esc(item.createdByName || item.createdBy || "غير مسجل")}</span><span>شركة الشحن: ${esc(item.carrierName || item.carrierId || "—")}</span></div>
+        ${item.notes ? `<p>الملاحظات: ${esc(item.notes)}</p>` : ""}
+        ${(item.status || item.complaintStatus) === "closed" || item.closedAt ? `<div class="complaint-resolution"><strong>أغلقت ${arabicDateTimeLabel(item.closedAt || item.resolvedAt)}</strong><span>بواسطة: ${esc(item.closedByName || item.closedBy || "غير مسجل")}</span>${item.resolutionNotes ? `<p>ملاحظة الحل: ${esc(item.resolutionNotes)}</p>` : ""}</div>` : ""}
+        ${canAction("manage-shipment-complaints") ? `<button class="row-action" data-action="edit-shipment-complaint" data-id="${item.id}">تعديل الحالة</button>` : ""}
+      </article>`).join("") || `<div class="empty-state"><strong>لا توجد شكاوى مسجلة</strong><p>استخدم زر «إضافة شكوى» لتسجيل أول شكوى لهذه الشحنة.</p></div>`}
+    </div>
+    <div class="form-actions"><button class="btn" data-action="add-shipment-complaint" data-id="${shipment.id}">إضافة شكوى</button><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+}
+
+function editShipmentComplaintModal(id) {
+  if (!requireAction("manage-shipment-complaints")) return;
+  const complaint = (data.complaints || []).find(item => item.id === id);
+  if (!complaint) return toast("لم يتم العثور على الشكوى.", "error");
+  const status = complaint.status || complaint.complaintStatus || "open";
+  openModal(`تعديل شكوى ${complaint.complaintNumber || complaint.complaintReference}`, "متابعة شكوى الشحن", `
+    <form id="edit-shipment-complaint-form" data-id="${esc(complaint.id)}">
+      <div class="form-grid">
+        <div class="form-field"><label>رقم الشكوى</label><input value="${esc(complaint.complaintNumber || complaint.complaintReference)}" readonly dir="ltr"></div>
+        <div class="form-field"><label>الحالة</label><select name="status">${Object.entries(COMPLAINT_STATUSES).map(([value, label]) => `<option value="${value}" ${status === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+        <div class="form-field full"><label>ملاحظة الحل <span class="muted">(اختيارية عند الإغلاق)</span></label><textarea name="resolutionNotes">${esc(complaint.resolutionNotes || "")}</textarea></div>
+      </div>
+      <div class="form-actions"><button class="btn" type="submit">حفظ التعديل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+}
+
+async function updateShipmentComplaint(id, formData) {
+  try {
+    const result = await complaintRequest(`/api/shipping/complaints/${encodeURIComponent(id)}`, {
+      method:"PATCH",
+      body:JSON.stringify({ status:formData.status, resolutionNotes:String(formData.resolutionNotes || "").trim() })
+    });
+    closeModal();
+    renderShipping();
+    shipmentComplaintsModal(result.complaint.shipmentId);
+    toast(result.complaint.status === "closed" ? "تم إغلاق الشكوى وحفظ بيانات الإغلاق." : "تم تحديث حالة الشكوى.");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function prepareShipmentComplaint(id) {
+  addShipmentComplaintModal(id);
 }
 
 const MANUAL_TRACKING_STATUSES = {
@@ -9597,6 +9703,7 @@ function appHasActionHandler(action) {
     "open-egypt-post-with-code": openEgyptPostWithCode, "manual-tracking-result": manualTrackingResultModal,
     "quick-manual-tracking": quickManualTracking,
     "test-tracking-connection": testTrackingConnection, "prepare-complaint": prepareShipmentComplaint,
+    "add-shipment-complaint": addShipmentComplaintModal, "shipment-complaints": shipmentComplaintsModal, "edit-shipment-complaint": editShipmentComplaintModal,
     "quick-add-sale-book": addBookToDraftSale, "quick-add-purchase-book": addBookToDraftPurchase, "export-report": exportReportCsv,
     "print-sale": printSale, "print-voucher": printVoucher, "print-online-order": printOnlineOrder,
     "print-statement": printStatement, "print-cash-daily": printCashDaily, "restore-db": showRestoreBackups,

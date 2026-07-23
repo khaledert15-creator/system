@@ -1702,6 +1702,40 @@ function sessionUser(req) {
   return session.user;
 }
 
+function appendShipmentComplaintAudit(db, user, complaint, action, notes = "") {
+  db.audit = Array.isArray(db.audit) ? db.audit : [];
+  const now = new Date().toISOString();
+  db.audit.push({
+    id:`AUD-CMP-${crypto.randomUUID()}`,
+    operationId:`OP-CMP-${crypto.randomUUID()}`,
+    operationType:action,
+    moduleName:"الشحن",
+    entityType:"شكوى شحنة",
+    entity:"الشحن",
+    entityId:complaint.id,
+    documentNo:complaint.complaintNumber,
+    action,
+    userId:user.id || "",
+    employeeName:user.name || user.username,
+    employeeRole:user.role || "",
+    username:user.username,
+    user:user.name || user.username,
+    role:user.role || "",
+    date:now,
+    createdAt:now,
+    notes,
+    shipmentId:complaint.shipmentId
+  });
+}
+
+function normalizedComplaintNumber(value = "") {
+  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
+}
+
+function canManageShippingComplaints(user = {}) {
+  return ["owner", "manager", "shipping", "warehouse", "مالك", "مدير", "شحن", "مخزن"].includes(user.role) || user.username === "owner";
+}
+
 function contentType(file) {
   const ext = path.extname(file).toLowerCase();
   return {
@@ -1747,6 +1781,90 @@ const server = http.createServer(async (req, res) => {
       const token = req.headers["x-session-token"];
       if (token) sessions.delete(token);
       return send(res, 200, { ok:true });
+    }
+
+    if (route === "/api/shipping/complaints" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageShippingComplaints(user)) return send(res, 403, { ok:false, message:"ليس لديك صلاحية لإدارة شكاوى الشحن." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const db = ensureTrackingDb(readDb());
+      const shipment = (db.shipments || []).find(item => item.id === payload.shipmentId && !item.deletedAt);
+      if (!shipment) return send(res, 404, { ok:false, message:"لم يتم العثور على الشحنة." });
+      const complaintNumber = String(payload.complaintNumber || "").trim();
+      const normalizedNumber = normalizedComplaintNumber(complaintNumber);
+      if (!normalizedNumber) return send(res, 400, { ok:false, message:"رقم الشكوى إلزامي." });
+      const carrierName = shipment.carrier || shipment.company || "";
+      const carrierId = (db.shippingCompanies || []).find(item => item.name === carrierName)?.id || "";
+      db.complaints = Array.isArray(db.complaints) ? db.complaints : [];
+      const duplicate = db.complaints.find(item =>
+        normalizedComplaintNumber(item.complaintNumber || item.complaintReference) === normalizedNumber &&
+        String(item.carrierId || item.carrierName || "") === String(carrierId || carrierName)
+      );
+      if (duplicate) return send(res, 409, { ok:false, code:"DUPLICATE_COMPLAINT_NUMBER", message:"رقم الشكوى مسجل بالفعل لنفس شركة الشحن." });
+      const now = new Date().toISOString();
+      const complaint = {
+        id:`CMP-${crypto.randomUUID()}`,
+        complaintId:`CMP-${Date.now()}`,
+        shipmentId:shipment.id,
+        trackingNumber:shipment.trackingNumber || shipment.tracking || "",
+        orderId:shipment.onlineOrderId || shipment.orderId || shipment.invoiceId || "",
+        complaintNumber,
+        complaintReference:complaintNumber,
+        carrierId,
+        carrierName,
+        createdAt:now,
+        openedAt:now,
+        createdBy:user.username,
+        createdById:user.id || "",
+        createdByName:user.name || user.username,
+        status:"open",
+        complaintStatus:"open",
+        notes:String(payload.notes || "").trim(),
+        closedAt:"",
+        closedBy:"",
+        closedById:"",
+        closedByName:"",
+        resolutionNotes:"",
+        updatedAt:now
+      };
+      db.complaints.push(complaint);
+      shipment.requiresComplaint = true;
+      shipment.updatedAt = now;
+      appendShipmentComplaintAudit(db, user, complaint, "إضافة شكوى شحنة", `رقم الشكوى: ${complaintNumber}`);
+      writeDb(db);
+      return send(res, 201, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
+    }
+
+    if (route.startsWith("/api/shipping/complaints/") && req.method === "PATCH") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageShippingComplaints(user)) return send(res, 403, { ok:false, message:"ليس لديك صلاحية لإدارة شكاوى الشحن." });
+      const id = route.split("/").pop();
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const db = ensureTrackingDb(readDb());
+      const complaint = (db.complaints || []).find(item => item.id === id);
+      if (!complaint) return send(res, 404, { ok:false, message:"لم يتم العثور على الشكوى." });
+      const nextStatus = String(payload.status || complaint.status || "open");
+      if (!["open", "in_progress", "closed"].includes(nextStatus)) return send(res, 400, { ok:false, message:"حالة الشكوى غير صالحة." });
+      const previousStatus = complaint.status || complaint.complaintStatus || "open";
+      const now = new Date().toISOString();
+      complaint.status = nextStatus;
+      complaint.complaintStatus = nextStatus;
+      complaint.resolutionNotes = String(payload.resolutionNotes || complaint.resolutionNotes || "").trim();
+      complaint.updatedAt = now;
+      complaint.updatedBy = user.username;
+      complaint.updatedByName = user.name || user.username;
+      if (nextStatus === "closed" && previousStatus !== "closed") {
+        complaint.closedAt = now;
+        complaint.closedBy = user.username;
+        complaint.closedById = user.id || "";
+        complaint.closedByName = user.name || user.username;
+      }
+      const action = nextStatus === "closed" && previousStatus !== "closed" ? "إغلاق شكوى شحنة" : "تعديل شكوى شحنة";
+      appendShipmentComplaintAudit(db, user, complaint, action, `${previousStatus} → ${nextStatus}`);
+      writeDb(db);
+      return send(res, 200, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
     }
 
     if (route === "/api/db" && req.method === "GET") {

@@ -999,6 +999,23 @@ tbody tr.target-highlight > td {
 .shipping-row-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:260px; }
 .shipping-row-actions .row-action.primary { color:#fff; background:var(--blue); border-color:var(--blue); }
 .shipping-row-actions .row-action:disabled { opacity:.65; cursor:wait; }
+.complaint-action { border-color:#f0c36b; background:#fff8e8; color:#8a5a00; }
+.complaint-latest { display:grid; gap:2px; margin-top:7px; padding-top:7px; border-top:1px dashed var(--border); font-size:12px; }
+.complaint-latest strong { color:#7a5100; }
+.complaint-latest span { color:var(--muted); }
+.complaints-history { display:grid; gap:12px; }
+.complaint-card { border:1px solid var(--border); border-radius:16px; padding:14px; background:#fff; display:grid; gap:10px; }
+.complaint-card-head,.complaint-card-head>div,.complaint-meta,.complaint-resolution { display:flex; gap:8px; }
+.complaint-card-head { align-items:flex-start; justify-content:space-between; }
+.complaint-card-head>div,.complaint-resolution { flex-direction:column; }
+.complaint-card-head span,.complaint-meta { color:var(--muted); font-size:13px; }
+.complaint-meta { flex-wrap:wrap; justify-content:space-between; }
+.complaint-card p { margin:0; line-height:1.7; }
+.complaint-status { display:inline-flex; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:800; white-space:nowrap; }
+.complaint-status.open { background:#eaf3ff; color:#2663a8; }
+.complaint-status.in_progress { background:#fff3d8; color:#9a6100; }
+.complaint-status.closed { background:#e7f7ed; color:#247a45; }
+.complaint-resolution { padding:10px; border-radius:12px; background:#f6f8fb; }
 .shipping-more { position:relative; }
 .shipping-more > summary { cursor:pointer; list-style:none; color:var(--muted); padding:6px 8px; }
 .shipping-more > summary::-webkit-details-marker { display:none; }
