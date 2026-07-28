@@ -306,6 +306,14 @@ function canonicalShippingStatus(value = "", fallbackText = "") {
   return map[normalized] || (["in_transit", "out_for_delivery", "delivered"].includes(normalized) ? normalized : "");
 }
 
+function isTerminalShipmentStatus(shipment = {}) {
+  const status = canonicalShippingStatus(
+    shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus,
+    shipment.status || shipment.currentStatus
+  );
+  return ["delivered", "returned"].includes(status);
+}
+
 function trackingIntervalHoursForShipment(shipment = {}) {
   const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
   if (status === "shipped") return 4;
@@ -1728,6 +1736,32 @@ function appendShipmentComplaintAudit(db, user, complaint, action, notes = "") {
   });
 }
 
+function appendManualShipmentStatusAudit(db, user, shipment, statusCode, notes = "") {
+  db.audit = Array.isArray(db.audit) ? db.audit : [];
+  const now = new Date().toISOString();
+  db.audit.push({
+    id:`AUD-SHIP-${crypto.randomUUID()}`,
+    operationId:`OP-SHIP-${crypto.randomUUID()}`,
+    operationType:"manual_shipping_status",
+    moduleName:"الشحن",
+    entityType:"shipment",
+    entity:"الشحن",
+    entityId:shipment.id,
+    documentNo:shipment.trackingNumber || shipment.tracking || shipment.id,
+    action:`تغيير حالة الشحنة إلى ${businessShipmentStatus(statusCode, statusCode)}`,
+    userId:user.id || "",
+    employeeName:user.name || user.username,
+    employeeRole:user.role || "",
+    username:user.username,
+    user:user.name || user.username,
+    role:user.role || "",
+    date:now,
+    createdAt:now,
+    notes:String(notes || "").trim(),
+    shipmentId:shipment.id
+  });
+}
+
 function normalizedComplaintNumber(value = "") {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
@@ -1781,6 +1815,75 @@ const server = http.createServer(async (req, res) => {
       const token = req.headers["x-session-token"];
       if (token) sessions.delete(token);
       return send(res, 200, { ok:true });
+    }
+
+    if (route.startsWith("/api/shipping/shipments/") && route.endsWith("/status") && req.method === "PATCH") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageShippingComplaints(user)) return send(res, 403, { ok:false, message:"ليس لديك صلاحية لتعديل حالة الشحنة." });
+      const id = route.split("/")[4] || "";
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const statusCode = canonicalShippingStatus(payload.shippingStatus || payload.statusCode || "", payload.status || "");
+      const allowedStatuses = ["shipped", "in_transit", "out_for_delivery", "delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3", "delivered", "returned"];
+      if (!allowedStatuses.includes(statusCode)) return send(res, 400, { ok:false, code:"INVALID_SHIPMENT_STATUS", message:"حالة الشحنة غير صالحة." });
+      const db = ensureTrackingDb(readDb());
+      const shipment = (db.shipments || []).find(item => item.id === id && !item.deletedAt);
+      if (!shipment) return send(res, 404, { ok:false, message:"لم يتم العثور على الشحنة." });
+      const now = new Date().toISOString();
+      const notes = String(payload.notes || "").trim();
+      const statusText = businessShipmentStatus(statusCode, shipment.status);
+      db.trackingHistory = Array.isArray(db.trackingHistory) ? db.trackingHistory : [];
+      const history = {
+        id:nextId("TRK-", db.trackingHistory),
+        shipmentId:shipment.id,
+        trackingNumber:normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking || ""),
+        source:"manual",
+        provider:"manual",
+        statusText,
+        normalizedStatus:statusCode,
+        eventAt:now,
+        fetchedAt:now,
+        notes,
+        reviewedByUserId:user.id || "",
+        reviewedByUsername:user.username,
+        reviewedBy:user.name || user.username,
+        reviewedAt:now,
+        createdAt:now
+      };
+      history.eventFingerprint = eventFingerprint(history);
+      if (!db.trackingHistory.some(item => item.eventFingerprint === history.eventFingerprint)) db.trackingHistory.push(history);
+      Object.assign(shipment, {
+        shippingStatus:statusCode,
+        trackingStatus:statusCode,
+        normalizedStatus:statusCode,
+        status:statusText,
+        currentStatus:statusText,
+        lastStatusText:statusText,
+        trackingMessage:statusText,
+        lastTrackedAt:now,
+        lastTrackingAt:now,
+        lastTrackingSource:"manual",
+        manualReviewedAt:now,
+        manualReviewedByUserId:user.id || "",
+        manualReviewedBy:user.name || user.username,
+        manualReviewNotes:notes,
+        manualInterventionNeeded:false,
+        manual_review_required:false,
+        trackingError:"",
+        updatedAt:now,
+        updated:now
+      });
+      if (statusCode === "delivered") shipment.deliveredAt = shipment.deliveredAt || now;
+      if (statusCode === "returned") shipment.returnedAt = shipment.returnedAt || now;
+      appendManualShipmentStatusAudit(db, user, shipment, statusCode, notes);
+      writeDb(db);
+      const persisted = ensureTrackingDb(readDb());
+      const savedShipment = (persisted.shipments || []).find(item => item.id === shipment.id);
+      const savedHistory = (persisted.trackingHistory || []).some(item => item.eventFingerprint === history.eventFingerprint);
+      if (!savedShipment || canonicalShippingStatus(savedShipment.trackingStatus, savedShipment.status) !== statusCode || !savedHistory) {
+        return send(res, 500, { ok:false, code:"SHIPMENT_STATUS_PERSISTENCE_FAILED", message:"تعذر التحقق من حفظ حالة الشحنة." });
+      }
+      return send(res, 200, { ok:true, shipment:savedShipment, history, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
     }
 
     if (route === "/api/shipping/complaints" && req.method === "POST") {
@@ -1950,6 +2053,11 @@ const server = http.createServer(async (req, res) => {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       let payload = {};
       try { payload = JSON.parse(await readBody(req) || "{}"); } catch {}
+      if (Array.isArray(payload.shipmentIds) && payload.shipmentIds.length) {
+        const db = ensureTrackingDb(readDb());
+        const terminal = (db.shipments || []).find(item => payload.shipmentIds.includes(item.id) && isTerminalShipmentStatus(item));
+        if (terminal) return send(res, 409, { ok:false, code:"TERMINAL_SHIPMENT_STATUS", shipmentId:terminal.id, message:"انتهى تتبع هذه الشحنة." });
+      }
       const result = await runTrackingCycle({ manual: true, shipmentIds: Array.isArray(payload.shipmentIds) ? payload.shipmentIds : [], requestId:String(req.headers["x-request-id"] || crypto.randomUUID()) });
       return send(res, result.ok ? 200 : 500, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
@@ -1957,6 +2065,12 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith("/api/tracking/shipment/") && req.method === "POST") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       const id = route.split("/").pop();
+      const db = ensureTrackingDb(readDb());
+      const shipment = (db.shipments || []).find(item => item.id === id && !item.deletedAt);
+      if (!shipment) return send(res, 404, { ok:false, message:"لم يتم العثور على الشحنة." });
+      if (isTerminalShipmentStatus(shipment)) {
+        return send(res, 409, { ok:false, code:"TERMINAL_SHIPMENT_STATUS", shipmentId:id, message:"انتهى تتبع هذه الشحنة." });
+      }
       const result = await runTrackingCycle({ manual: true, shipmentId: id, requestId:String(req.headers["x-request-id"] || crypto.randomUUID()) });
       return send(res, result.ok ? 200 : 500, result, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
@@ -2023,7 +2137,12 @@ const server = http.createServer(async (req, res) => {
     if (!file.startsWith(APP_ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       return send(res, 404, "Not found", "text/plain; charset=utf-8");
     }
-    return send(res, 200, fs.readFileSync(file), contentType(file));
+    const cacheHeaders = rel === "index.html"
+      ? { "Cache-Control":"no-cache, max-age=0, must-revalidate" }
+      : (url.searchParams.has("v") && [".js", ".css"].includes(path.extname(file).toLowerCase())
+        ? { "Cache-Control":"public, max-age=31536000, immutable" }
+        : { "Cache-Control":"public, max-age=300" });
+    return send(res, 200, fs.readFileSync(file), contentType(file), cacheHeaders);
   } catch (error) {
     return send(res, 500, { ok:false, message: error.message || "Server error." });
   }

@@ -1025,6 +1025,7 @@ tbody tr.target-highlight > td {
 .shipping-row-actions .action-update { grid-column:1 / -1; min-height:38px; }
 .shipping-row-actions .row-action.primary { color:#fff; background:var(--blue); border-color:var(--blue); }
 .shipping-row-actions .row-action:disabled { opacity:.72; cursor:wait; min-width:0; }
+.shipping-tracking-complete { grid-column:1 / -1; color:var(--success,#23855b); font-size:11px; font-weight:800; text-align:center; white-space:nowrap; }
 .complaint-action { border-color:#f0c36b; background:#fff8e8; color:#8a5a00; }
 .complaint-latest { display:grid; gap:3px; margin-top:5px; padding:8px 9px; border:1px solid #f0dfb9; border-radius:10px; background:#fffaf0; font-size:11px; line-height:1.45; overflow:hidden; }
 .complaint-latest strong { color:#7a5100; }

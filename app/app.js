@@ -627,6 +627,11 @@ async function reloadRemoteData() {
 async function runTrackingApi(path, successMessage) {
   if (!serverConnected) return toast("التتبع الفعلي يحتاج تشغيل النظام من START-HERE.cmd لأن الطلب يتم من السيرفر.", "error");
   const shipmentId = decodeURIComponent(String(path).split("/").pop() || "");
+  const shipment = shipmentId ? data.shipments.find(item => item.id === shipmentId) : null;
+  if (shipment && isTerminalShipment(shipment)) {
+    toast("انتهى تتبع هذه الشحنة.", "error");
+    return null;
+  }
   const buttons = shipmentId ? [...document.querySelectorAll(`[data-action="update-tracking-now"][data-id="${CSS.escape(shipmentId)}"]`)] : [];
   buttons.forEach(button => { button.disabled = true; button.dataset.originalText = button.textContent; button.textContent = "جارٍ التحديث..."; });
   try {
@@ -636,7 +641,10 @@ async function runTrackingApi(path, successMessage) {
     dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
     await reloadRemoteData();
     if (currentView === "shipping") renderShipping();
-    if (result.ok === false) throw new Error(result.persistenceFailed ? "وصلت النتيجة ولكن تعذر حفظها." : (result.message || result.errors?.[0]?.error || "تعذر تحديث التتبع"));
+    if (!response.ok || result.ok === false) {
+      const message = result.code === "TERMINAL_SHIPMENT_STATUS" ? "انتهى تتبع هذه الشحنة." : (result.persistenceFailed ? "وصلت النتيجة ولكن تعذر حفظها." : (result.message || result.errors?.[0]?.error || "تعذر تحديث التتبع"));
+      throw new Error(message);
+    }
     if (Number(result.manualIntervention || 0) > 0) {
       toast("فشل التتبع الآلي: موقع البريد يمنع التشغيل الآلي. تم تعليم الشحنة كمراجعة يدوية.", "error");
       return result;
@@ -927,6 +935,10 @@ function shipmentStatusCode(item = {}) {
   if (/جاري التسليم|خرج للتوصيل|out_for_delivery/i.test(text)) return "out_for_delivery";
   if (/في مرحلة نقل|في الطريق|in_transit|sorting/i.test(text)) return "in_transit";
   return "shipped";
+}
+
+function isTerminalShipment(item = {}) {
+  return ["delivered", "returned"].includes(shipmentStatusCode(item));
 }
 
 function shipmentStatusMeta(item = {}) {
@@ -3340,7 +3352,10 @@ function shipmentsTable(list) {
     const lastUpdate = item.lastTrackedAt || item.lastTrackingAt || item.updatedAt || item.updated;
     const latestComplaint = shipmentComplaints(item.id)[0];
     const complaintSummary = latestComplaint ? `<div class="complaint-latest"><strong>آخر شكوى: ${esc(latestComplaint.complaintNumber || latestComplaint.complaintReference)}</strong><span>${complaintStatusLabel(latestComplaint.status || latestComplaint.complaintStatus)} · ${arabicDateTimeLabel(latestComplaint.createdAt)}</span></div>` : "";
-    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}${complaintSummary}</td><td><div class="shipping-row-actions"><button class="row-action primary action-update" data-action="update-tracking-now" data-id="${item.id}"><span aria-hidden="true">↻</span> تحديث إلكتروني</button><button class="row-action action-status" data-action="edit-shipment-status" data-id="${item.id}"><span aria-hidden="true">✎</span> تعديل الحالة</button><button class="row-action complaint-action action-complaint" data-action="add-shipment-complaint" data-id="${item.id}"><span aria-hidden="true">＋</span> إضافة شكوى</button><button class="row-action action-history" data-action="shipment-history" data-id="${item.id}"><span aria-hidden="true">◷</span> سجل التتبع</button><button class="row-action action-history" data-action="shipment-complaints" data-id="${item.id}"><span aria-hidden="true">▤</span> سجل الشكاوى${shipmentComplaints(item.id).length ? ` (${shipmentComplaints(item.id).length})` : ""}</button><details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
+    const trackingAction = isTerminalShipment(item)
+      ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="row-action primary action-update" type="button" disabled aria-disabled="true"><span aria-hidden="true">✓</span> تحديث إلكتروني</button>`
+      : `<button class="row-action primary action-update" data-action="update-tracking-now" data-id="${item.id}"><span aria-hidden="true">↻</span> تحديث إلكتروني</button>`;
+    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}${complaintSummary}</td><td><div class="shipping-row-actions">${trackingAction}<button class="row-action action-status" data-action="edit-shipment-status" data-id="${item.id}"><span aria-hidden="true">✎</span> تعديل الحالة</button><button class="row-action complaint-action action-complaint" data-action="add-shipment-complaint" data-id="${item.id}"><span aria-hidden="true">＋</span> إضافة شكوى</button><button class="row-action action-history" data-action="shipment-history" data-id="${item.id}"><span aria-hidden="true">◷</span> سجل التتبع</button><button class="row-action action-history" data-action="shipment-complaints" data-id="${item.id}"><span aria-hidden="true">▤</span> سجل الشكاوى${shipmentComplaints(item.id).length ? ` (${shipmentComplaints(item.id).length})` : ""}</button><details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
   }).join("") || `<tr><td colspan="7" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
 
@@ -7426,7 +7441,7 @@ function shipmentHistoryModal(id) {
       }).join("") || `<div class="empty-state"><strong>لا توجد تحديثات محفوظة بعد</strong><p>استخدم «تحديث إلكتروني» أو عدّل الحالة يدويًا.</p></div>`}
     </div>
     ${isAdmin ? `<details class="technical-details"><summary>التفاصيل التقنية للإدارة</summary><div class="metric-strip"><div class="mini-metric"><span>آخر Run</span><strong>${esc(latestShipmentTrackingRun(id)?.id || "—")}</strong></div><div class="mini-metric"><span>الحالة الداخلية</span><strong>${esc(item.normalizedStatus || "—")}</strong></div><div class="mini-metric"><span>Failure Code</span><strong>${esc(item.trackingFailureCode || "—")}</strong></div></div></details>` : ""}
-    <div class="form-actions"><button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button><button class="btn secondary" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+    <div class="form-actions">${isTerminalShipment(item) ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="btn" type="button" disabled>تحديث إلكتروني</button>` : `<button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button>`}<button class="btn secondary" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
 }
 
 function viewShipment(id) {
@@ -7465,7 +7480,7 @@ function viewShipment(id) {
     ${lastRun || item.trackingDebug || item.trackingDiagnostics ? `<div class="alert-item ${tracking.siteBlocked ? "warning" : ""}"><div class="alert-badge ${tracking.siteBlocked ? "gold" : "blue"}">${tracking.siteBlocked ? "!" : "i"}</div><div><strong>${esc(failureMessage)}</strong><span>Screenshot: ${esc(item.trackingDebug?.screenshotFile || lastRun?.screenshotPath || "—")}</span><span>HTML: ${esc(item.trackingDebug?.htmlFile || lastRun?.htmlSnapshotPath || "—")}</span><span>JSON: ${esc(item.trackingDebug?.jsonFile || lastRun?.diagnosticsPath || "—")}</span></div></div>` : ""}
     <h3 style="margin-top:16px">Timeline التتبع</h3>
     <div class="table-wrap"><table><thead><tr><th>وقت الحدث</th><th>الحالة الأصلية</th><th>الحالة الموحدة</th><th>الموقع</th><th>المصدر</th></tr></thead><tbody>${history.map(row => `<tr><td>${dateTimeLabel(row.eventAt || row.fetchedAt)}</td><td>${esc(cleanDisplayText(row.statusText, "غير متاح", "—"))}</td><td>${esc(row.normalizedStatus || "unknown")}</td><td>${esc(cleanDisplayText(row.location, "غير متاح", "لا يوجد موقع مؤكد"))}</td><td>${esc(row.provider || "—")}</td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">لا توجد حركات تتبع محفوظة بعد. لن يتم إنشاء أحداث إلا بعد Response حقيقي مؤكد من مزود التتبع.</td></tr>`}</tbody></table></div>
-    <div class="form-actions"><button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث التتبع الآن</button>${item.requiresComplaint ? `<button class="btn secondary" data-action="prepare-complaint" data-id="${item.id}">تجهيز شكوى</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+    <div class="form-actions">${isTerminalShipment(item) ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="btn" type="button" disabled>تحديث التتبع الآن</button>` : `<button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث التتبع الآن</button>`}${item.requiresComplaint ? `<button class="btn secondary" data-action="prepare-complaint" data-id="${item.id}">تجهيز شكوى</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
   modalBody.querySelector(".form-actions")?.insertAdjacentHTML("afterbegin", `
     <button class="btn secondary" data-action="manual-tracking-result" data-id="${item.id}">تسجيل نتيجة يدوية</button>
     <button class="btn ghost" data-action="copy-tracking-code" data-id="${item.id}">نسخ كود التتبع</button>
@@ -7647,64 +7662,40 @@ async function applyManualShipmentStatus(id, statusCode, notes = "") {
   const shipment = data.shipments.find(item => item.id === id);
   const meta = SHIPPING_STATUSES[statusCode];
   if (!shipment || !meta) return toast("تعذر تحديد حالة الشحنة.", "error");
-  const now = new Date();
-  now.setMilliseconds(0);
-  const eventAt = now.toISOString();
-  const actor = actorSnapshot();
-  data.trackingHistory = data.trackingHistory || [];
-  const duplicate = data.trackingHistory.some(row =>
-    row.shipmentId === shipment.id &&
-    row.source === "manual" &&
-    row.normalizedStatus === statusCode &&
-    String(row.eventAt || "").slice(0, 19) === eventAt.slice(0, 19)
-  );
-  if (!duplicate) {
-    data.trackingHistory.push({
-      id: nextId("TRK-", data.trackingHistory),
-      shipmentId: shipment.id,
-      trackingNumber: normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking || ""),
-      source: "manual",
-      provider: "manual",
-      statusText: meta.label,
-      normalizedStatus: statusCode,
-      eventAt,
-      fetchedAt: eventAt,
-      notes: String(notes || "").trim(),
-      reviewedByUserId: actor.userId,
-      reviewedByUsername: actor.username,
-      reviewedBy: actor.name,
-      reviewedAt: eventAt,
-      createdAt: eventAt,
-      eventFingerprint: `${shipment.id}|manual|${statusCode}|${eventAt}`
-    });
+  const submitButton = modalBody.querySelector("#quick-shipment-status-form button[type='submit']");
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "جارٍ الحفظ...";
   }
-  shipment.shippingStatus = statusCode;
-  shipment.trackingStatus = statusCode;
-  shipment.normalizedStatus = statusCode;
-  shipment.status = meta.label;
-  shipment.currentStatus = meta.label;
-  shipment.lastStatusText = meta.label;
-  shipment.trackingMessage = meta.label;
-  shipment.lastTrackedAt = eventAt;
-  shipment.lastTrackingAt = eventAt;
-  shipment.lastTrackingSource = "manual";
-  shipment.manualReviewedAt = eventAt;
-  shipment.manualReviewedByUserId = actor.userId;
-  shipment.manualReviewedBy = actor.name;
-  shipment.manualReviewNotes = String(notes || "").trim();
-  shipment.manualInterventionNeeded = false;
-  shipment.manual_review_required = false;
-  shipment.trackingError = "";
-  shipment.updatedAt = eventAt;
-  shipment.updated = eventAt;
-  if (statusCode === "delivered") shipment.deliveredAt = shipment.deliveredAt || eventAt;
-  if (statusCode === "returned") shipment.returnedAt = shipment.returnedAt || eventAt;
-  data.audit.push(auditEntry({ action:`تغيير حالة الشحنة إلى ${meta.label}`, operationType:"manual_shipping_status", moduleName:"الشحن", entityType:"shipment", entity:"الشحن", entityId:shipment.id, documentNo:shipment.trackingNumber || shipment.id, notes:String(notes || "").trim() }));
-  const saved = await saveData();
-  if (!saved && serverConnected) return toast("تعذر حفظ الحالة. أعد المحاولة.", "error");
-  closeModal();
-  if (currentView === "shipping") renderShipping();
-  toast(`تم تحديث الحالة إلى «${meta.label}».`);
+  try {
+    if (!serverConnected) throw new Error("حفظ حالة الشحنة يحتاج اتصالًا بالسيرفر.");
+    const response = await fetch(`/api/shipping/shipments/${encodeURIComponent(id)}/status`, {
+      method:"PATCH",
+      headers:authHeaders({ "Content-Type":"application/json" }),
+      body:JSON.stringify({ shippingStatus:statusCode, notes:String(notes || "").trim() })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) throw new Error(result.message || "تعذر حفظ حالة الشحنة.");
+    dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
+    await reloadRemoteData();
+    const persisted = data.shipments.find(item => item.id === id);
+    if (!persisted || shipmentStatusCode(persisted) !== statusCode) throw new Error("تم إرسال الحالة ولكن تعذر التحقق من حفظها.");
+    closeModal();
+    if (currentView === "shipping") renderShipping();
+    toast(`تم تحديث الحالة إلى «${meta.label}».`);
+    return true;
+  } catch (error) {
+    const message = /failed to fetch|networkerror|load failed/i.test(String(error?.message || ""))
+      ? "تعذر الاتصال بالسيرفر لحفظ الحالة. تحقق من الاتصال ثم أعد المحاولة."
+      : (error.message || "تعذر حفظ حالة الشحنة.");
+    toast(message, "error");
+    return false;
+  } finally {
+    if (submitButton?.isConnected) {
+      submitButton.disabled = false;
+      submitButton.textContent = "حفظ الحالة";
+    }
+  }
 }
 
 function copyShipmentTrackingCode(id) {
