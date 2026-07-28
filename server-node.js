@@ -81,6 +81,60 @@ function ensureFinanceDb(db) {
   return next;
 }
 
+function toCents(value) {
+  const number=Number(value);
+  if(!Number.isFinite(number))return 0;
+  return Math.round((number+Number.EPSILON)*100);
+}
+
+function fromCents(value) {
+  return Number((Number(value||0)/100).toFixed(2));
+}
+
+function financeRole(user={}) {
+  return ({owner:"مالك",manager:"مدير",accountant:"محاسب",cashier:"كاشير",warehouse:"مخزن",shipping:"شحن"}[user.role]||user.role||"");
+}
+
+function userFinanceActions(db,user={}) {
+  const role=financeRole(user);
+  if(role==="مالك"||user.username==="owner")return ["*"];
+  const roleActions=db.settings?.permissions?.roles?.[role]?.actions;
+  const userActions=db.settings?.permissions?.users?.[user.username]?.actions;
+  if(Array.isArray(userActions))return userActions;
+  if(Array.isArray(roleActions))return roleActions;
+  if(role==="مدير")return ["*"];
+  if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports"];
+  return [];
+}
+
+function canFinance(db,user,action) {
+  const actions=userFinanceActions(db,user);
+  return actions.includes("*")||actions.includes(action);
+}
+
+function financeWriteRequirements(current,next) {
+  const changed=key=>JSON.stringify(current[key]||[])!==JSON.stringify(next[key]||[]);
+  const requirements=new Set();
+  if(changed("cashAccounts")||changed("expenseTypes")||changed("incomeTypes"))requirements.add("manage-finance-types");
+  if(changed("expenses")) {
+    requirements.add("add-expense");
+    const old=new Map((current.expenses||[]).map(item=>[item.id,item]));
+    if((next.expenses||[]).some(item=>item.status==="معتمد"&&old.get(item.id)?.status!=="معتمد"))requirements.add("approve-expense");
+  }
+  if(changed("otherIncome")) {
+    requirements.add("add-other-income");
+    const old=new Map((current.otherIncome||[]).map(item=>[item.id,item]));
+    if((next.otherIncome||[]).some(item=>item.status==="معتمد"&&old.get(item.id)?.status!=="معتمد"))requirements.add("approve-other-income");
+  }
+  if(changed("carrierSettlements")) {
+    requirements.add("create-settlement");
+    const old=new Map((current.carrierSettlements||[]).map(item=>[item.id,item]));
+    if((next.carrierSettlements||[]).some(item=>item.approvedAt&&!old.get(item.id)?.approvedAt))requirements.add("approve-settlement");
+  }
+  if(changed("cash")&&!requirements.size)requirements.add("add-cash-in");
+  return [...requirements];
+}
+
 function financeActor(user={}) {
   return { name:user.name||user.username||"النظام", username:user.username||"", role:user.role||"" };
 }
@@ -94,16 +148,19 @@ function approveSettlementAtomic(db, settlementId, user) {
   if(next.cash.some(item=>item.sourceKey===cashKey)) throw Object.assign(new Error("توجد حركة مالية معتمدة لهذه التسوية."),{status:409});
   const actor=financeActor(user),now=new Date().toISOString(),lines=settlement.lines||[];
   for(const line of lines){
+    if(toCents(line.collectionAmount)<0||toCents(line.carrierShippingCostActual??line.carrierShippingCostExpected)<0||toCents(line.collectionCommissionActual??line.collectionCommissionExpected)<0)throw Object.assign(new Error("لا يمكن اعتماد قيم مالية سالبة."),{status:400});
     const shipment=next.shipments.find(item=>item.id===line.shipmentId);
     if(!shipment)throw Object.assign(new Error(`الشحنة ${line.shipmentId} غير موجودة.`),{status:400});
     if(shipment.settlementId&&shipment.settlementId!==settlementId)throw Object.assign(new Error(`الشحنة ${line.trackingNumber||line.shipmentId} تمت تسويتها سابقًا.`),{status:409});
   }
-  const sum=field=>lines.reduce((total,line)=>total+Number(line[field]??0),0);
-  const collection=sum("collectionAmount"),shipping=lines.reduce((s,l)=>s+Number(l.carrierShippingCostActual??l.carrierShippingCostExpected??0),0),commission=lines.reduce((s,l)=>s+Number(l.collectionCommissionActual??l.collectionCommissionExpected??0),0);
-  const expected=Number((collection-shipping-commission-Number(settlement.otherDeductions||0)).toFixed(2));
-  const actual=Number(settlement.actualNetSettlement||0),difference=Number((actual-expected).toFixed(2));
+  const sumCents=selector=>lines.reduce((total,line)=>total+toCents(selector(line)),0);
+  const collectionCents=sumCents(line=>line.collectionAmount),shippingCents=sumCents(line=>line.carrierShippingCostActual??line.carrierShippingCostExpected),commissionCents=sumCents(line=>line.collectionCommissionActual??line.collectionCommissionExpected);
+  const expected=fromCents(collectionCents-shippingCents-commissionCents-toCents(settlement.otherDeductions||0));
+  const actual=fromCents(toCents(settlement.actualNetSettlement||0)),difference=fromCents(toCents(actual)-toCents(expected));
+  if(actual<0)throw Object.assign(new Error("لا يمكن اعتماد مبلغ تسوية سالب."),{status:400});
   if(Math.abs(difference)>.01&&!settlement.differenceReason)throw Object.assign(new Error("يجب تحديد سبب الفرق قبل الاعتماد."),{status:400});
   next.cash.push({id:nextId("TX-",next.cash),date:settlement.transferDate||now.slice(0,10),type:"قبض",direction:"in",movementType:"تسوية شركة شحن",account:settlement.account,party:settlement.company,amount:actual,category:"تسوية شركة شحن",settlementId:settlementId,sourceKey:cashKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
+  if(process.env.NODE_ENV==="test"&&process.env.FINANCE_TEST_FAIL_STAGE==="after-cash")throw Object.assign(new Error("Injected finance test failure."),{status:500});
   const addExpense=(line,amount,type,key)=>{
     if(Number(amount)<=0)return;
     if(next.expenses.some(item=>item.sourceKey===key)||next.cash.some(item=>item.sourceKey===key))throw Object.assign(new Error("اكتُشف قيد مكرر داخل التسوية."),{status:409});
@@ -2020,8 +2077,8 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith("/api/finance/settlements/") && route.endsWith("/approve") && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const role=({owner:"مالك",manager:"مدير"}[user.role]||user.role);
-      if(!["مالك","مدير"].includes(role)&&user.username!=="owner")return send(res,403,{ok:false,message:"ليس لديك صلاحية اعتماد التسويات."});
+      const financeDb=ensureFinanceDb(readDb());
+      if(!canFinance(financeDb,user,"approve-settlement"))return send(res,403,{ok:false,message:"ليس لديك صلاحية اعتماد التسويات."});
       const settlementId=decodeURIComponent(route.split("/")[4]||"");
       try{
         const next=approveSettlementAtomic(readDb(),settlementId,user);
@@ -2048,6 +2105,9 @@ const server = http.createServer(async (req, res) => {
       const parsed = ensureTrackingDb(JSON.parse(body));
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
       const currentDb = fs.existsSync(DB_PATH) ? ensureTrackingDb(readDb()) : { books:[], sales:[], settings:{} };
+      const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
+      const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
+      if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});
       const stockValidation = validateNegativeStockWrite(currentDb, parsed, user);
       if (!stockValidation.ok) {
         const row = stockValidation.violations[0];
