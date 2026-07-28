@@ -77,12 +77,13 @@ function writeDb(db) {
 
 function ensureFinanceDb(db) {
   const next=db&&typeof db==="object"?db:{};
-  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","shipments","audit"].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
+  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","shipments","audit"].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
   return next;
 }
 
 function toCents(value) {
-  const number=Number(value);
+  const normalized=String(value??"").replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[۰-۹]/g,d=>String("۰۱۲۳۴۵۶۷۸۹".indexOf(d))).replace(/[٫،]/g,".").replace(/٬/g,"").replace(/\s+/g,"");
+  const number=Number(normalized);
   if(!Number.isFinite(number))return 0;
   return Math.round((number+Number.EPSILON)*100);
 }
@@ -103,13 +104,93 @@ function userFinanceActions(db,user={}) {
   if(Array.isArray(userActions))return userActions;
   if(Array.isArray(roleActions))return roleActions;
   if(role==="مدير")return ["*"];
-  if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports"];
+  if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports","finance.collection.view","finance.collection.create"];
+  if(role==="شحن")return ["finance.collection.view","finance.collection.create"];
   return [];
 }
 
 function canFinance(db,user,action) {
   const actions=userFinanceActions(db,user);
   return actions.includes("*")||actions.includes(action);
+}
+
+function normalizeCollectionTracking(value="") {
+  return String(value).trim().replace(/\s+/g,"").toUpperCase();
+}
+
+function shipmentCollectionValues(db,shipment={}) {
+  const sale=(db.sales||[]).find(item=>item.id===(shipment.invoiceId||shipment.orderId));
+  const customer=(db.customers||[]).find(item=>item.id===(shipment.customerId||sale?.customerId));
+  const shippingCents=toCents(shipment.customerShippingCharge??sale?.shippingCost??sale?.shipping??0);
+  const productsCents=toCents(shipment.productsValue??Math.max(0,fromCents(toCents(sale?.total||0)-shippingCents)));
+  const collectionCents=toCents(shipment.collectionAmount??fromCents(productsCents+shippingCents));
+  const company=shipment.company||shipment.carrier||"";
+  const configured=(db.shippingCompanies||[]).find(item=>item.name===company)?.finance||{};
+  const egyptPost=/البريد|egypt.?post/i.test(company);
+  const rate=Number(configured.commissionRate??(egyptPost?0.5:0));
+  const minimumCents=toCents(configured.minimumCommission??(egyptPost?5:0));
+  const commissionCents=collectionCents<=0?0:Math.max(Math.round(collectionCents*rate/100),minimumCents);
+  const shippingCostCents=toCents(shipment.carrierShippingCostActual??shipment.carrierShippingCostExpected??shipment.cost??0);
+  return {
+    sale,customer,company,
+    productsValue:fromCents(productsCents),
+    customerShippingCharge:fromCents(shippingCents),
+    expectedCollection:fromCents(collectionCents),
+    expectedCommission:fromCents(commissionCents),
+    expectedNetTransfer:fromCents(collectionCents-commissionCents-shippingCostCents),
+    shippingCost:fromCents(shippingCostCents)
+  };
+}
+
+function createOrderCollectionAtomic(db,payload,user) {
+  const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
+  const trackingNumber=normalizeCollectionTracking(payload.trackingNumber);
+  const amountCents=toCents(payload.amount);
+  if(!trackingNumber)throw Object.assign(new Error("كود الشحنة مطلوب."),{status:400});
+  if(amountCents<0)throw Object.assign(new Error("قيمة التحصيل لا يمكن أن تكون سالبة."),{status:400});
+  const shipment=next.shipments.find(item=>!item.deletedAt&&normalizeCollectionTracking(item.trackingNumber||item.tracking)===trackingNumber);
+  if(!shipment)throw Object.assign(new Error("لم يتم العثور على أوردر مرتبط بكود الشحنة."),{status:404});
+  const sourceKey=`order-collection:${shipment.id}`;
+  const previous=next.orderCollections.find(item=>item.sourceKey===sourceKey&&item.status!=="reversed");
+  if(previous)throw Object.assign(new Error("تم تسجيل تحصيل هذه الشحنة سابقًا."),{status:409,previous});
+  const values=shipmentCollectionValues(next,shipment);
+  const differenceCents=amountCents-toCents(values.expectedCollection);
+  const differenceReason=String(payload.differenceReason||"").trim();
+  if(differenceCents!==0&&!differenceReason)throw Object.assign(new Error("يجب اختيار سبب الفرق قبل تأكيد التحصيل."),{status:400});
+  const registrationType=payload.registrationType==="settled"?"settled":"collected_by_carrier";
+  if(registrationType==="settled"&&!canFinance(next,user,"finance.collection.settle"))throw Object.assign(new Error("ليس لديك صلاحية استلام التحويل في الخزنة."),{status:403});
+  const account=String(payload.account||"").trim();
+  if(registrationType==="settled"&&!account)throw Object.assign(new Error("يجب اختيار الخزنة أو الحساب."),{status:400});
+  const actor=financeActor(user),now=new Date().toISOString();
+  const collection={
+    id:nextId("COL-",next.orderCollections),sourceKey,idempotencyKey:sourceKey,
+    shipmentId:shipment.id,trackingNumber,orderId:shipment.orderId||shipment.invoiceId||"",
+    invoiceId:shipment.invoiceId||shipment.orderId||"",customerId:shipment.customerId||values.sale?.customerId||"",
+    customerName:shipment.customer||shipment.customerName||values.customer?.name||"",
+    customerPhone:shipment.phone||shipment.customerPhone||values.customer?.phone||"",
+    carrier:values.company,collectionDate:String(payload.collectionDate||now.slice(0,10)),
+    productsValue:values.productsValue,customerShippingCharge:values.customerShippingCharge,
+    expectedCollection:values.expectedCollection,amount:fromCents(amountCents),
+    difference:fromCents(differenceCents),differenceReason,notes:String(payload.notes||"").trim(),
+    expectedCommission:values.expectedCommission,expectedNetTransfer:fromCents(amountCents-toCents(values.expectedCommission)-toCents(values.shippingCost)),
+    shippingCost:values.shippingCost,registrationType,status:registrationType,account,
+    createdAt:now,createdBy:actor.name,createdByUsername:actor.username,createdByRole:actor.role
+  };
+  next.orderCollections.push(collection);
+  Object.assign(shipment,{financialCollectionStatus:registrationType,collectionId:collection.id,collectedAmount:collection.amount,collectedAt:now,collectedBy:actor.name});
+  if(registrationType==="settled"){
+    next.cash.push({id:nextId("TX-",next.cash),date:collection.collectionDate,type:"قبض",direction:"in",movementType:"تحصيل أوردر",account,party:values.company,amount:collection.amount,category:"تحصيل شركة شحن",collectionId:collection.id,shipmentId:shipment.id,sourceKey:`${sourceKey}:cash-in`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
+    const addExpense=(amount,type,suffix)=>{
+      if(toCents(amount)<=0)return;
+      const expense={id:nextId("EXP-",next.expenses),date:collection.collectionDate,expenseType:type,amount:fromCents(toCents(amount)),account,beneficiary:values.company,source:"تحصيل أوردر",shipmentId:shipment.id,collectionId:collection.id,sourceKey:`${sourceKey}:${suffix}`,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+      next.expenses.push(expense);
+      next.cash.push({id:nextId("TX-",next.cash),date:collection.collectionDate,type:"صرف",direction:"out",movementType:"مصروف",account,party:values.company,amount:expense.amount,category:type,expenseId:expense.id,collectionId:collection.id,shipmentId:shipment.id,sourceKey:expense.sourceKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});
+    };
+    addExpense(values.expectedCommission,`عمولة تحصيل ${values.company}`,"commission");
+    addExpense(values.shippingCost,`تكلفة شحن ${values.company}`,"shipping-cost");
+  }
+  next.audit.push({id:`AUD-COL-${crypto.randomUUID()}`,date:now,createdAt:now,action:"تسجيل تحصيل أوردر",entity:"المالية",entityId:collection.id,user:actor.name,username:actor.username,role:actor.role,reference:trackingNumber,details:`${collection.orderId} · ${collection.amount}`});
+  return {next,collection};
 }
 
 function financeWriteRequirements(current,next) {
@@ -130,6 +211,12 @@ function financeWriteRequirements(current,next) {
     requirements.add("create-settlement");
     const old=new Map((current.carrierSettlements||[]).map(item=>[item.id,item]));
     if((next.carrierSettlements||[]).some(item=>item.approvedAt&&!old.get(item.id)?.approvedAt))requirements.add("approve-settlement");
+  }
+  if(changed("orderCollections")){
+    requirements.add("finance.collection.create");
+    const old=new Map((current.orderCollections||[]).map(item=>[item.id,item]));
+    if((next.orderCollections||[]).some(item=>item.registrationType==="settled"&&!old.has(item.id)))requirements.add("finance.collection.settle");
+    if((next.orderCollections||[]).some(item=>item.status==="reversed"&&old.get(item.id)?.status!=="reversed"))requirements.add("finance.collection.reverse");
   }
   if(changed("cash")&&!requirements.size)requirements.add("add-cash-in");
   return [...requirements];
@@ -2072,6 +2159,53 @@ const server = http.createServer(async (req, res) => {
       appendShipmentComplaintAudit(db, user, complaint, action, `${previousStatus} → ${nextStatus}`);
       writeDb(db);
       return send(res, 200, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
+    }
+
+    if (route === "/api/finance/order-collections" && req.method === "GET") {
+      const user=sessionUser(req);
+      if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureFinanceDb(readDb());
+      if(!canFinance(db,user,"finance.collection.view"))return send(res,403,{ok:false,message:"ليس لديك صلاحية عرض تحصيلات الأوردرات."});
+      return send(res,200,{ok:true,collections:db.orderCollections.slice().reverse(),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route === "/api/finance/order-collections" && req.method === "POST") {
+      const user=sessionUser(req);
+      if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const permissionDb=ensureFinanceDb(readDb());
+      if(!canFinance(permissionDb,user,"finance.collection.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل التحصيل."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}");
+        const db=ensureFinanceDb(readDb());
+        const result=createOrderCollectionAtomic(db,payload,user);
+        writeDb(result.next);
+        const persisted=ensureFinanceDb(readDb());
+        const collection=persisted.orderCollections.find(item=>item.id===result.collection.id);
+        return send(res,201,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){
+        return send(res,error.status||500,{ok:false,message:error.message||"تعذر تسجيل التحصيل.",previous:error.previous||null});
+      }
+    }
+
+    if (route.startsWith("/api/finance/order-collections/") && route.endsWith("/reverse") && req.method === "POST") {
+      const user=sessionUser(req);
+      if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureFinanceDb(readDb());
+      if(!canFinance(db,user,"finance.collection.reverse"))return send(res,403,{ok:false,message:"ليس لديك صلاحية عكس التحصيل."});
+      const id=decodeURIComponent(route.split("/")[4]||"");
+      const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
+      const collection=next.orderCollections.find(item=>item.id===id);
+      if(!collection)return send(res,404,{ok:false,message:"عملية التحصيل غير موجودة."});
+      if(collection.status==="reversed")return send(res,409,{ok:false,message:"تم عكس العملية سابقًا."});
+      const now=new Date().toISOString(),actor=financeActor(user);
+      collection.status="reversed";collection.reversedAt=now;collection.reversedBy=actor.name;
+      const shipment=next.shipments.find(item=>item.id===collection.shipmentId);
+      if(shipment?.collectionId===collection.id)Object.assign(shipment,{financialCollectionStatus:"",collectionId:"",collectedAmount:0,collectedAt:"",collectedBy:""});
+      (next.cash||[]).filter(item=>item.collectionId===collection.id&&!item.deletedAt).forEach(item=>{item.deletedAt=now;item.reversedBy=actor.name;});
+      (next.expenses||[]).filter(item=>item.collectionId===collection.id&&item.status!=="ملغي").forEach(item=>{item.status="ملغي";item.reversedAt=now;item.reversedBy=actor.name;});
+      next.audit.push({id:`AUD-COL-${crypto.randomUUID()}`,date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(JSON.parse(await readBody(req)||"{}").reason||"")});
+      writeDb(next);
+      return send(res,200,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route.startsWith("/api/finance/settlements/") && route.endsWith("/approve") && req.method === "POST") {

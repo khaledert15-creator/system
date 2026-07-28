@@ -40,6 +40,8 @@ const ACTION_ROLES = {
   "add-expense": ["مالك","مدير","محاسب"], "approve-expense": ["مالك","مدير","محاسب"],
   "add-other-income": ["مالك","مدير","محاسب"], "approve-other-income": ["مالك","مدير","محاسب"],
   "create-settlement": ["مالك","مدير","محاسب"], "approve-settlement": ["مالك","مدير"],
+  "finance.collection.view": ["مالك","مدير","محاسب","شحن"], "finance.collection.create": ["مالك","مدير","محاسب","شحن"],
+  "finance.collection.settle": ["مالك","مدير"], "finance.collection.reverse": ["مالك","مدير"],
   "manage-finance-types": ["مالك","مدير"], "reverse-financial-transaction": ["مالك","مدير"],
   "view-financial-reports": ["مالك","مدير","محاسب"], "approve-settlement-difference": ["مالك","مدير"],
   "add-cash-account": ["مالك","مدير"], "edit-cash-account": ["مالك","مدير"],
@@ -83,7 +85,7 @@ const PERMISSION_ACTIONS = [
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
   ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["add-shipment-complaint","إضافة شكوى شحنة"],["manage-shipment-complaints","إدارة شكاوى الشحنة"],["delete-shipment","حذف شحنة"],["update-tracking-now","تتبع شحنة الآن"],["update-all-tracking","تتبع الشحنات النشطة"],["test-local-rpa","اختبار خدمة التتبع"],["retry-pending-tracking","إعادة محاولة مهام التتبع"],["show-tracking-debug","عرض بيانات تشخيص التتبع"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
-  ["المالية", [["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
+  ["المالية", [["finance.collection.view","عرض تحصيل الأوردرات"],["finance.collection.create","تسجيل تحصيل لدى شركة الشحن"],["finance.collection.settle","استلام تحصيل في الخزنة"],["finance.collection.reverse","عكس تحصيل أوردر"],["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
   ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
@@ -186,6 +188,10 @@ let omniMediaStream = null;
 let stickyTableScroll = { wrap: null, bar: null, inner: null, syncing: false, raf: null };
 let financeTab = "expenses";
 let financeReportFilters = { preset:"month", from:"", to:"", movementType:"", account:"", expenseType:"", carrier:"" };
+let orderCollectionDraft = { trackingNumber:"", amount:"", collectionDate:"", shipmentId:"", differenceReason:"", notes:"", registrationType:"collected_by_carrier", account:"" };
+let orderCollectionMode = "single";
+let orderCollectionBatchRows = [];
+let orderCollectionSearch = "";
 
 function moneyCents(value) {
   const number = Number(normalizeArabicNumericText(value));
@@ -1101,7 +1107,7 @@ function customerSnapshot(customer, fallback = {}) {
 
 function normalizeData(value) {
   const normalized = value && typeof value === "object" ? value : structuredClone(seed);
-  ["books", "customers", "suppliers", "sales", "purchases", "shipments", "cash", "employees", "receipts", "audit", "users", "stockMovements", "onlineOrders", "returns", "shippingCompanies", "cashAccounts", "trackingHistory", "trackingRuns", "notifications", "complaints", "inventoryBatches", "dayClosings", "expenseTypes", "incomeTypes", "expenses", "otherIncome", "carrierSettlements"].forEach(key => {
+  ["books", "customers", "suppliers", "sales", "purchases", "shipments", "cash", "employees", "receipts", "audit", "users", "stockMovements", "onlineOrders", "returns", "shippingCompanies", "cashAccounts", "trackingHistory", "trackingRuns", "notifications", "complaints", "inventoryBatches", "dayClosings", "expenseTypes", "incomeTypes", "expenses", "otherIncome", "carrierSettlements", "orderCollections"].forEach(key => {
     if (!Array.isArray(normalized[key])) normalized[key] = [];
   });
   normalized.version = Math.max(3, Number(normalized.version || 0));
@@ -3517,7 +3523,7 @@ function renderFinanceLedger() {
 
 function allowedFinanceTabs() {
   return [
-    ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
+    ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["order-collections","تحصيل الأوردرات",["finance.collection.view","finance.collection.create"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
     ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","الحركات المالية",["view-cash"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
   ].filter(([, , actions])=>actions.some(canAction));
 }
@@ -3559,6 +3565,92 @@ function settlementSummary(settlement={}) {
     expectedCommission:sumMoney(lines,l=>l.collectionCommissionExpected||0),
     actualCommission:sumMoney(lines,l=>l.collectionCommissionActual ?? l.collectionCommissionExpected ?? 0)
   };
+}
+
+function findCollectionShipment(trackingNumber="") {
+  const code=normalizeTrackingNumber(trackingNumber);
+  return data.shipments.find(item=>!item.deletedAt&&normalizeTrackingNumber(item.trackingNumber||item.tracking)===code);
+}
+
+function orderCollectionPreview(trackingNumber,amount) {
+  const code=normalizeTrackingNumber(trackingNumber);
+  const shipment=findCollectionShipment(code);
+  if(!shipment)return {code,status:"not_found",label:"غير موجود"};
+  const previous=(data.orderCollections||[]).find(item=>item.shipmentId===shipment.id&&item.status!=="reversed");
+  const values=shipmentFinanceValues(shipment),amountValue=centsMoney(moneyCents(normalizeArabicNumericText(amount)||0));
+  const difference=centsMoney(moneyCents(amountValue)-moneyCents(values.collectionAmount));
+  const sale=(data.sales||[]).find(item=>item.id===(shipment.invoiceId||shipment.orderId));
+  const customer=(data.customers||[]).find(item=>item.id===(shipment.customerId||sale?.customerId));
+  return {code,shipment,sale,customer,values,amount:amountValue,difference,previous,status:previous?"duplicate":difference===0?"matched":"difference",label:previous?"مسجل سابقًا":difference===0?"مطابق":"يوجد فرق"};
+}
+
+function orderCollectionStatusBadge(item={}) {
+  const status=item.status||item.registrationType;
+  if(status==="reversed")return badge("معكوس","gray");
+  if(status==="settled")return badge("تم الاستلام بالخزنة","");
+  return badge("لدى شركة الشحن","warning");
+}
+
+function collectionDifferenceReasons(selected="") {
+  return ["","تحصيل جزئي","خصم من شركة الشحن","رسوم إضافية","خطأ في قيمة الأوردر","تعويض","فرق يحتاج مراجعة","سبب آخر"].map(value=>`<option value="${value}" ${selected===value?"selected":""}>${value||"اختر سبب الفرق..."}</option>`).join("");
+}
+
+function renderOrderCollectionCard(preview) {
+  if(!preview?.shipment)return preview?.code?`<div class="collection-result error-state"><strong>لم يتم العثور على أوردر</strong><span>راجع كود الشحنة ثم حاول مرة أخرى.</span></div>`:"";
+  if(preview.previous)return `<div class="collection-result duplicate-state"><div><strong>تم تسجيل تحصيل هذه الشحنة سابقًا</strong><span>${arabicDateTimeLabel(preview.previous.createdAt)} · ${esc(preview.previous.createdBy||"—")}</span></div><div class="collection-money"><span>المبلغ</span><b>${money(preview.previous.amount)}</b></div><div>${orderCollectionStatusBadge(preview.previous)}</div><button class="btn ghost small" data-action="open-previous-collection" data-id="${preview.previous.id}">فتح العملية السابقة</button></div>`;
+  const v=preview.values,s=preview.shipment;
+  return `<article class="card collection-order-card">
+    <div class="card-header"><div><span class="eyebrow">تم العثور على الأوردر</span><h3>${esc(s.orderId||s.invoiceId||"—")}</h3><p>${esc(s.customer||s.customerName||preview.customer?.name||"—")} · <span dir="ltr">${esc(s.phone||s.customerPhone||preview.customer?.phone||"—")}</span></p></div>${preview.difference===0?badge("مطابق وجاهز للتسجيل",""):badge(preview.difference<0?"أقل من المتوقع":"أعلى من المتوقع","danger")}</div>
+    <div class="collection-details">
+      <span><small>الفاتورة</small><b>${esc(s.invoiceId||s.orderId||"—")}</b></span><span><small>كود الشحنة</small><b dir="ltr">${esc(preview.code)}</b></span>
+      <span><small>شركة الشحن</small><b>${esc(s.company||s.carrier||"—")}</b></span><span><small>حالة الشحنة</small><b>${esc(shipmentStatusMeta(s).label)}</b></span>
+      <span><small>قيمة المنتجات</small><b>${money(v.productsValue)}</b></span><span><small>شحن العميل</small><b>${money(v.customerShippingCharge)}</b></span>
+      <span class="primary"><small>المطلوب تحصيله</small><b>${money(v.collectionAmount)}</b></span><span class="primary"><small>التحصيل المدخل</small><b>${money(preview.amount)}</b></span>
+      <span class="${preview.difference?"danger":""}"><small>الفرق</small><b>${money(preview.difference)}</b></span><span><small>العمولة المتوقعة</small><b>${money(v.collectionCommissionExpected)}</b></span>
+      <span><small>صافي التحويل المتوقع</small><b>${money(centsMoney(moneyCents(preview.amount)-moneyCents(v.collectionCommissionExpected)-moneyCents(v.carrierShippingCostExpected)))}</b></span><span><small>الحالة المالية</small><b>${esc(s.financialCollectionStatus||"غير مسجل")}</b></span>
+    </div>
+    <form id="order-collection-confirm-form">
+      <div class="form-grid three">
+        <div class="form-field"><label>نوع التسجيل</label><select name="registrationType" id="order-collection-type"><option value="collected_by_carrier">إثبات التحصيل لدى شركة الشحن فقط</option>${canAction("finance.collection.settle")?`<option value="settled">استلام التحويل في الخزنة أو الحساب</option>`:""}</select></div>
+        <div class="form-field" id="order-collection-account-field" hidden><label>الخزنة أو الحساب</label><select name="account">${cashAccountOptions()}</select></div>
+        <div class="form-field" ${preview.difference===0?"hidden":""}><label>سبب الفرق</label><select name="differenceReason">${collectionDifferenceReasons(orderCollectionDraft.differenceReason)}</select></div>
+        <div class="form-field full"><label>ملاحظة اختيارية</label><input name="notes" value="${esc(orderCollectionDraft.notes||"")}"></div>
+      </div>
+      <div class="form-actions"><button class="btn" type="submit">تأكيد التحصيل</button></div>
+    </form>
+  </article>`;
+}
+
+function parseOrderCollectionBatch(text="") {
+  const seen=new Set();
+  return String(text).split(/\r?\n/).map(line=>line.trim()).filter(Boolean).map(line=>{
+    const [rawCode,rawAmount,...extra]=line.split("|");
+    const code=normalizeTrackingNumber(rawCode||""),amountText=normalizeArabicNumericText(rawAmount||"");
+    if(!code||!amountText||extra.length||!Number.isFinite(Number(amountText))||Number(amountText)<0)return {code:code||rawCode||"—",amount:amountText,status:"invalid",label:"غير صالح"};
+    if(seen.has(code))return {code,amount:Number(amountText),status:"invalid",label:"مكرر داخل المجموعة"};
+    seen.add(code);
+    return orderCollectionPreview(code,amountText);
+  });
+}
+
+function renderOrderCollectionBatch() {
+  return `<article class="card collection-batch"><div class="card-header"><div><h3>إدخال مجموعة تحصيلات</h3><p>الصق كل عملية في سطر: كود الشحنة | قيمة التحصيل</p></div></div>
+    <textarea id="order-collection-batch-input" rows="7" dir="ltr" placeholder="ENO123456789EG | 1070"></textarea>
+    <div class="form-actions"><button class="btn secondary" data-action="review-collection-batch">مراجعة المجموعة</button>${orderCollectionBatchRows.length?`<button class="btn" data-action="save-collection-batch">حفظ الصفوف السليمة</button>`:""}</div>
+    ${orderCollectionBatchRows.length?`<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الأوردر</th><th>العميل</th><th>المتوقع</th><th>المدخل</th><th>الفرق</th><th>العمولة</th><th>الحالة / المعالجة</th></tr></thead><tbody>${orderCollectionBatchRows.map((row,index)=>`<tr><td dir="ltr">${esc(row.code)}</td><td>${esc(row.shipment?.orderId||"—")}</td><td>${esc(row.shipment?.customer||row.customer?.name||"—")}</td><td>${row.values?money(row.values.collectionAmount):"—"}</td><td>${Number.isFinite(Number(row.amount))?money(row.amount):"—"}</td><td>${row.values?money(row.difference):"—"}</td><td>${row.values?money(row.values.collectionCommissionExpected):"—"}</td><td>${row.status==="difference"?`<select data-collection-batch-reason="${index}">${collectionDifferenceReasons(row.differenceReason||"")}</select>`:badge(row.label,row.status==="matched"?"":"danger")}</td></tr>`).join("")}</tbody></table></div>`:""}
+  </article>`;
+}
+
+function renderOrderCollections() {
+  const preview=orderCollectionDraft.shipmentId||orderCollectionDraft.trackingNumber?orderCollectionPreview(orderCollectionDraft.trackingNumber,orderCollectionDraft.amount):null;
+  const query=normalizeSmartSearch(orderCollectionSearch);
+  const rows=(data.orderCollections||[]).filter(item=>!query||normalizeSmartSearch([item.trackingNumber,item.orderId,item.customerName,item.customerPhone].join(" ")).includes(query)).slice().reverse();
+  const content=orderCollectionMode==="batch"?renderOrderCollectionBatch():`<article class="card collection-entry-card"><div class="card-header"><div><h3>تسجيل تحصيل سريع</h3><p>أدخل كود الشحنة والقيمة الواردة من شركة الشحن.</p></div></div>
+    <form id="order-collection-search-form"><div class="collection-entry-grid"><div class="form-field"><label>كود الشحنة</label><input id="order-collection-code" name="trackingNumber" dir="ltr" autocomplete="off" value="${esc(orderCollectionDraft.trackingNumber)}" placeholder="ENO123456789EG"></div><div class="form-field"><label>قيمة التحصيل</label><input ${numericFieldAttributes({id:"order-collection-amount",name:"amount",value:orderCollectionDraft.amount||""})}></div><div class="form-field"><label>تاريخ التحصيل</label><input name="collectionDate" type="date" value="${orderCollectionDraft.collectionDate||today()}"></div><div class="form-field"><label>شركة الشحن</label><input value="${esc(preview?.shipment?.company||preview?.shipment?.carrier||"تُحدد تلقائيًا")}" disabled></div><button class="btn" type="submit">بحث عن الأوردر</button></div></form>
+  </article>${renderOrderCollectionCard(preview)}`;
+  setTimeout(()=>document.getElementById("order-collection-code")?.focus(),0);
+  return `${financeTabsMarkup()}<div class="collection-mode-tabs"><button class="tab ${orderCollectionMode==="single"?"active":""}" data-action="collection-mode" data-mode="single">تسجيل فردي</button><button class="tab ${orderCollectionMode==="batch"?"active":""}" data-action="collection-mode" data-mode="batch">إدخال مجموعة تحصيلات</button></div>${content}
+    <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td>${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceSettlements() {
@@ -3609,6 +3701,7 @@ function renderAccounting() {
   const heading=`<div class="section-title"><div><span class="eyebrow">الإدارة المالية</span><h2>المالية</h2><p>المصروفات والإيرادات والتسويات والخزائن في مكان واحد.</p></div></div>`;
   if(financeTab==="expenses") root.innerHTML=heading+renderFinanceExpenses();
   else if(financeTab==="income") root.innerHTML=heading+renderFinanceIncome();
+  else if(financeTab==="order-collections") root.innerHTML=heading+renderOrderCollections();
   else if(financeTab==="settlements") root.innerHTML=heading+renderFinanceSettlements();
   else if(financeTab==="finance-reports") root.innerHTML=heading+renderFinancialReports();
   else { renderFinanceLedger(); root.insertAdjacentHTML("afterbegin",heading+financeTabsMarkup()); }
@@ -5127,6 +5220,35 @@ window.addEventListener("resize", scheduleStickyTableScrollbar);
 new MutationObserver(scheduleStickyTableScrollbar).observe(root, { childList: true, subtree: true });
 new MutationObserver(scheduleStickyTableScrollbar).observe(modalBody, { childList: true, subtree: true });
 
+async function submitOrderCollection(payload,{silent=false}={}) {
+  if(!serverConnected)throw new Error("تسجيل التحصيل يحتاج تشغيل الخادم المحلي.");
+  const response=await fetch("/api/finance/order-collections",{method:"POST",headers:authHeaders({"Content-Type":"application/json"}),body:JSON.stringify(payload)});
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok){
+    if(result.previous){
+      await reloadRemoteData();
+      orderCollectionDraft={trackingNumber:payload.trackingNumber,amount:payload.amount,collectionDate:payload.collectionDate||today(),shipmentId:result.previous.shipmentId};
+      renderAccounting();
+    }
+    throw new Error(result.message||"تعذر تسجيل التحصيل.");
+  }
+  dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;
+  await reloadRemoteData();
+  if(!silent)toast(`تم تسجيل تحصيل الأوردر ${result.collection.orderId} بمبلغ ${money(result.collection.amount)}.`);
+  return result.collection;
+}
+
+async function reverseOrderCollection(id) {
+  if(!confirm("سيتم عكس عملية التحصيل وقيودها المرتبطة. هل تريد المتابعة؟"))return;
+  const reason=prompt("سبب التصحيح أو الإلغاء:","تصحيح عملية تحصيل")||"";
+  try{
+    const response=await fetch(`/api/finance/order-collections/${encodeURIComponent(id)}/reverse`,{method:"POST",headers:authHeaders({"Content-Type":"application/json"}),body:JSON.stringify({reason})});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.message||"تعذر عكس عملية التحصيل.");
+    await reloadRemoteData();renderAccounting();toast("تم عكس عملية التحصيل والقيود المرتبطة.");
+  }catch(error){toast(error.message,"error");}
+}
+
 root.addEventListener("click", event => {
   const target = event.target.closest("[data-action], [data-view-jump], [data-party-tab]");
   if (!target) return;
@@ -5206,6 +5328,16 @@ root.addEventListener("click", event => {
   }
   if (action === "delete-cash") deleteCash(target.dataset.id);
   if (action === "finance-tab") { financeTab=target.dataset.tab; renderAccounting(); }
+  if (action === "collection-mode") { orderCollectionMode=target.dataset.mode;orderCollectionBatchRows=[];renderAccounting(); }
+  if (action === "open-previous-collection") document.getElementById(`collection-${CSS.escape(target.dataset.id)}`)?.scrollIntoView({behavior:"smooth",block:"center"});
+  if (action === "finance.collection.reverse") reverseOrderCollection(target.dataset.id);
+  if (action === "review-collection-batch") { orderCollectionBatchRows=parseOrderCollectionBatch(document.getElementById("order-collection-batch-input")?.value||"");renderAccounting(); }
+  if (action === "save-collection-batch") {
+    const valid=orderCollectionBatchRows.filter(row=>row.status==="matched"||(row.status==="difference"&&row.differenceReason));
+    if(!valid.length)return toast("لا توجد صفوف مطابقة جاهزة للحفظ.","error");
+    target.disabled=true;
+    (async()=>{let saved=0;for(const row of valid){try{await submitOrderCollection({trackingNumber:row.code,amount:row.amount,collectionDate:today(),registrationType:"collected_by_carrier",differenceReason:row.differenceReason||""},{silent:true});saved++;}catch(error){toast(`${row.code}: ${error.message}`,"error");}}orderCollectionBatchRows=[];renderAccounting();toast(`تم حفظ ${saved} تحصيل بنجاح.`);})();
+  }
   if (action === "finance-report-preset") { financeReportFilters.preset=target.dataset.preset; renderAccounting(); }
   if (action === "add-expense") financeExpenseModal();
   if (action === "edit-expense") financeExpenseModal(data.expenses.find(item=>item.id===target.dataset.id));
@@ -5413,7 +5545,33 @@ root.addEventListener("keydown", event => {
   }
 });
 
+root.addEventListener("submit", async event => {
+  if(event.target.id==="order-collection-search-form"){
+    event.preventDefault();
+    const formData=Object.fromEntries(new FormData(event.target));
+    const code=normalizeTrackingNumber(formData.trackingNumber||""),amount=normalizeArabicNumericText(formData.amount||"");
+    if(!code)return toast("أدخل كود الشحنة.","error");
+    if(amount===""||!Number.isFinite(Number(amount))||Number(amount)<0)return toast("أدخل قيمة تحصيل صحيحة.","error");
+    orderCollectionDraft={...orderCollectionDraft,trackingNumber:code,amount,collectionDate:formData.collectionDate||today(),shipmentId:findCollectionShipment(code)?.id||""};
+    renderAccounting();
+    return;
+  }
+  if(event.target.id==="order-collection-confirm-form"){
+    event.preventDefault();
+    const formData=Object.fromEntries(new FormData(event.target)),preview=orderCollectionPreview(orderCollectionDraft.trackingNumber,orderCollectionDraft.amount);
+    if(!preview.shipment)return toast("لم يتم العثور على الشحنة.","error");
+    if(preview.difference!==0&&!formData.differenceReason)return toast("اختر سبب الفرق قبل التأكيد.","error");
+    const button=event.target.querySelector('button[type="submit"]');button.disabled=true;button.textContent="جارٍ الحفظ...";
+    try{
+      await submitOrderCollection({...orderCollectionDraft,...formData});
+      orderCollectionDraft={trackingNumber:"",amount:"",collectionDate:today(),shipmentId:"",differenceReason:"",notes:"",registrationType:"collected_by_carrier",account:""};
+      renderAccounting();
+    }catch(error){button.disabled=false;button.textContent="تأكيد التحصيل";toast(error.message,"error");}
+  }
+});
+
 root.addEventListener("input", event => {
+  if(event.target.id==="order-collection-history-search"){orderCollectionSearch=event.target.value;return renderAccounting();}
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
@@ -5483,6 +5641,16 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   const index = Number(event.target.dataset.index);
+  if(event.target.id==="order-collection-type"){
+    const field=document.getElementById("order-collection-account-field");
+    if(field)field.hidden=event.target.value!=="settled";
+    return;
+  }
+  if(event.target.matches("[data-collection-batch-reason]")){
+    const row=orderCollectionBatchRows[Number(event.target.dataset.collectionBatchReason)];
+    if(row)row.differenceReason=event.target.value;
+    return;
+  }
   if (event.target.id === "finance-report-from") { financeReportFilters={...financeReportFilters,preset:"custom",from:event.target.value}; return renderAccounting(); }
   if (event.target.id === "finance-report-to") { financeReportFilters={...financeReportFilters,preset:"custom",to:event.target.value}; return renderAccounting(); }
   if (event.target.id === "finance-report-movement") { financeReportFilters.movementType=event.target.value; return renderAccounting(); }

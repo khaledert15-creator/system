@@ -1630,3 +1630,19 @@ tbody tr.target-highlight > td {
 .shipment-finance-preview span{display:grid;gap:4px;padding:9px;background:#fff;border-radius:10px;color:var(--muted);font-size:12px}
 .shipment-finance-preview b{color:var(--text);font-size:14px}
 @media(max-width:900px){.shipment-finance-preview>div{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-filters{grid-template-columns:1fr}.finance-callout{align-items:flex-start;flex-direction:column}}
+.collection-mode-tabs{display:flex;gap:8px;margin:0 0 14px}
+.collection-entry-card,.collection-order-card,.collection-batch{margin-bottom:18px}
+.collection-entry-grid{display:grid;grid-template-columns:minmax(190px,1.3fr) minmax(150px,.8fr) minmax(150px,.8fr) minmax(170px,1fr) auto;gap:12px;align-items:end}
+.collection-entry-grid .btn{min-height:44px;margin-bottom:1px}
+.collection-result{display:flex;align-items:center;gap:18px;padding:16px;margin-bottom:18px;border:1px solid #cfe0f4;border-radius:14px;background:#f8fbff}
+.collection-result>div:first-child{display:grid;gap:5px;flex:1}.collection-result span{color:var(--muted);font-size:13px}
+.collection-result.duplicate-state{border-color:#f1d59a;background:#fffaf0}.collection-result.error-state{border-color:#efc3c3;background:#fff7f7}
+.collection-money{display:grid;gap:3px}.collection-money b{font-size:20px}
+.collection-details{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 18px}
+.collection-details>span{display:grid;gap:5px;min-width:0;padding:12px;border:1px solid var(--border);border-radius:12px;background:#fafbfd}
+.collection-details small{color:var(--muted)}.collection-details b{overflow-wrap:anywhere;font-size:15px}
+.collection-details .primary{border-color:#b9d4f5;background:#f2f7ff}.collection-details .primary b{font-size:18px;color:var(--blue-700)}
+.collection-details .danger{border-color:#efc3c3;background:#fff6f6}.collection-details .danger b{color:var(--danger)}
+.collection-batch textarea{width:100%;resize:vertical}.collection-history .card-header>input{width:min(390px,100%)}
+@media(max-width:1100px){.collection-entry-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.collection-entry-grid .btn{width:max-content}.collection-details{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:700px){.collection-entry-grid,.collection-details{grid-template-columns:1fr}.collection-result{align-items:flex-start;flex-direction:column}.collection-history .card-header{align-items:stretch;flex-direction:column}.collection-history .card-header>input{width:100%}}
