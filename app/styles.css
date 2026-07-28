@@ -1612,3 +1612,21 @@ tbody tr.target-highlight > td {
   font-size: 18px;
   text-align: center;
 }
+
+/* Finance, expenses and carrier settlements */
+.finance-tabs{display:flex;gap:8px;overflow-x:auto;padding:4px 0 14px;margin-bottom:12px;scrollbar-width:thin}
+.finance-tabs .tab{white-space:nowrap;min-height:42px}
+.finance-summary{margin-bottom:18px}
+.finance-callout{display:flex;gap:12px;align-items:center;padding:14px 16px;margin-bottom:18px;border:1px solid #cfe0f4;border-radius:14px;background:#f5f9ff;color:var(--text)}
+.finance-callout span{color:var(--muted);font-size:13px}
+.finance-filters{display:grid;grid-template-columns:minmax(220px,1fr) 180px;gap:10px;padding:0 0 14px}
+.finance-filters input,.finance-filters select{min-width:0}
+.type-list{display:grid;gap:8px;margin-top:16px;max-height:360px;overflow:auto}
+.type-list>div{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--border);border-radius:12px}
+.type-list span{color:var(--muted);font-size:12px}
+.shipment-finance-preview{margin:16px 0;padding:14px;border:1px solid #cfe0f4;border-radius:14px;background:#f8fbff}
+.shipment-finance-preview>strong{display:block;margin-bottom:10px;color:var(--blue-700)}
+.shipment-finance-preview>div{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.shipment-finance-preview span{display:grid;gap:4px;padding:9px;background:#fff;border-radius:10px;color:var(--muted);font-size:12px}
+.shipment-finance-preview b{color:var(--text);font-size:14px}
+@media(max-width:900px){.shipment-finance-preview>div{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-filters{grid-template-columns:1fr}.finance-callout{align-items:flex-start;flex-direction:column}}
