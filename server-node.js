@@ -159,6 +159,98 @@ function quickOrderTotals(lines=[],shippingCost=0) {
   return {lines:computed,subtotal:Number(subtotal.toFixed(2)),discountTotal:Number(discountTotal.toFixed(2)),goods:Number((subtotal-discountTotal).toFixed(2)),shipping,total:Number((subtotal-discountTotal+shipping).toFixed(2))};
 }
 
+function reservedStock(book={}) {
+  return Math.max(0,Number(book.reservedStock||0));
+}
+
+function availableStock(book={}) {
+  return Math.max(0,Number(book.stock||0)-reservedStock(book));
+}
+
+function aggregateOrderLines(lines=[]) {
+  const quantities=new Map();
+  for(const line of lines||[]){
+    const bookId=String(line.bookId||line.productId||"");
+    if(bookId)quantities.set(bookId,(quantities.get(bookId)||0)+Math.max(0,Number(line.qty||line.quantity||0)));
+  }
+  return quantities;
+}
+
+function activeReservation(order={}) {
+  return order.inventoryReservation?.status==="active"?order.inventoryReservation:null;
+}
+
+function reserveOrderInventory(db,order,user,newLines=order.lines||[]) {
+  const oldReservation=activeReservation(order);
+  const oldQuantities=aggregateOrderLines(oldReservation?.lines||[]);
+  const nextQuantities=aggregateOrderLines(newLines);
+  for(const [bookId,quantity] of nextQuantities){
+    const book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
+    if(!book)throw Object.assign(new Error(`الصنف ${bookId} غير موجود.`),{status:400});
+    const ownReserved=oldQuantities.get(bookId)||0;
+    const availableForOrder=availableStock(book)+ownReserved;
+    if(quantity>availableForOrder)throw Object.assign(new Error(`المتاح للبيع من «${book.name}» هو ${availableForOrder}.`),{status:409,code:"INSUFFICIENT_AVAILABLE_STOCK",bookId,available:availableForOrder});
+  }
+  const allBookIds=new Set([...oldQuantities.keys(),...nextQuantities.keys()]);
+  for(const bookId of allBookIds){
+    const book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
+    if(!book)continue;
+    book.reservedStock=Math.max(0,reservedStock(book)-(oldQuantities.get(bookId)||0)+(nextQuantities.get(bookId)||0));
+  }
+  const now=new Date().toISOString();
+  order.inventoryReservation={
+    id:oldReservation?.id||`RSV-${crypto.randomUUID()}`,
+    status:"active",
+    lines:[...nextQuantities].map(([bookId,qty])=>({bookId,qty})),
+    reservedAt:oldReservation?.reservedAt||now,
+    updatedAt:now,
+    reservedBy:user.name||user.username,
+    reservedByUsername:user.username
+  };
+  return order.inventoryReservation;
+}
+
+function releaseOrderInventory(db,order,user,reason="إلغاء الطلب") {
+  const reservation=activeReservation(order);
+  if(!reservation)return false;
+  for(const [bookId,quantity] of aggregateOrderLines(reservation.lines)){
+    const book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
+    if(book)book.reservedStock=Math.max(0,reservedStock(book)-quantity);
+  }
+  const now=new Date().toISOString();
+  Object.assign(reservation,{status:"released",releasedAt:now,updatedAt:now,releasedBy:user.name||user.username,releasedByUsername:user.username,releaseReason:reason});
+  return true;
+}
+
+function reconcileReservationWrite(currentDb,nextDb,user) {
+  const currentBooks=new Map((currentDb.books||[]).map(book=>[book.id,book]));
+  (nextDb.books||[]).forEach(book=>{book.reservedStock=reservedStock(currentBooks.get(book.id)||book);});
+  const currentOrders=new Map((currentDb.onlineOrders||[]).map(order=>[order.id,order]));
+  for(const order of nextDb.onlineOrders||[]){
+    const previous=currentOrders.get(order.id);if(!previous)continue;
+    const previousReservation=activeReservation(previous);
+    if(order.saleId&&!previous.saleId&&previousReservation){
+      order.inventoryReservation=JSON.parse(JSON.stringify(previous.inventoryReservation));
+      for(const [bookId,quantity] of aggregateOrderLines(previousReservation.lines)){
+        const book=(nextDb.books||[]).find(item=>item.id===bookId);
+        if(book)book.reservedStock=Math.max(0,reservedStock(book)-quantity);
+      }
+      const now=new Date().toISOString();
+      Object.assign(order.inventoryReservation,{status:"consumed",consumedAt:now,updatedAt:now,consumedBy:user.name||user.username,consumedByUsername:user.username,invoiceId:order.saleId});
+      continue;
+    }
+    if(["ملغي","cancelled"].includes(order.status||order.workflowStage)){
+      order.inventoryReservation=previous.inventoryReservation?JSON.parse(JSON.stringify(previous.inventoryReservation)):order.inventoryReservation;
+      releaseOrderInventory(nextDb,order,user,order.cancellationReason||"إلغاء الطلب");
+      continue;
+    }
+    if(previous.confirmedAt&&!previous.saleId){
+      order.inventoryReservation=previous.inventoryReservation?JSON.parse(JSON.stringify(previous.inventoryReservation)):order.inventoryReservation;
+      reserveOrderInventory(nextDb,order,user,order.lines||[]);
+    }
+  }
+}
+
 function appendOrderAudit(db,user,order,action,details="") {
   const now=new Date().toISOString();
   db.audit=db.audit||[];
@@ -2100,7 +2192,7 @@ const server = http.createServer(async (req, res) => {
         const book=db.books.find(item=>item.id===line.bookId&&!item.deletedAt);
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
         const qty=Math.max(1,Number(line.qty||1));
-        if(qty>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية المتاحة من «${book.name}» هي ${book.stock}.`});
+        if(qty>availableStock(book))return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)}.`});
         lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
       }
       const totals=quickOrderTotals(lines,payload.shippingCost);
@@ -2128,11 +2220,13 @@ const server = http.createServer(async (req, res) => {
         const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
         const qty=Math.max(1,Number(line.qty||1));
-        if(qty>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية المتاحة من «${book.name}» هي ${book.stock}.`});
+        const ownReserved=aggregateOrderLines(activeReservation(order)?.lines||[]).get(book.id)||0;
+        if(qty>availableStock(book)+ownReserved)return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)+ownReserved}.`});
         lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
       }
       const totals=quickOrderTotals(lines,payload.shippingCost),now=new Date().toISOString();
       const preparationStarted=["preparing","needs_review","awaiting_packing"].includes(order.workflowStage);
+      if(order.confirmedAt)reserveOrderInventory(db,order,user,lines);
       Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),updatedAt:now});
       if(preparationStarted){
         order.workflowStage="preparing";
@@ -2152,10 +2246,24 @@ const server = http.createServer(async (req, res) => {
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.confirm"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تأكيد الطلب."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
-      if(order.confirmedAt)return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
-      for(const line of order.lines||[]){const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);if(!book||Number(line.qty)>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية غير متاحة للصنف ${book?.name||line.bookId}.`});}
-      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"awaiting_preparation",confirmedAt:now,confirmedBy:user.name||user.username,confirmedByUsername:user.username,updatedAt:now});
-      appendOrderAudit(db,user,order,"تأكيد طلب واتساب","انتقل إلى قائمة التجهيز");writeDb(db);
+      if(order.confirmedAt&&activeReservation(order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      try{reserveOrderInventory(db,order,user,order.lines||[]);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INSUFFICIENT_AVAILABLE_STOCK",message:error.message,bookId:error.bookId,available:error.available});}
+      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"awaiting_preparation",confirmedAt:order.confirmedAt||now,confirmedBy:order.confirmedBy||user.name||user.username,confirmedByUsername:order.confirmedByUsername||user.username,updatedAt:now});
+      appendOrderAudit(db,user,order,"تأكيد الطلب وحجز المخزون","انتقل إلى قائمة التجهيز");writeDb(db);
+      return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/cancel") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إلغاء الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.saleId)return send(res,409,{ok:false,message:"تم إنشاء فاتورة للطلب؛ استخدم إجراء إلغاء الفاتورة الحالي."});
+      if(order.status==="ملغي")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();
+      releaseOrderInventory(db,order,user,String(payload.reason||"إلغاء الطلب"));
+      Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});
+      appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -2443,6 +2551,9 @@ const server = http.createServer(async (req, res) => {
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
       if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});
+      try{reconcileReservationWrite(currentDb,parsed,user);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INVENTORY_RESERVATION_FAILED",message:error.message,bookId:error.bookId,available:error.available});}
+      const overReserved=(parsed.books||[]).find(book=>reservedStock(book)>Math.max(0,Number(book.stock||0)));
+      if(overReserved)return send(res,409,{ok:false,code:"RESERVED_STOCK_CONFLICT",message:`لا يمكن خفض الرصيد الفعلي لـ«${overReserved.name}» عن الكمية المحجوزة (${reservedStock(overReserved)}).`});
       const stockValidation = validateNegativeStockWrite(currentDb, parsed, user);
       if (!stockValidation.ok) {
         const row = stockValidation.violations[0];

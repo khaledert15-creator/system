@@ -55,7 +55,7 @@ const revenue = 6 * 100;
 assert("gross profit calculation", revenue - secondSale.cogs === 220);
 
 const actualOpeningBatches = db.inventoryBatches.filter(batch => batch.source === "opening_balance");
-assert("opening batches created for existing stock", actualOpeningBatches.length === db.meta.inventoryBatchMigration.openingBatchesCreated);
+assert("opening batches include those created by the latest idempotent migration", actualOpeningBatches.length >= db.meta.inventoryBatchMigration.openingBatchesCreated);
 
 const inventoryValue = db.inventoryBatches
   .filter(batch => !batch.deletedAt)

@@ -294,8 +294,8 @@ function actorSnapshot() {
   };
 }
 
-function negativeStockError(book, requestedQuantity) {
-  const available = Number(book?.stock || 0);
+function negativeStockError(book, requestedQuantity, ownReserved = 0) {
+  const available = Math.max(0,Number(book?.stock || 0)-Number(book?.reservedStock||0)+Number(ownReserved||0));
   const requested = Number(requestedQuantity || 0);
   if (requested <= available) return "";
   if (data.settings.allowNegativeStock && canAction("allow-negative-stock")) return "";
@@ -1259,6 +1259,7 @@ function normalizeData(value) {
   }));
   normalized.books = normalized.books.map(book => ({
     ...book,
+    reservedStock: Math.max(0, Number(book.reservedStock || 0)),
     itemType: book.itemType || (String(book.category || "").includes("كتب") || book.author || book.publisher || book.grade ? "كتاب" : "صنف عام"),
     unit: book.unit || "قطعة",
     purchaseDiscount: Number(book.purchaseDiscount || 0),
@@ -2820,6 +2821,14 @@ function quickOrderShipping(governorate="",lines=[]) {
   return Math.max(0,Number(byGovernorate[governorate]??rules.defaultCost??0));
 }
 
+function bookReservedStock(book={}) {
+  return Math.max(0,Number(book.reservedStock||0));
+}
+
+function bookAvailableStock(book={}) {
+  return Math.max(0,Number(book.stock||0)-bookReservedStock(book));
+}
+
 function quickOrderCustomer() {
   const phone=normalizePhone(quickOrderDraft.phone);
   if(phone.length<11)return null;
@@ -2846,7 +2855,7 @@ function quickOrderBookResults() {
   const term=normalizeSmartSearch(quickOrderSearch);
   if(!term)return "";
   const matches=(data.books||[]).filter(book=>!book.deletedAt&&normalizeSmartSearch([book.name,book.barcode,book.extraBarcode,book.sku,book.grade,book.category,book.publisher].join(" ")).includes(term)).slice(0,8);
-  return `<div class="quick-book-results">${matches.map(book=>`<button type="button" data-action="quick-order-add-book" data-id="${book.id}"><span><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.sku||book.id)} · ${esc(book.grade||book.category||"")}</small></span><span><b>${money(book.price)}</b><small>${Number(book.stock||0)} متاح</small>${Number(book.stock||0)<=Number(book.reorder||0)?badge("كمية منخفضة","warning"):""}</span></button>`).join("")||`<div class="empty-state compact">لا توجد نتائج مطابقة.</div>`}</div>`;
+  return `<div class="quick-book-results">${matches.map(book=>{const available=bookAvailableStock(book);return `<button type="button" class="quick-book-result" data-action="quick-order-add-book" data-id="${book.id}" ${available<=0?"disabled":""}><span><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.sku||book.id)} · ${esc(book.grade||book.category||"")}</small></span><span><b>${money(book.price)}</b><small>${available} متاح للبيع</small>${available<=Number(book.reorder||0)?badge(available?"كمية منخفضة":"غير متاح",available?"warning":"danger"):""}</span></button>`}).join("")||`<div class="empty-state compact">لا توجد نتائج مطابقة.</div>`}</div>`;
 }
 
 function renderQuickOrderScreen() {
@@ -2863,7 +2872,7 @@ function renderQuickOrderScreen() {
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>ابحث ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="ابحث باسم الكتاب أو الكود أو الصف أو المادة">${quickOrderBookResults()}</div>
-      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId);return `<div class="quick-order-line"><div><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")}</small></div><input data-quick-order-qty="${index}" type="number" min="1" max="${Number(book?.stock||0)}" value="${line.qty}"><span>${money(line.price)}</span><input data-quick-order-discount="${index}" type="number" min="0" value="${line.discount||0}" aria-label="الخصم"><span>${money(line.qty?line.finalNet/line.qty:0)}</span><strong>${money(line.finalNet)}</strong><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></div>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
+      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved;return `<div class="quick-order-line"><div><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><input data-quick-order-qty="${index}" type="number" min="1" max="${available}" value="${line.qty}"><span>${money(line.price)}</span><input data-quick-order-discount="${index}" type="number" min="0" value="${line.discount||0}" aria-label="الخصم"><span>${money(line.qty?line.finalNet/line.qty:0)}</span><strong>${money(line.finalNet)}</strong><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></div>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
     </article>
   </div><aside class="quick-order-summary card"><div class="card-header"><div><h3>ملخص الطلب للعميل</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ رسالة التأكيد.":"يتحدث تلقائيًا من نفس بيانات الطلب."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <div class="quick-finance-summary"><span>الكتب المختلفة <b>${totals.lines.length}</b></span><span>إجمالي القطع <b>${totals.lines.reduce((sum,line)=>sum+Number(line.qty||0),0)}</b></span><span>قبل الخصم <b>${money(totals.subtotal)}</b></span><span>الخصم <b>${money(totals.discountTotal)}</b></span><span>بعد الخصم <b>${money(totals.goods)}</b></span><span>الشحن <b>${totals.shipping?money(totals.shipping):"مجاني"}</b></span><span class="grand">الإجمالي عند الاستلام <b>${money(totals.total)}</b></span></div>
@@ -2929,6 +2938,18 @@ async function copyQuickOrderMessage() {
   catch{toast("تعذر النسخ تلقائيًا. حدد النص وانسخه.","error");}
 }
 
+async function cancelOnlineOrder(id) {
+  const order=getOnlineOrder(id);if(!order)return;
+  if(!confirm(`هل تريد إلغاء الطلب ${id} وتحرير الكميات المحجوزة؟`))return;
+  try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel`,{body:{reason:"إلغاء يدوي من شاشة الطلبات"}});renderOnlineOrders();toast("تم إلغاء الطلب وتحرير المخزون المحجوز.");}
+  catch(error){toast(error.message,"error");}
+}
+
+async function confirmExistingOnlineOrder(id) {
+  try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/confirm`);onlineOrdersMode="orders";renderOnlineOrders();toast(`تم تأكيد ${id} وحجز الكمية المتاحة.`);}
+  catch(error){toast(error.message,"error");}
+}
+
 async function openPreparationOrder(id,start=false) {
   try{
     if(start)await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/start`);
@@ -2977,8 +2998,10 @@ function onlineOrdersTable(list) {
       <td><div class="row-actions">
         <button class="row-action" data-action="view-online-order" data-id="${order.id}">عرض</button>
         ${order.source==="whatsapp"&&canAction("order.quick.edit")&&!order.saleId?`<button class="row-action" data-action="edit-quick-order" data-id="${order.id}">تعديل سريع</button>`:`<button class="row-action" data-action="edit-online-order" data-id="${order.id}">تعديل</button>`}
+        ${!order.confirmedAt&&!order.saleId&&!["ملغي","تم التسليم"].includes(order.status)&&canAction("order.quick.confirm")?`<button class="row-action" data-action="confirm-online-order" data-id="${order.id}">تأكيد وحجز</button>`:""}
         ${order.saleId ? `<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">عرض الفاتورة</button>` : `<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء فاتورة من الطلب</button>`}
         ${order.shipmentId ? `<button class="row-action" data-action="create-order-shipment" data-id="${order.id}">عرض الشحنة</button>` : `<button class="row-action" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`}
+        ${!order.saleId&&!["ملغي","تم التسليم"].includes(order.status)&&canAction("order.quick.edit")?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}
       </div></td>
     </tr>`).join("") || `<tr><td colspan="8" class="text-center muted">لا توجد طلبات أونلاين.</td></tr>`}
   </tbody></table>`;
@@ -5604,7 +5627,10 @@ root.addEventListener("click", event => {
   if (action === "quick-order-add-book") {
     const book=getBook(target.dataset.id);if(!book)return;
     const existing=quickOrderDraft.lines.find(line=>line.bookId===book.id);
-    if(existing){if(existing.qty>=Number(book.stock||0))return toast(`المتاح من ${book.name} هو ${book.stock}.`,"error");existing.qty++;}
+    const ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===book.id)?.qty||0):0;
+    const available=bookAvailableStock(book)+ownReserved;
+    if(existing){if(existing.qty>=available)return toast(`المتاح للبيع من ${book.name} هو ${available}.`,"error");existing.qty++;}
+    else if(available<=0)return toast(`لا توجد كمية متاحة للبيع من ${book.name}.`,"error");
     else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:0,discountType:"percent"});
     quickOrderSearch="";quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders();
   }
@@ -5616,6 +5642,8 @@ root.addEventListener("click", event => {
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
+  if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
+  if (action === "confirm-online-order") confirmExistingOnlineOrder(target.dataset.id);
   if (action === "shipping-stat") applyShippingStatFilter(target.dataset.stat);
   if (action === "open-notifications") showNotificationCenter();
   if (action === "dashboard-alert-open") {
@@ -5958,7 +5986,8 @@ root.addEventListener("input", event => {
   if(event.target.id==="quick-order-book-search"){quickOrderSearch=event.target.value;renderOnlineOrders();return;}
   if(event.target.matches("[data-quick-order-qty]")){
     const index=Number(event.target.dataset.quickOrderQty),line=quickOrderDraft.lines[index],book=getBook(line?.bookId);if(!line)return;
-    line.qty=Math.max(1,Math.min(Number(book?.stock||1),Number(event.target.value||1)));renderOnlineOrders();return;
+    const order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,ownReserved=order?.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0;
+    line.qty=Math.max(1,Math.min(bookAvailableStock(book)+ownReserved,Number(event.target.value||1)));renderOnlineOrders();return;
   }
   if(event.target.matches("[data-quick-order-discount]")){
     const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscount)];if(line){line.discount=Math.max(0,Number(event.target.value||0));renderOnlineOrders();}return;
@@ -7404,6 +7433,18 @@ function recordStockMovement(book, type, quantity, before, after, documentId, no
   });
 }
 
+function consumeOrderReservation(order, sale) {
+  const reservation=order?.inventoryReservation;
+  if(!reservation||reservation.status!=="active")return;
+  const reservedByBook=new Map((reservation.lines||[]).map(line=>[line.bookId,Number(line.qty||0)]));
+  for(const line of sale.lines||[]){
+    const book=getBook(line.bookId),reserved=reservedByBook.get(line.bookId)||0;
+    if(book&&reserved>0)book.reservedStock=Math.max(0,bookReservedStock(book)-Math.min(reserved,Number(line.qty||0)));
+  }
+  const now=new Date().toISOString();
+  Object.assign(reservation,{status:"consumed",consumedAt:now,updatedAt:now,consumedBy:currentUser?.name||currentUser?.username||"—",invoiceId:sale.id});
+}
+
 function convertOnlineOrderToSale(id, options = {}) {
   const order = getOnlineOrder(id);
   if (!order) return toast("الطلب غير موجود.", "error");
@@ -7419,7 +7460,8 @@ function convertOnlineOrderToSale(id, options = {}) {
   for (const computed of totals.lines) {
     const book = getBook(computed.bookId);
     if (!book) return toast("أحد أصناف الطلب غير موجود.", "error");
-    const stockError = negativeStockError(book, computed.qty);
+    const ownReserved=order.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===computed.bookId)?.qty||0):0;
+    const stockError = negativeStockError(book, computed.qty,ownReserved);
     if (stockError) return toast(stockError, "error");
     const netUnit = computed.qty > 0 ? computed.finalNet / computed.qty : 0;
     const summary = productInventorySummary(book.id);
@@ -7441,6 +7483,7 @@ function convertOnlineOrderToSale(id, options = {}) {
     createdByUserId: actor.userId, createdByName: actor.name, createdByUsername: actor.username, createdByRole: actor.role,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null
   };
+  consumeOrderReservation(order,sale);
   sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   sale.lines.forEach(line => {
     const book = getBook(line.bookId);
@@ -8171,16 +8214,7 @@ function printOnlineOrder(id, format = "a4") {
   const order = getOnlineOrder(id);
   if (!order) return;
   if (!order.saleId && !order.shipmentId && !["مرتجع","ملغي"].includes(order.status)) {
-    const now=new Date().toISOString();
-    order.status = "قيد التجهيز";
-    order.workflowStage = order.workflowStage || "awaiting_preparation";
-    order.confirmedAt = order.confirmedAt || now;
-    order.confirmedBy = order.confirmedBy || currentUser?.name || currentUser?.username || "—";
-    order.confirmedByUsername = order.confirmedByUsername || currentUser?.username || "";
-    order.updatedAt = now;
-    saveData("أمر تجهيز طلب أونلاين", "طلبات الأونلاين", order.id);
-    renderOnlineOrders();
-    toast("تم إصدار أمر التجهيز وتحديث حالة الطلب إلى قيد التجهيز.");
+    if(!order.confirmedAt||order.inventoryReservation?.status!=="active")return toast("يجب تأكيد الطلب وحجز المخزون أولًا قبل إصدار أمر التجهيز.","error");
   }
   printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>تم</th></tr></thead><tbody>${order.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>—</td></tr>`).join("")}</tbody></table><p>ملاحظات: ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
 }

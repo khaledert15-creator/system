@@ -3,6 +3,7 @@
 
 const base=process.env.DOTCOM_BASE_URL||"http://127.0.0.1:8876";
 const password=process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026";
+if(!["127.0.0.1","localhost","::1"].includes(new URL(base).hostname))throw new Error("This QA test only runs against a loopback server.");
 const assert=(condition,message)=>{if(!condition)throw new Error(message);console.log(`PASS ${message}`);};
 async function login(username){
   const response=await fetch(`${base}/api/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,password})});
@@ -18,7 +19,16 @@ async function request(path,{token,method="GET",body}={}){
   const owner=await login("owner"),cashier=await login("cashier"),accountant=await login("accountant");
   const initial=await request("/api/db",{token:owner});
   const db=initial.body,stamp=Date.now();
-  for(const key of ["customers","sales","shipments","cash","expenses","otherIncome","orderCollections","audit"])if(!Array.isArray(db[key]))db[key]=[];
+  for(const key of ["customers","sales","shipments","cash","expenses","otherIncome","orderCollections","carrierSettlements","audit"])if(!Array.isArray(db[key]))db[key]=[];
+  const qaTrackings=new Set(["QA-COL-MATCH","QA-COL-LOW","QA-COL-HIGH","QA-COL-SETTLED","QA-COL-ACCOUNTANT","QA-COL-ZERO","QA-COL-CONCURRENT"]);
+  const previousQaCollectionIds=new Set(db.orderCollections.filter(item=>qaTrackings.has(item.trackingNumber)).map(item=>item.id));
+  db.orderCollections=db.orderCollections.filter(item=>!qaTrackings.has(item.trackingNumber));
+  db.shipments=db.shipments.filter(item=>!qaTrackings.has(item.trackingNumber||item.tracking));
+  db.sales=db.sales.filter(item=>!String(item.id||"").startsWith("INV-QA-COL-"));
+  db.customers=db.customers.filter(item=>!String(item.id||"").startsWith("C-QA-"));
+  db.cash=db.cash.filter(item=>!previousQaCollectionIds.has(item.collectionId)&&item.settlementId!=="SET-QA-COL-LINK");
+  db.expenses=db.expenses.filter(item=>!previousQaCollectionIds.has(item.collectionId)&&item.settlementId!=="SET-QA-COL-LINK");
+  db.carrierSettlements=db.carrierSettlements.filter(item=>item.id!=="SET-QA-COL-LINK");
   db.customers.push({id:`C-QA-${stamp}`,name:"عميل تحصيل QA",phone:"01012345678"});
   const fixtures=[
     ["QA-COL-MATCH","INV-QA-COL-1",1000,50],
