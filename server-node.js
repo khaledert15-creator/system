@@ -75,13 +75,38 @@ function writeDb(db) {
   fs.renameSync(`${DB_PATH}.tmp`, DB_PATH);
 }
 
+const DEFAULT_EXPENSE_TYPE_NAMES = ["تكلفة شحن البريد المصري","عمولة تحصيل البريد المصري","تكلفة مرتجع","تغليف وأكياس","إعلانات وتسويق","رواتب وأجور","إيجار","اتصالات وإنترنت","استضافة وبرامج","أدوات مكتبية","صيانة","نقل ومواصلات","مصروفات بنكية","مصروفات أخرى"];
+const DEFAULT_INCOME_TYPE_NAMES = ["تعويض من شركة شحن","عمولة من مورد","خدمات إضافية","بيع مواد أو كراتين","إيراد متنوع"];
+const LAZY_FINANCE_ARRAYS = ["expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections"];
+
 function ensureFinanceDb(db) {
-  const next=db&&typeof db==="object"?db:{};
-  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","shipments","audit"].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
+  const source=db&&typeof db==="object"?db:{};
+  const next={...source};
+  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","shipments","audit"].forEach(key=>{
+    next[key]=Array.isArray(source[key])?source[key].map(item=>item&&typeof item==="object"?{...item}:item):[];
+  });
   next.expenseTypes=next.expenseTypes.map((type,index)=>typeof type==="string"?{id:`ET-${String(index+1).padStart(3,"0")}`,name:type,active:true}:{...type,id:type.id||`ET-${String(index+1).padStart(3,"0")}`,active:type.active!==false});
   next.incomeTypes=next.incomeTypes.map((type,index)=>typeof type==="string"?{id:`IT-${String(index+1).padStart(3,"0")}`,name:type,description:"",active:true}:{...type,id:type.id||`IT-${String(index+1).padStart(3,"0")}`,description:type.description||"",active:type.active!==false});
   next.expenses.forEach(item=>{const type=next.expenseTypes.find(row=>row.id===item.expenseTypeId)||next.expenseTypes.find(row=>row.name===item.expenseType);if(type){item.expenseTypeId=type.id;item.expenseType=item.expenseType||type.name;}});
   next.otherIncome.forEach(item=>{const type=next.incomeTypes.find(row=>row.id===item.incomeTypeId)||next.incomeTypes.find(row=>row.name===item.incomeType);if(type){item.incomeTypeId=type.id;item.incomeType=item.incomeType||type.name;}});
+  return next;
+}
+
+function sameTypeNames(list,names) {
+  return Array.isArray(list)&&list.length===names.length&&list.every((item,index)=>String(item?.name||item||"")===names[index]);
+}
+
+function pruneLazyFinanceFields(current,next) {
+  for(const key of LAZY_FINANCE_ARRAYS){
+    if(Object.prototype.hasOwnProperty.call(current||{},key))continue;
+    const rows=Array.isArray(next?.[key])?next[key]:[];
+    const isRuntimeDefault=key==="expenseTypes"
+      ? rows.length===0||sameTypeNames(rows,DEFAULT_EXPENSE_TYPE_NAMES)&&!(next.expenses||[]).length
+      : key==="incomeTypes"
+        ? rows.length===0||sameTypeNames(rows,DEFAULT_INCOME_TYPE_NAMES)&&!(next.otherIncome||[]).length
+        : rows.length===0;
+    if(isRuntimeDefault)delete next[key];
+  }
   return next;
 }
 
@@ -224,7 +249,11 @@ function releaseOrderInventory(db,order,user,reason="إلغاء الطلب") {
 
 function reconcileReservationWrite(currentDb,nextDb,user) {
   const currentBooks=new Map((currentDb.books||[]).map(book=>[book.id,book]));
-  (nextDb.books||[]).forEach(book=>{book.reservedStock=reservedStock(currentBooks.get(book.id)||book);});
+  (nextDb.books||[]).forEach(book=>{
+    const current=currentBooks.get(book.id);
+    if(current&&Object.prototype.hasOwnProperty.call(current,"reservedStock"))book.reservedStock=reservedStock(current);
+    else delete book.reservedStock;
+  });
   const currentOrders=new Map((currentDb.onlineOrders||[]).map(order=>[order.id,order]));
   for(const order of nextDb.onlineOrders||[]){
     const previous=currentOrders.get(order.id);if(!previous)continue;
@@ -2481,12 +2510,13 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/finance/order-collections" && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const permissionDb=ensureFinanceDb(readDb());
+      const permissionSource=readDb(),permissionDb=ensureFinanceDb(permissionSource);
       if(!canFinance(permissionDb,user,"finance.collection.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل التحصيل."});
       try{
         const payload=JSON.parse(await readBody(req)||"{}");
-        const db=ensureFinanceDb(readDb());
+        const source=readDb(),db=ensureFinanceDb(source);
         const result=createOrderCollectionAtomic(db,payload,user);
+        pruneLazyFinanceFields(source,result.next);
         writeDb(result.next);
         const persisted=ensureFinanceDb(readDb());
         const collection=persisted.orderCollections.find(item=>item.id===result.collection.id);
@@ -2499,7 +2529,7 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith("/api/finance/order-collections/") && route.endsWith("/reverse") && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureFinanceDb(readDb());
+      const source=readDb(),db=ensureFinanceDb(source);
       if(!canFinance(db,user,"finance.collection.reverse"))return send(res,403,{ok:false,message:"ليس لديك صلاحية عكس التحصيل."});
       const id=decodeURIComponent(route.split("/")[4]||"");
       const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
@@ -2513,6 +2543,7 @@ const server = http.createServer(async (req, res) => {
       (next.cash||[]).filter(item=>item.collectionId===collection.id&&!item.deletedAt).forEach(item=>{item.deletedAt=now;item.reversedBy=actor.name;});
       (next.expenses||[]).filter(item=>item.collectionId===collection.id&&item.status!=="ملغي").forEach(item=>{item.status="ملغي";item.reversedAt=now;item.reversedBy=actor.name;});
       next.audit.push({id:`AUD-COL-${crypto.randomUUID()}`,date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(JSON.parse(await readBody(req)||"{}").reason||"")});
+      pruneLazyFinanceFields(source,next);
       writeDb(next);
       return send(res,200,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
@@ -2520,11 +2551,12 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith("/api/finance/settlements/") && route.endsWith("/approve") && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const financeDb=ensureFinanceDb(readDb());
+      const source=readDb(),financeDb=ensureFinanceDb(source);
       if(!canFinance(financeDb,user,"approve-settlement"))return send(res,403,{ok:false,message:"ليس لديك صلاحية اعتماد التسويات."});
       const settlementId=decodeURIComponent(route.split("/")[4]||"");
       try{
-        const next=approveSettlementAtomic(readDb(),settlementId,user);
+        const next=approveSettlementAtomic(source,settlementId,user);
+        pruneLazyFinanceFields(source,next);
         writeDb(next);
         const persisted=ensureFinanceDb(readDb());
         const settlement=persisted.carrierSettlements.find(item=>item.id===settlementId);
@@ -2545,9 +2577,12 @@ const server = http.createServer(async (req, res) => {
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, message:"Data was modified in another window. Reload before saving.", revision: current });
       const body = await readBody(req);
-      const parsed = ensureTrackingDb(JSON.parse(body));
+      const parsedSource=JSON.parse(body);
+      const parsed = ensureTrackingDb(parsedSource);
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
-      const currentDb = fs.existsSync(DB_PATH) ? ensureTrackingDb(readDb()) : { books:[], sales:[], settings:{} };
+      const currentSource = fs.existsSync(DB_PATH) ? readDb() : { books:[], sales:[], settings:{} };
+      const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
+      pruneLazyFinanceFields(currentSource,parsed);
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
       if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});
@@ -2560,6 +2595,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 403, { ok:false, code:"NEGATIVE_STOCK_FORBIDDEN", message:`لا يمكن إتمام البيع. الرصيد المتاح من «${row.name}» هو ${row.available} والكمية المطلوبة ${row.requested}.`, violations:stockValidation.violations });
       }
       appendNegativeStockAudit(parsed, user, stockValidation.violations);
+      pruneLazyFinanceFields(currentSource,parsed);
       writeDb(parsed);
       return send(res, 200, { ok:true, revision: dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }

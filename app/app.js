@@ -1162,7 +1162,7 @@ function customerSnapshot(customer, fallback = {}) {
 }
 
 function normalizeData(value) {
-  const normalized = value && typeof value === "object" ? value : structuredClone(seed);
+  const normalized = value && typeof value === "object" ? structuredClone(value) : structuredClone(seed);
   ["books", "customers", "suppliers", "sales", "purchases", "shipments", "cash", "employees", "receipts", "audit", "users", "stockMovements", "onlineOrders", "returns", "shippingCompanies", "cashAccounts", "trackingHistory", "trackingRuns", "notifications", "complaints", "inventoryBatches", "dayClosings", "expenseTypes", "incomeTypes", "expenses", "otherIncome", "carrierSettlements", "orderCollections"].forEach(key => {
     if (!Array.isArray(normalized[key])) normalized[key] = [];
   });
