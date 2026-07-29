@@ -188,6 +188,8 @@ let omniMediaStream = null;
 let stickyTableScroll = { wrap: null, bar: null, inner: null, syncing: false, raf: null };
 let financeTab = "expenses";
 let financeReportFilters = { preset:"month", from:"", to:"", movementType:"", account:"", expenseType:"", carrier:"" };
+let pendingFinanceFormDraft = null;
+let pendingFinanceConfirmation = null;
 let orderCollectionDraft = { trackingNumber:"", amount:"", collectionDate:"", shipmentId:"", differenceReason:"", notes:"", registrationType:"collected_by_carrier", account:"" };
 let orderCollectionMode = "single";
 let orderCollectionBatchRows = [];
@@ -1177,6 +1179,26 @@ function normalizeData(value) {
   DEFAULT_INCOME_TYPES.forEach((name, index) => {
     if (!incomeNames.has(name)) normalized.incomeTypes.push({ id:`IT-${String(index + 1).padStart(3, "0")}`, name, active:true });
   });
+  normalized.expenseTypes = normalized.expenseTypes.map((type, index) => typeof type === "string"
+    ? { id:`ET-${String(index + 1).padStart(3, "0")}`, name:type, category:"تشغيل", mode:"يدوي", active:true }
+    : { ...type, id:type.id || `ET-${String(index + 1).padStart(3, "0")}`, active:type.active !== false });
+  normalized.incomeTypes = normalized.incomeTypes.map((type, index) => typeof type === "string"
+    ? { id:`IT-${String(index + 1).padStart(3, "0")}`, name:type, description:"", active:true }
+    : { ...type, id:type.id || `IT-${String(index + 1).padStart(3, "0")}`, description:type.description || "", active:type.active !== false });
+  normalized.expenses.forEach(item => {
+    const type = normalized.expenseTypes.find(row => row.id === item.expenseTypeId) || normalized.expenseTypes.find(row => row.name === item.expenseType);
+    if (type) {
+      item.expenseTypeId = type.id;
+      item.expenseType = item.expenseType || type.name;
+    }
+  });
+  normalized.otherIncome.forEach(item => {
+    const type = normalized.incomeTypes.find(row => row.id === item.incomeTypeId) || normalized.incomeTypes.find(row => row.name === item.incomeType);
+    if (type) {
+      item.incomeTypeId = type.id;
+      item.incomeType = item.incomeType || type.name;
+    }
+  });
   normalized.cash.forEach(item => {
     const name = String(item.account || "").trim();
     if (name && !existingAccountNames.has(name) && !normalized.cashAccounts.some(account => account.name === name)) {
@@ -2064,6 +2086,12 @@ function closeModal() {
   document.body.style.overflow = "";
   stickyTableScroll.wrap = null;
   refreshStickyTableScrollbar();
+}
+
+function financeConfirmation({ title, description, confirmLabel, tone="primary", onConfirm }) {
+  pendingFinanceConfirmation=onConfirm;
+  openModal(title,"تأكيد إجراء مالي",`<div class="confirmation-copy"><div class="confirmation-icon ${tone}">!</div><p>${esc(description)}</p></div><div class="form-actions"><button class="btn ${tone==="danger"?"danger":""}" type="button" data-action="confirm-finance-action">${esc(confirmLabel)}</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>`);
+  setTimeout(()=>modalBody.querySelector('[data-action="confirm-finance-action"]')?.focus(),0);
 }
 
 function ensureStickyTableScrollbar() {
@@ -3573,13 +3601,53 @@ function renderFinanceLedger() {
 function allowedFinanceTabs() {
   return [
     ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["order-collections","تحصيل الأوردرات",["finance.collection.view","finance.collection.create"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
-    ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","الحركات المالية",["view-cash"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
+    ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","سجل الحركات",["view-cash"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
   ].filter(([, , actions])=>actions.some(canAction));
+}
+
+const FINANCE_TAB_META = {
+  expenses:["المصروفات","سجل وتابع كل ما تم صرفه من المكتبة."],
+  income:["الإيرادات الأخرى","أي دخل خارج مبيعات الكتب والشحن والتحصيل."],
+  "order-collections":["تحصيل الأوردرات","سجل المبالغ التي حصلتها شركة الشحن من العملاء."],
+  settlements:["تسويات التحصيل","طابق تحويلات شركات الشحن وسجل ما وصل للمكتبة فعليًا."],
+  accounts:["الخزائن والحسابات","تابع أرصدة الخزائن والبنوك والمحافظ."],
+  movements:["سجل الحركات","كل عمليات الدخول والخروج المالي في مكان واحد."],
+  "finance-reports":["التقارير المالية","ملخص الإيرادات والمصروفات والتحصيلات والنتيجة المالية."]
+};
+
+function helpIcon(text, label="معلومة توضيحية") {
+  return `<button class="context-help" type="button" data-help="${esc(text)}" aria-label="${esc(label)}" aria-expanded="false">ⓘ</button>`;
+}
+
+function financeConceptTitle(title, help="") {
+  return `<span class="concept-title">${esc(title)}${help ? helpIcon(help, `شرح ${title}`) : ""}</span>`;
+}
+
+function currentFinanceType(kind, id, fallbackName="") {
+  const list=kind==="income"?(data.incomeTypes||[]):(data.expenseTypes||[]);
+  return list.find(type=>type.id===id)||list.find(type=>type.name===fallbackName)||null;
+}
+
+function financeTypeLabel(kind, record={}) {
+  const type=currentFinanceType(kind,record[`${kind}TypeId`],record[`${kind}Type`]);
+  return type?.name||record[`${kind}Type`]||"—";
 }
 
 function financeTabsMarkup() {
   const tabs = allowedFinanceTabs();
   return `<div class="finance-tabs" role="tablist">${tabs.map(([id,label]) => `<button class="tab ${financeTab === id ? "active" : ""}" data-action="finance-tab" data-tab="${id}">${label}</button>`).join("")}</div>`;
+}
+
+function financeTabIntro() {
+  const [title,description]=FINANCE_TAB_META[financeTab]||["المالية","المصروفات والإيرادات والتسويات والخزائن في مكان واحد."];
+  const help={
+    income:"استخدمها فقط لتسجيل دخل خارج مبيعات الكتب، مثل تعويض من شركة شحن أو عمولة من مورد. مبيعات الفواتير لا تُسجل هنا مرة أخرى.",
+    "order-collections":"استخدم هذه الشاشة عندما ترسل شركة الشحن كود الشحنة وقيمة المبلغ الذي تم تحصيله من العميل.",
+    settlements:"استخدمها عند تحويل شركة الشحن الأموال فعليًا للمكتبة لمطابقة التحصيلات وتسجيل المبلغ في الخزنة.",
+    accounts:"تعرض الأماكن التي توجد بها أموال المكتبة، مثل الخزنة الرئيسية أو الحساب البنكي، والرصيد الحالي لكل منها.",
+    movements:"يعرض كل المبالغ التي دخلت أو خرجت من الخزائن والحسابات ومصدر كل حركة."
+  }[financeTab]||"";
+  return `<div class="section-title finance-section-title"><div><span class="eyebrow">الإدارة المالية</span><h2>${financeConceptTitle(title,help)}</h2><p>${esc(description)}</p></div></div>`;
 }
 
 function expenseStatusBadge(status) {
@@ -3593,15 +3661,15 @@ function renderFinanceExpenses() {
     ${statCard("المصروفات المعتمدة", money(approved), "تؤثر في رصيد الخزائن", "−", "red")}
     ${statCard("بانتظار الاعتماد", rows.filter(item=>item.status==="مسجل").length, "مسودات قابلة للمراجعة", "⌛", "gold")}
     ${statCard("مصروفات الشحن", money(rows.filter(item=>item.source==="تسوية شركة شحن"&&item.status==="معتمد").reduce((s,i)=>s+Number(i.amount||0),0)), "من التسويات المعتمدة", "▣", "blue")}
-  </div><article class="card"><div class="card-header"><div><h3>قائمة المصروفات</h3><p>المصروف لا يؤثر على الخزنة إلا بعد اعتماده.</p></div><div class="actions">${canAction("manage-finance-types")?`<button class="btn ghost" data-action="manage-expense-types">أنواع المصروفات</button>`:""}${canAction("add-expense")?`<button class="btn" data-action="add-expense">＋ إضافة مصروف</button>`:""}</div></div>
+  </div><article class="card"><div class="card-header"><div><h3>قائمة المصروفات</h3><p>المصروف لا يؤثر على الخزنة إلا بعد اعتماده.</p></div><div class="actions">${canAction("manage-finance-types")?`<button class="btn ghost" data-action="manage-expense-types">إدارة أنواع المصروفات</button>`:""}${canAction("add-expense")?`<button class="btn" data-action="add-expense">＋ إضافة مصروف</button>`:""}</div></div>
   <div class="finance-filters"><input id="finance-expense-search" placeholder="بحث بالرقم أو المستفيد أو المرجع"><select id="finance-expense-status"><option value="">كل الحالات</option><option>مسجل</option><option>معتمد</option><option>ملغي</option></select></div>
-  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(item.expenseType)}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("expense",item))}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}${item.settlementId?`<div class="source-trail">تم إنشاؤه تلقائيًا من تسوية <button class="inline-link" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button></div>`:""}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceIncome() {
   const rows=(data.otherIncome||[]).filter(item=>!item.deletedAt).slice().reverse();
   const approved=sumMoney(rows.filter(item=>item.status==="معتمد"),item=>item.amount),pending=sumMoney(rows.filter(item=>item.status==="مسجل"),item=>item.amount);
-  return `${financeTabsMarkup()}<div class="finance-callout"><strong>الإيرادات الأخرى فقط</strong><span>المبيعات وقيمة الشحن المحصلة من العميل وتحويلات شركات الشحن لا تُسجل هنا مرة أخرى.</span></div><div class="stats-grid finance-summary">${statCard("إيرادات معتمدة",money(approved),"ظهرت في حركة الخزنة","＋")}${statCard("بانتظار الاعتماد",money(pending),`${rows.filter(item=>item.status==="مسجل").length} عملية`,"⌛","gold")}</div><article class="card"><div class="card-header"><div><h3>الإيرادات الأخرى</h3><p>أي دخل جديد خارج المبيعات والشحن والتحصيل.</p></div>${canAction("add-other-income")?`<button class="btn" data-action="add-other-income">＋ إضافة إيراد</button>`:""}</div><div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>النوع</th><th>الجهة الدافعة</th><th>الحساب</th><th>المبلغ</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(item.incomeType)}</td><td>${esc(item.payer||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${expenseStatusBadge(item.status)}</td><td>${item.status==="مسجل"&&canAction("approve-other-income")?`<button class="row-action" data-action="approve-other-income" data-id="${item.id}">اعتماد</button>`:item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-other-income" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد إيرادات أخرى.</td></tr>`}</tbody></table></div></article>`;
+  return `${financeTabsMarkup()}<div class="finance-callout"><strong>${financeConceptTitle("الإيرادات الأخرى","استخدمها فقط لتسجيل دخل خارج مبيعات الكتب، مثل تعويض من شركة شحن أو عمولة من مورد. مبيعات الفواتير لا تُسجل هنا مرة أخرى.")}</strong><span>المبيعات وقيمة الشحن المحصلة من العميل وتحويلات شركات الشحن لا تُسجل هنا مرة أخرى.</span></div><div class="stats-grid finance-summary">${statCard("إيرادات معتمدة",money(approved),"ظهرت في حركة الخزنة","＋")}${statCard("بانتظار الاعتماد",money(pending),`${rows.filter(item=>item.status==="مسجل").length} عملية`,"⌛","gold")}</div><article class="card"><div class="card-header"><div><h3>الإيرادات الأخرى</h3><p>أي دخل جديد خارج المبيعات والشحن والتحصيل.</p></div><div class="actions">${canAction("manage-finance-types")?`<button class="btn ghost" data-action="manage-income-types">إدارة أنواع الإيرادات</button>`:""}${canAction("add-other-income")?`<button class="btn" data-action="add-other-income">＋ إضافة إيراد</button>`:""}</div></div><div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>النوع</th><th>الجهة الدافعة</th><th>الحساب</th><th>المبلغ</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("income",item))}</td><td>${esc(item.payer||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${expenseStatusBadge(item.status)}</td><td>${item.status==="مسجل"&&canAction("approve-other-income")?`<button class="row-action" data-action="approve-other-income" data-id="${item.id}">اعتماد</button>`:item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-other-income" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد إيرادات أخرى.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function settlementSummary(settlement={}) {
@@ -3656,14 +3724,14 @@ function renderOrderCollectionCard(preview) {
       <span><small>شركة الشحن</small><b>${esc(s.company||s.carrier||"—")}</b></span><span><small>حالة الشحنة</small><b>${esc(shipmentStatusMeta(s).label)}</b></span>
       <span><small>قيمة المنتجات</small><b>${money(v.productsValue)}</b></span><span><small>شحن العميل</small><b>${money(v.customerShippingCharge)}</b></span>
       <span class="primary"><small>المطلوب تحصيله</small><b>${money(v.collectionAmount)}</b></span><span class="primary"><small>التحصيل المدخل</small><b>${money(preview.amount)}</b></span>
-      <span class="${preview.difference?"danger":""}"><small>الفرق</small><b>${money(preview.difference)}</b></span><span><small>العمولة المتوقعة</small><b>${money(v.collectionCommissionExpected)}</b></span>
+      <span class="${preview.difference?"danger":""}"><small>${financeConceptTitle("يوجد فرق","قيمة التحويل أو التحصيل تختلف عن القيمة المتوقعة. راجع السبب قبل اعتماد العملية.")}</small><b>${money(preview.difference)}</b></span><span><small>${financeConceptTitle("عمولة التحصيل","يحسبها النظام تلقائيًا حسب إعدادات شركة الشحن، وتتحول إلى مصروف عند التسوية الفعلية.")}</small><b>${money(v.collectionCommissionExpected)}</b></span>
       <span><small>صافي التحويل المتوقع</small><b>${money(centsMoney(moneyCents(preview.amount)-moneyCents(v.collectionCommissionExpected)-moneyCents(v.carrierShippingCostExpected)))}</b></span><span><small>الحالة المالية</small><b>${esc(s.financialCollectionStatus||"غير مسجل")}</b></span>
     </div>
     <form id="order-collection-confirm-form">
       <div class="form-grid three">
-        <div class="form-field"><label>نوع التسجيل</label><select name="registrationType" id="order-collection-type"><option value="collected_by_carrier">إثبات التحصيل لدى شركة الشحن فقط</option>${canAction("finance.collection.settle")?`<option value="settled">استلام التحويل في الخزنة أو الحساب</option>`:""}</select></div>
+        <div class="form-field"><label>${financeConceptTitle("نوع التسجيل","إثبات التحصيل يعني أن العميل دفع لشركة الشحن، لكن المبلغ لم يصل إلى خزنة المكتبة بعد.")}</label><select name="registrationType" id="order-collection-type"><option value="collected_by_carrier">إثبات التحصيل لدى شركة الشحن فقط</option>${canAction("finance.collection.settle")?`<option value="settled">استلام التحويل في الخزنة أو الحساب</option>`:""}</select></div>
         <div class="form-field" id="order-collection-account-field" hidden><label>الخزنة أو الحساب</label><select name="account">${cashAccountOptions()}</select></div>
-        <div class="form-field" ${preview.difference===0?"hidden":""}><label>سبب الفرق</label><select name="differenceReason">${collectionDifferenceReasons(orderCollectionDraft.differenceReason)}</select></div>
+        <div class="form-field" ${preview.difference===0?"hidden":""}><label>${financeConceptTitle("سبب الفرق","قيمة التحويل أو التحصيل تختلف عن القيمة المتوقعة. راجع السبب قبل اعتماد العملية.")}</label><select name="differenceReason">${collectionDifferenceReasons(orderCollectionDraft.differenceReason)}</select></div>
         <div class="form-field full"><label>ملاحظة اختيارية</label><input name="notes" value="${esc(orderCollectionDraft.notes||"")}"></div>
       </div>
       <div class="form-actions"><button class="btn" type="submit">تأكيد التحصيل</button></div>
@@ -3752,7 +3820,7 @@ function financeReportRange() {
 function renderAccounting() {
   const allowedTabs=allowedFinanceTabs();
   if(!allowedTabs.some(([id])=>id===financeTab))financeTab=allowedTabs[0]?.[0]||"expenses";
-  const heading=`<div class="section-title"><div><span class="eyebrow">الإدارة المالية</span><h2>المالية</h2><p>المصروفات والإيرادات والتسويات والخزائن في مكان واحد.</p></div></div>`;
+  const heading=financeTabIntro();
   if(financeTab==="expenses") root.innerHTML=heading+renderFinanceExpenses();
   else if(financeTab==="income") root.innerHTML=heading+renderFinanceIncome();
   else if(financeTab==="order-collections") root.innerHTML=heading+renderOrderCollections();
@@ -4839,7 +4907,7 @@ function addShipmentModal(item = null) {
         <div class="form-field"><label class="required">المحافظة</label><select name="governorate" required>${governorateOptions(item?.governorate)}</select></div>
         <div class="form-field"><label>المدينة</label><input name="city" value="${esc(item?.city || "")}"></div>
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(item?.address || "")}"></div>
-        <div class="form-field"><label for="shipment-extra-cost">تكلفة شركة الشحن المتوقعة</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.carrierShippingCostExpected ?? item?.cost ?? 0 })}></div>
+        <div class="form-field"><label for="shipment-extra-cost">${financeConceptTitle("تكلفة شركة الشحن المتوقعة","التكلفة المتوقع أن تتحملها المكتبة مقابل الشحنة. تصبح مصروفًا فعليًا عند التسوية.")}</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.carrierShippingCostExpected ?? item?.cost ?? 0 })}></div>
         <div class="form-field full"><label>الحالة</label><select name="status">${Object.values(SHIPPING_STATUSES).map(meta => `<option ${shipmentStatusMeta(item || {}).label === meta.label ? "selected" : ""}>${meta.label}</option>`).join("")}</select></div>
       </div>
       <div class="shipment-finance-preview"><strong>ملخص مالي داخلي — لا يظهر في فاتورة العميل</strong><div><span>قيمة المنتجات<b>${money(finance.productsValue)}</b></span><span>الشحن المحصل من العميل<b>${money(finance.customerShippingCharge)}</b></span><span>إجمالي التحصيل<b>${money(finance.collectionAmount)}</b></span><span>عمولة متوقعة<b>${money(finance.collectionCommissionExpected)}</b></span><span>صافي تحويل متوقع<b>${money(finance.expectedNetSettlement)}</b></span></div></div>
@@ -4893,26 +4961,39 @@ function cashTransferModal() {
 
 function financeExpenseModal(item=null) {
   const types=(data.expenseTypes||[]).filter(type=>type.active!==false&&!type.deletedAt);
+  const draft=pendingFinanceFormDraft?.kind==="expense"?pendingFinanceFormDraft.values:null;
+  pendingFinanceFormDraft=null;
+  const selectedTypeId=draft?.expenseTypeId||item?.expenseTypeId||currentFinanceType("expense","",item?.expenseType)?.id||types[0]?.id||"";
   openModal(item?"تعديل المصروف":"إضافة مصروف","المالية",`<form id="finance-expense-form" data-edit-id="${item?.id||""}"><div class="form-grid">
-    <div class="form-field"><label class="required">التاريخ</label><input name="date" type="date" required value="${item?.date||today()}"></div>
-    <div class="form-field"><label class="required">نوع المصروف</label><select name="expenseType" required>${types.map(type=>`<option ${item?.expenseType===type.name?"selected":""}>${esc(type.name)}</option>`).join("")}</select></div>
-    <div class="form-field"><label class="required">المبلغ</label><input ${numericFieldAttributes({name:"amount",value:item?.amount||"",required:true})}></div>
-    <div class="form-field"><label class="required">الخزنة أو الحساب</label><select name="account" required>${cashAccountOptions(item?.account)}</select></div>
+    <div class="form-field"><label class="required">التاريخ</label><input name="date" type="date" required value="${draft?.date||item?.date||today()}"></div>
+    <div class="form-field"><div class="field-label-row"><label class="required">نوع المصروف</label>${canAction("manage-finance-types")?`<button class="inline-link" type="button" data-action="quick-add-finance-type" data-kind="expense">＋ إضافة نوع جديد</button>`:""}</div><select name="expenseTypeId" required>${types.map(type=>`<option value="${esc(type.id)}" ${selectedTypeId===type.id?"selected":""}>${esc(type.name)}</option>`).join("")}</select></div>
+    <div class="form-field"><label class="required">المبلغ</label><input ${numericFieldAttributes({name:"amount",value:draft?.amount||item?.amount||"",required:true})}></div>
+    <div class="form-field"><label class="required">الخزنة أو الحساب</label><select name="account" required>${cashAccountOptions(draft?.account||item?.account)}</select></div>
     <div class="form-field"><label>طريقة الدفع</label><select name="paymentMethod">${["نقدي","تحويل بنكي","محفظة إلكترونية","أخرى"].map(v=>`<option ${item?.paymentMethod===v?"selected":""}>${v}</option>`).join("")}</select></div>
-    <div class="form-field"><label>المستفيد / المورد</label><input name="beneficiary" value="${esc(item?.beneficiary||"")}"></div>
-    <div class="form-field"><label>رقم المرجع</label><input name="reference" value="${esc(item?.reference||"")}"></div>
+    <div class="form-field"><label>المستفيد / المورد</label><input name="beneficiary" value="${esc(draft?.beneficiary||item?.beneficiary||"")}"></div>
+    <div class="form-field"><label>رقم المرجع</label><input name="reference" value="${esc(draft?.reference||item?.reference||"")}"></div>
     <div class="form-field"><label>المصدر</label><select name="source">${["يدوي","تسوية شركة شحن","مرتجع","مشتريات","قيد عكسي","مصدر آخر"].map(v=>`<option ${item?.source===v?"selected":""}>${v}</option>`).join("")}</select></div>
     <div class="form-field"><label>رقم الطلب</label><input name="orderId" value="${esc(item?.orderId||"")}"></div><div class="form-field"><label>رقم الفاتورة</label><input name="invoiceId" value="${esc(item?.invoiceId||"")}"></div>
     <div class="form-field"><label>رقم الشحنة</label><input name="shipmentId" value="${esc(item?.shipmentId||"")}"></div><div class="form-field"><label>رقم التسوية</label><input name="settlementId" value="${esc(item?.settlementId||"")}"></div>
-    <div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(item?.notes||"")}</textarea></div></div><div class="form-actions"><button class="btn" type="submit">حفظ كمسجل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+    <div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(draft?.notes||item?.notes||"")}</textarea></div></div><div class="form-actions"><button class="btn" type="submit">حفظ كمسجل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+  setTimeout(()=>modalBody.querySelector('[name="date"]')?.focus(),0);
 }
 
-function financeIncomeModal() {
-  openModal("إضافة إيراد آخر","المالية",`<form id="finance-income-form"><div class="form-grid"><div class="form-field"><label>التاريخ</label><input name="date" type="date" value="${today()}"></div><div class="form-field"><label>نوع الإيراد</label><select name="incomeType">${(data.incomeTypes||[]).filter(i=>i.active!==false).map(i=>`<option>${esc(i.name)}</option>`).join("")}</select></div><div class="form-field"><label>المبلغ</label><input ${numericFieldAttributes({name:"amount",required:true})}></div><div class="form-field"><label>الحساب</label><select name="account">${cashAccountOptions()}</select></div><div class="form-field"><label>طريقة الاستلام</label><select name="receiptMethod"><option>نقدي</option><option>تحويل بنكي</option><option>محفظة إلكترونية</option></select></div><div class="form-field"><label>الجهة الدافعة</label><input name="payer"></div><div class="form-field"><label>رقم المرجع</label><input name="reference"></div><div class="form-field full"><label>ملاحظات</label><textarea name="notes"></textarea></div></div><div class="form-actions"><button class="btn" type="submit">حفظ كمسجل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+function financeIncomeModal(selectedTypeId="") {
+  const draft=pendingFinanceFormDraft?.kind==="income"?pendingFinanceFormDraft.values:{};
+  pendingFinanceFormDraft=null;
+  const types=(data.incomeTypes||[]).filter(type=>type.active!==false&&!type.deletedAt);
+  const selected=selectedTypeId||draft.incomeTypeId||types[0]?.id||"";
+  openModal("إضافة إيراد آخر","المالية",`<div class="modal-context-note">${helpIcon("استخدمها فقط لتسجيل دخل خارج مبيعات الكتب، مثل تعويض من شركة شحن أو عمولة من مورد. مبيعات الفواتير لا تُسجل هنا مرة أخرى.","شرح الإيرادات الأخرى")}<span>هذا النموذج للدخل خارج المبيعات فقط.</span></div><form id="finance-income-form"><div class="form-grid"><div class="form-field"><label>التاريخ</label><input name="date" type="date" value="${draft.date||today()}"></div><div class="form-field"><div class="field-label-row"><label>نوع الإيراد</label>${canAction("manage-finance-types")?`<button class="inline-link" type="button" data-action="quick-add-finance-type" data-kind="income">＋ إضافة نوع جديد</button>`:""}</div><select name="incomeTypeId">${types.map(type=>`<option value="${esc(type.id)}" ${selected===type.id?"selected":""}>${esc(type.name)}</option>`).join("")}</select></div><div class="form-field"><label>المبلغ</label><input ${numericFieldAttributes({name:"amount",value:draft.amount||"",required:true})}></div><div class="form-field"><label>الحساب</label><select name="account">${cashAccountOptions(draft.account)}</select></div><div class="form-field"><label>طريقة الاستلام</label><select name="receiptMethod">${["نقدي","تحويل بنكي","محفظة إلكترونية"].map(value=>`<option ${draft.receiptMethod===value?"selected":""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>الجهة الدافعة</label><input name="payer" value="${esc(draft.payer||"")}"></div><div class="form-field"><label>رقم المرجع</label><input name="reference" value="${esc(draft.reference||"")}"></div><div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(draft.notes||"")}</textarea></div></div><div class="form-actions"><button class="btn" type="submit">حفظ كمسجل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+  setTimeout(()=>modalBody.querySelector('[name="date"]')?.focus(),0);
 }
 
-function financeTypesModal() {
-  openModal("أنواع المصروفات","إعدادات المالية",`<form id="finance-expense-type-form"><div class="form-grid"><div class="form-field"><label>اسم النوع الجديد</label><input name="name" required></div><div class="form-field"><label>التصنيف</label><select name="category"><option>تشغيل</option><option>شحن</option><option>إدارة</option><option>تسويق</option></select></div><div class="form-field"><label>الاستخدام</label><select name="mode"><option>يدوي</option><option>آلي ويدوي</option></select></div><div class="form-field"><label>شركة الشحن</label><select name="carrier"><option value="">غير مرتبط</option>${activeShippingCompanies().map(c=>`<option>${esc(c.name)}</option>`).join("")}</select></div></div><div class="form-actions"><button class="btn" type="submit">إضافة النوع</button></div></form><div class="type-list">${(data.expenseTypes||[]).map(type=>`<div><strong>${esc(type.name)}</strong><span>${esc(type.category||"تشغيل")} · ${type.active===false?"موقوف":"مفعل"}</span><button class="row-action" data-action="toggle-expense-type" data-id="${type.id}">${type.active===false?"تفعيل":"تعطيل"}</button></div>`).join("")}</div>`);
+function financeTypesModal(kind="expense", editId="", quick=false) {
+  const income=kind==="income", list=income?(data.incomeTypes||[]):(data.expenseTypes||[]);
+  const item=list.find(type=>type.id===editId);
+  const title=quick?`إضافة نوع ${income?"إيراد":"مصروف"} جديد`:`إدارة أنواع ${income?"الإيرادات":"المصروفات"}`;
+  openModal(title,"إعدادات المالية",`<form id="finance-type-form" data-kind="${kind}" data-edit-id="${esc(item?.id||"")}" data-quick="${quick?"1":"0"}"><div class="form-grid"><div class="form-field"><label class="required">اسم النوع</label><input name="name" required value="${esc(item?.name||"")}"></div>${income?`<div class="form-field full"><label>وصف مختصر</label><textarea name="description" rows="2">${esc(item?.description||"")}</textarea></div>`:`<div class="form-field"><label>التصنيف</label><select name="category">${["تشغيل","شحن","إدارة","تسويق"].map(value=>`<option ${item?.category===value?"selected":""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>الاستخدام</label><select name="mode">${["يدوي","آلي ويدوي"].map(value=>`<option ${item?.mode===value?"selected":""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>شركة الشحن</label><select name="carrier"><option value="">غير مرتبط</option>${activeShippingCompanies().map(c=>`<option ${item?.carrier===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>`}<div class="form-field"><label>الحالة</label><select name="active"><option value="true" ${item?.active!==false?"selected":""}>مفعل</option><option value="false" ${item?.active===false?"selected":""}>متوقف</option></select></div></div><div class="form-actions"><button class="btn" type="submit">${item?"حفظ التعديل":"إضافة النوع"}</button>${quick?`<button class="btn ghost" type="button" data-action="cancel-quick-finance-type">رجوع</button>`:""}</div></form>${quick?"":`<div class="type-list">${list.map(type=>`<div><div><strong>${esc(type.name)}</strong><span>${esc(income?(type.description||"بدون وصف"):(type.category||"تشغيل"))} · ${type.active===false?"متوقف":"مفعل"}</span></div><button class="row-action" data-action="edit-finance-type" data-kind="${kind}" data-id="${type.id}">تعديل</button><button class="row-action" data-action="toggle-finance-type" data-kind="${kind}" data-id="${type.id}">${type.active===false?"إعادة التفعيل":"تعطيل"}</button></div>`).join("")}</div>`}`);
+  setTimeout(()=>modalBody.querySelector('[name="name"]')?.focus(),0);
 }
 
 function newSettlementModal(item=null) {
@@ -5195,7 +5276,7 @@ async function approveCarrierSettlement(id) {
   for(const line of settlement.lines||[]) {
     const shipment=data.shipments.find(s=>s.id===line.shipmentId);
     const shippingKey=`shipment:${line.shipmentId}:settlement:${id}:shipping-cost`,commissionKey=`shipment:${line.shipmentId}:settlement:${id}:commission`;
-    const addExpense=(amount,type,key)=>{if(Number(amount)<=0||data.expenses.some(e=>e.sourceKey===key))return;const expense={id:nextId("EXP-",[...data.expenses,...nextExpenses]),date:settlement.transferDate,expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,settlementId:id,status:"معتمد",sourceKey:key,createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};nextExpenses.push(expense);nextCash.push({id:nextId("TX-",[...data.cash,...nextCash]),date:settlement.transferDate,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:Number(amount),category:type,expenseId:expense.id,shipmentId:line.shipmentId,settlementId:id,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});};
+    const addExpense=(amount,type,key)=>{if(Number(amount)<=0||data.expenses.some(e=>e.sourceKey===key))return;const expenseType=currentFinanceType("expense","",type);const expense={id:nextId("EXP-",[...data.expenses,...nextExpenses]),date:settlement.transferDate,expenseTypeId:expenseType?.id||"",expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,settlementId:id,status:"معتمد",sourceKey:key,createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};nextExpenses.push(expense);nextCash.push({id:nextId("TX-",[...data.cash,...nextCash]),date:settlement.transferDate,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:Number(amount),category:type,expenseId:expense.id,shipmentId:line.shipmentId,settlementId:id,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});};
     addExpense(line.carrierShippingCostActual ?? line.carrierShippingCostExpected,carrierFinanceSettings(settlement.company).shippingExpenseType,shippingKey);
     addExpense(line.collectionCommissionActual ?? line.collectionCommissionExpected,carrierFinanceSettings(settlement.company).commissionExpenseType,commissionKey);
     if(shipment){shipment.settlementId=id;shipment.financialSettlementStatus=Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية";shipment.settledAt=now;shipment.settledBy=actor.name;shipment.carrierShippingCostActual=Number(line.carrierShippingCostActual ?? line.carrierShippingCostExpected ?? 0);shipment.collectionCommissionActual=Number(line.collectionCommissionActual ?? line.collectionCommissionExpected ?? 0);}
@@ -5210,6 +5291,42 @@ document.getElementById("menu-btn").addEventListener("click", () => document.get
 document.getElementById("notification-btn").addEventListener("click", showNotificationCenter);
 document.getElementById("close-modal").addEventListener("click", closeModal);
 modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
+document.addEventListener("click", event => {
+  const help=event.target.closest?.("[data-help]");
+  document.querySelectorAll(".context-help.open").forEach(button=>{if(button!==help){button.classList.remove("open");button.setAttribute("aria-expanded","false");}});
+  if(help){
+    event.preventDefault();
+    const open=help.classList.toggle("open");
+    help.setAttribute("aria-expanded",open?"true":"false");
+    return;
+  }
+  const target=event.target.closest?.("#modal-backdrop [data-action]");
+  if(!target)return;
+  const action=target.dataset.action;
+  if(action==="quick-add-finance-type"){
+    const form=target.closest("form");
+    pendingFinanceFormDraft={kind:target.dataset.kind,values:Object.fromEntries(new FormData(form).entries()),editId:form?.dataset.editId||""};
+    financeTypesModal(target.dataset.kind,"",true);
+  }
+  if(action==="cancel-quick-finance-type"){
+    const draft=pendingFinanceFormDraft;
+    if(draft?.kind==="income")financeIncomeModal();
+    else financeExpenseModal(data.expenses.find(item=>item.id===draft?.editId));
+  }
+  if(action==="edit-finance-type")financeTypesModal(target.dataset.kind,target.dataset.id);
+  if(action==="toggle-finance-type"){
+    const list=target.dataset.kind==="income"?data.incomeTypes:data.expenseTypes;
+    const type=list.find(item=>item.id===target.dataset.id);
+    if(type){type.active=type.active===false;type.updatedAt=new Date().toISOString();saveData(`تغيير حالة نوع ${target.dataset.kind==="income"?"إيراد":"مصروف"}`,"المالية",type.id);financeTypesModal(target.dataset.kind);}
+  }
+  if(action==="confirm-finance-action"){
+    const callback=pendingFinanceConfirmation;
+    pendingFinanceConfirmation=null;
+    closeModal();
+    callback?.();
+  }
+  if(action==="approve-settlement")financeConfirmation({title:"اعتماد التسوية؟",description:"سيتم تسجيل المبلغ في الخزنة وإنشاء مصروفات الشحن وعمولة التحصيل تلقائيًا. تأكد من المبالغ قبل المتابعة.",confirmLabel:"اعتماد التسوية",onConfirm:()=>approveCarrierSettlement(target.dataset.id)});
+});
 document.addEventListener("focusin", event => {
   configureNumericInput(event.target);
 }, true);
@@ -5228,6 +5345,11 @@ document.addEventListener("change", event => {
   input.value = sanitizeNumericInputValue(input, { commit:true });
 }, true);
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && document.querySelector(".context-help.open")) {
+    document.querySelectorAll(".context-help.open").forEach(button=>{button.classList.remove("open");button.setAttribute("aria-expanded","false");});
+    event.preventDefault();
+    return;
+  }
   if (event.key === "Escape" && !modal.hidden) {
     event.preventDefault();
     closeModal();
@@ -5401,18 +5523,37 @@ root.addEventListener("click", event => {
   if (action === "add-expense") financeExpenseModal();
   if (action === "edit-expense") financeExpenseModal(data.expenses.find(item=>item.id===target.dataset.id));
   if (action === "approve-expense") approveExpense(target.dataset.id);
-  if (action === "reverse-expense") reverseFinanceDocument("expense",target.dataset.id);
+  if (action === "reverse-expense") financeConfirmation({title:"إلغاء المصروف المعتمد؟",description:"سيتم إنشاء قيد عكسي يلغي أثر المصروف مع الاحتفاظ بالسجل الأصلي للمراجعة.",confirmLabel:"إنشاء القيد العكسي",tone:"danger",onConfirm:()=>reverseFinanceDocument("expense",target.dataset.id)});
   if (action === "add-other-income") financeIncomeModal();
   if (action === "approve-other-income") approveOtherIncome(target.dataset.id);
-  if (action === "reverse-other-income") reverseFinanceDocument("income",target.dataset.id);
-  if (action === "manage-expense-types") financeTypesModal();
-  if (action === "toggle-expense-type") {
-    const type=data.expenseTypes.find(item=>item.id===target.dataset.id);
-    if(type){type.active=type.active===false;type.updatedAt=new Date().toISOString();saveData("تغيير حالة نوع مصروف","المالية",type.id);financeTypesModal();}
+  if (action === "reverse-other-income") financeConfirmation({title:"إلغاء الإيراد المعتمد؟",description:"سيتم إنشاء قيد عكسي يلغي أثر الإيراد مع الاحتفاظ بالسجل الأصلي للمراجعة.",confirmLabel:"إنشاء القيد العكسي",tone:"danger",onConfirm:()=>reverseFinanceDocument("income",target.dataset.id)});
+  if (action === "manage-expense-types") financeTypesModal("expense");
+  if (action === "manage-income-types") financeTypesModal("income");
+  if (action === "quick-add-finance-type") {
+    const form=target.closest("form");
+    pendingFinanceFormDraft={kind:target.dataset.kind,values:Object.fromEntries(new FormData(form).entries()),editId:form?.dataset.editId||""};
+    financeTypesModal(target.dataset.kind,"",true);
+  }
+  if (action === "cancel-quick-finance-type") {
+    const draft=pendingFinanceFormDraft;
+    if(draft?.kind==="income")financeIncomeModal();
+    else financeExpenseModal(data.expenses.find(item=>item.id===draft?.editId));
+  }
+  if (action === "edit-finance-type") financeTypesModal(target.dataset.kind,target.dataset.id);
+  if (action === "toggle-finance-type") {
+    const list=target.dataset.kind==="income"?data.incomeTypes:data.expenseTypes;
+    const type=list.find(item=>item.id===target.dataset.id);
+    if(type){type.active=type.active===false;type.updatedAt=new Date().toISOString();saveData(`تغيير حالة نوع ${target.dataset.kind==="income"?"إيراد":"مصروف"}`,"المالية",type.id);financeTypesModal(target.dataset.kind);}
+  }
+  if (action === "confirm-finance-action") {
+    const callback=pendingFinanceConfirmation;
+    pendingFinanceConfirmation=null;
+    closeModal();
+    callback?.();
   }
   if (action === "new-settlement") newSettlementModal();
   if (action === "view-settlement") newSettlementModal(data.carrierSettlements.find(item=>item.id===target.dataset.id));
-  if (action === "approve-settlement") approveCarrierSettlement(target.dataset.id);
+  if (action === "approve-settlement") financeConfirmation({title:"اعتماد التسوية؟",description:"سيتم تسجيل المبلغ في الخزنة وإنشاء مصروفات الشحن وعمولة التحصيل تلقائيًا. تأكد من المبالغ قبل المتابعة.",confirmLabel:"اعتماد التسوية",onConfirm:()=>approveCarrierSettlement(target.dataset.id)});
   if (action === "add-employee") employeeModal();
   if (action === "view-employee") viewEmployee(target.dataset.id);
   if (action === "edit-employee") employeeModal(data.employees.find(item => item.id === target.dataset.id));
@@ -6676,7 +6817,9 @@ modalBody.addEventListener("submit", async event => {
     const existing=data.expenses.find(item=>item.id===form.dataset.editId);
     if(existing?.status==="معتمد") return toast("لا يمكن تعديل مصروف معتمد.","error");
     const actor=actorSnapshot(),now=new Date().toISOString();
-    const item={...(existing||{}),id:existing?.id||nextId("EXP-",data.expenses),date:formData.date||today(),expenseType:formData.expenseType,amount,account:formData.account,paymentMethod:formData.paymentMethod,beneficiary:formData.beneficiary||"",reference:String(formData.reference||"").trim(),notes:formData.notes||"",source:formData.source||"يدوي",orderId:formData.orderId||"",invoiceId:formData.invoiceId||"",shipmentId:formData.shipmentId||"",settlementId:formData.settlementId||"",status:"مسجل",createdAt:existing?.createdAt||now,createdBy:existing?.createdBy||actor.name,updatedAt:now,updatedBy:actor.name};
+    const type=currentFinanceType("expense",formData.expenseTypeId);
+    if(!type||type.active===false)return toast("اختر نوع مصروف مفعلًا.","error");
+    const item={...(existing||{}),id:existing?.id||nextId("EXP-",data.expenses),date:formData.date||today(),expenseTypeId:type.id,expenseType:type.name,amount,account:formData.account,paymentMethod:formData.paymentMethod,beneficiary:formData.beneficiary||"",reference:String(formData.reference||"").trim(),notes:formData.notes||"",source:formData.source||"يدوي",orderId:formData.orderId||"",invoiceId:formData.invoiceId||"",shipmentId:formData.shipmentId||"",settlementId:formData.settlementId||"",status:"مسجل",createdAt:existing?.createdAt||now,createdBy:existing?.createdBy||actor.name,updatedAt:now,updatedBy:actor.name};
     const index=data.expenses.findIndex(row=>row.id===item.id);if(index>=0)data.expenses[index]=item;else data.expenses.push(item);
     saveData(existing?"تعديل مصروف":"إضافة مصروف","المالية",item.id);closeModal();renderAccounting();toast("تم حفظ المصروف بانتظار الاعتماد.");return;
   }
@@ -6684,16 +6827,28 @@ modalBody.addEventListener("submit", async event => {
     const amount=Math.max(0,Number(normalizeArabicNumericText(formData.amount))||0),reference=String(formData.reference||"").trim();
     if(!amount)return toast("أدخل مبلغًا صحيحًا أكبر من صفر.","error");
     if(reference&&data.otherIncome.some(item=>item.reference===reference&&item.status!=="ملغي"))return toast("رقم المرجع مستخدم في إيراد آخر.","error");
+    const type=currentFinanceType("income",formData.incomeTypeId);
+    if(!type||type.active===false)return toast("اختر نوع إيراد مفعلًا.","error");
     const actor=actorSnapshot(),now=new Date().toISOString();
-    const item={id:nextId("INC-",data.otherIncome),date:formData.date||today(),incomeType:formData.incomeType,amount,account:formData.account,receiptMethod:formData.receiptMethod,payer:formData.payer||"",reference,notes:formData.notes||"",status:"مسجل",createdAt:now,createdBy:actor.name};
+    const item={id:nextId("INC-",data.otherIncome),date:formData.date||today(),incomeTypeId:type.id,incomeType:type.name,amount,account:formData.account,receiptMethod:formData.receiptMethod,payer:formData.payer||"",reference,notes:formData.notes||"",status:"مسجل",createdAt:now,createdBy:actor.name};
     data.otherIncome.push(item);saveData("إضافة إيراد آخر","المالية",item.id);closeModal();renderAccounting();toast("تم حفظ الإيراد بانتظار الاعتماد.");return;
   }
-  if (form.id === "finance-expense-type-form") {
+  if (form.id === "finance-type-form") {
+    const kind=form.dataset.kind==="income"?"income":"expense",list=kind==="income"?data.incomeTypes:data.expenseTypes;
     const name=String(formData.name||"").trim();if(!name)return toast("أدخل اسم النوع.","error");
-    if(data.expenseTypes.some(item=>item.name===name&&!item.deletedAt))return toast("نوع المصروف موجود بالفعل.","error");
+    const existing=list.find(item=>item.id===form.dataset.editId);
+    if(list.some(item=>item.name.trim().toLowerCase()===name.toLowerCase()&&item.id!==existing?.id&&!item.deletedAt))return toast(`نوع ${kind==="income"?"الإيراد":"المصروف"} موجود بالفعل.`,"error");
     const actor=actorSnapshot(),now=new Date().toISOString();
-    data.expenseTypes.push({id:nextId("ET-",data.expenseTypes),name,category:formData.category,mode:formData.mode,carrier:formData.carrier||"",active:true,createdAt:now,createdBy:actor.name});
-    saveData("إضافة نوع مصروف","المالية",name);financeTypesModal();toast("تمت إضافة نوع المصروف.");return;
+    const type=existing||{id:nextId(kind==="income"?"IT-":"ET-",list),createdAt:now,createdBy:actor.name};
+    Object.assign(type,{name,description:kind==="income"?String(formData.description||"").trim():(type.description||""),category:kind==="expense"?formData.category:(type.category||""),mode:kind==="expense"?formData.mode:(type.mode||""),carrier:kind==="expense"?(formData.carrier||""):(type.carrier||""),active:formData.active!=="false",updatedAt:now,updatedBy:actor.name});
+    if(!existing)list.push(type);
+    saveData(existing?`تعديل نوع ${kind==="income"?"إيراد":"مصروف"}`:`إضافة نوع ${kind==="income"?"إيراد":"مصروف"}`,"المالية",type.id);
+    if(form.dataset.quick==="1"){
+      if(pendingFinanceFormDraft)pendingFinanceFormDraft.values[`${kind}TypeId`]=type.id;
+      if(kind==="income")financeIncomeModal(type.id);else financeExpenseModal(data.expenses.find(item=>item.id===pendingFinanceFormDraft?.editId));
+      toast(`تمت إضافة النوع واختياره تلقائيًا.`);return;
+    }
+    financeTypesModal(kind);toast(existing?"تم حفظ تعديل النوع.":"تمت إضافة النوع.");return;
   }
   if (form.id === "finance-settlement-form") {
     const codes=[...new Set(String(formData.trackingCodes||"").split(/\r?\n|,/).map(normalizeTrackingNumber).filter(Boolean))];

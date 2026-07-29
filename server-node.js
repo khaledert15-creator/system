@@ -78,7 +78,16 @@ function writeDb(db) {
 function ensureFinanceDb(db) {
   const next=db&&typeof db==="object"?db:{};
   ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","shipments","audit"].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
+  next.expenseTypes=next.expenseTypes.map((type,index)=>typeof type==="string"?{id:`ET-${String(index+1).padStart(3,"0")}`,name:type,active:true}:{...type,id:type.id||`ET-${String(index+1).padStart(3,"0")}`,active:type.active!==false});
+  next.incomeTypes=next.incomeTypes.map((type,index)=>typeof type==="string"?{id:`IT-${String(index+1).padStart(3,"0")}`,name:type,description:"",active:true}:{...type,id:type.id||`IT-${String(index+1).padStart(3,"0")}`,description:type.description||"",active:type.active!==false});
+  next.expenses.forEach(item=>{const type=next.expenseTypes.find(row=>row.id===item.expenseTypeId)||next.expenseTypes.find(row=>row.name===item.expenseType);if(type){item.expenseTypeId=type.id;item.expenseType=item.expenseType||type.name;}});
+  next.otherIncome.forEach(item=>{const type=next.incomeTypes.find(row=>row.id===item.incomeTypeId)||next.incomeTypes.find(row=>row.name===item.incomeType);if(type){item.incomeTypeId=type.id;item.incomeType=item.incomeType||type.name;}});
   return next;
+}
+
+function financeTypeByName(db,kind,name) {
+  const list=kind==="income"?db.incomeTypes:db.expenseTypes;
+  return (list||[]).find(type=>type.name===name)||null;
 }
 
 function toCents(value) {
@@ -186,7 +195,8 @@ function createOrderCollectionAtomic(db,payload,user) {
     next.cash.push(collectionCash);collection.cashTransactionId=collectionCash.id;
     const addExpense=(amount,type,suffix)=>{
       if(toCents(amount)<=0)return;
-      const expense={id:nextId("EXP-",next.expenses),date:collection.collectionDate,expenseType:type,amount:fromCents(toCents(amount)),account,beneficiary:values.company,carrier:values.company,source:"تحصيل أوردر",shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,collectionId:collection.id,cashTransactionId:collectionCash.id,sourceKey:`${sourceKey}:${suffix}`,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+      const expenseType=financeTypeByName(next,"expense",type);
+      const expense={id:nextId("EXP-",next.expenses),date:collection.collectionDate,expenseTypeId:expenseType?.id||"",expenseType:type,amount:fromCents(toCents(amount)),account,beneficiary:values.company,carrier:values.company,source:"تحصيل أوردر",shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,collectionId:collection.id,cashTransactionId:collectionCash.id,sourceKey:`${sourceKey}:${suffix}`,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
       next.expenses.push(expense);
       const expenseCash={id:nextId("TX-",next.cash),date:collection.collectionDate,type:"صرف",direction:"out",movementType:"مصروف",account,party:values.company,amount:expense.amount,category:type,expenseId:expense.id,collectionId:collection.id,shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,sourceKey:expense.sourceKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name};
       next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
@@ -258,7 +268,8 @@ function approveSettlementAtomic(db, settlementId, user) {
   const addExpense=(line,amount,type,key)=>{
     if(Number(amount)<=0)return;
     if(next.expenses.some(item=>item.sourceKey===key)||next.cash.some(item=>item.sourceKey===key))throw Object.assign(new Error("اكتُشف قيد مكرر داخل التسوية."),{status:409});
-    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||now.slice(0,10),expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,carrier:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,cashTransactionId:settlementCash.id,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+    const expenseType=financeTypeByName(next,"expense",type);
+    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||now.slice(0,10),expenseTypeId:expenseType?.id||"",expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,carrier:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,cashTransactionId:settlementCash.id,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
     next.expenses.push(expense);
     const expenseCash={id:nextId("TX-",next.cash),date:expense.date,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:expense.amount,category:type,expenseId:expense.id,shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name};
     next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;

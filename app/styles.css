@@ -1624,6 +1624,17 @@ tbody tr.target-highlight > td {
 /* Finance, expenses and carrier settlements */
 .finance-tabs{display:flex;gap:8px;overflow-x:auto;padding:4px 0 14px;margin-bottom:12px;scrollbar-width:thin}
 .finance-tabs .tab{white-space:nowrap;min-height:42px}
+.finance-section-title h2{display:flex;align-items:center;gap:8px}.finance-section-title p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.concept-title{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.context-help{position:relative;display:inline-grid;place-items:center;width:22px;height:22px;min-width:22px;padding:0;border:1px solid #b9cce3;border-radius:50%;background:#f5f9ff;color:var(--blue-700);font:700 13px/1 inherit;cursor:help;vertical-align:middle}
+.context-help::after{content:attr(data-help);position:absolute;z-index:80;inset-inline-start:50%;top:calc(100% + 9px);width:min(310px,calc(100vw - 40px));padding:10px 12px;border:1px solid #cad9eb;border-radius:10px;background:#172433;color:#fff;box-shadow:0 12px 28px #10233b35;font-size:12px;font-weight:500;line-height:1.65;text-align:right;white-space:normal;opacity:0;visibility:hidden;transform:translateX(50%) translateY(-3px);transition:.15s ease;pointer-events:none}
+.context-help:hover::after,.context-help:focus-visible::after,.context-help.open::after{opacity:1;visibility:visible;transform:translateX(50%) translateY(0)}
+.field-label-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:24px}.field-label-row label{margin:0}
+.inline-link{display:inline;padding:0;border:0;background:transparent;color:var(--blue-700);font:inherit;font-size:12px;font-weight:700;cursor:pointer;text-decoration:underline;text-decoration-color:#b6cdeb;text-underline-offset:3px}
+.modal-context-note{display:flex;align-items:center;gap:9px;margin-bottom:16px;padding:11px 13px;border:1px solid #cfe0f4;border-radius:12px;background:#f7faff;color:var(--muted);font-size:13px}
+.source-trail{margin-top:5px;color:var(--muted);font-size:11px}.source-trail .inline-link{font-size:inherit}
+.confirmation-copy{display:flex;align-items:flex-start;gap:14px;padding:8px 2px 18px}.confirmation-copy p{margin:0;line-height:1.8;color:var(--text)}
+.confirmation-icon{display:grid;place-items:center;width:38px;height:38px;min-width:38px;border-radius:12px;background:#e8f1fc;color:var(--blue-700);font-weight:800}.confirmation-icon.danger{background:#fff0f0;color:var(--danger)}
 .finance-summary{margin-bottom:18px}
 .finance-callout{display:flex;gap:12px;align-items:center;padding:14px 16px;margin-bottom:18px;border:1px solid #cfe0f4;border-radius:14px;background:#f5f9ff;color:var(--text)}
 .finance-callout span{color:var(--muted);font-size:13px}
@@ -1631,13 +1642,14 @@ tbody tr.target-highlight > td {
 .finance-filters input,.finance-filters select{min-width:0}
 .type-list{display:grid;gap:8px;margin-top:16px;max-height:360px;overflow:auto}
 .type-list>div{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--border);border-radius:12px}
+.type-list>div>div{display:grid;gap:3px;min-width:0}
 .type-list span{color:var(--muted);font-size:12px}
 .shipment-finance-preview{margin:16px 0;padding:14px;border:1px solid #cfe0f4;border-radius:14px;background:#f8fbff}
 .shipment-finance-preview>strong{display:block;margin-bottom:10px;color:var(--blue-700)}
 .shipment-finance-preview>div{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
 .shipment-finance-preview span{display:grid;gap:4px;padding:9px;background:#fff;border-radius:10px;color:var(--muted);font-size:12px}
 .shipment-finance-preview b{color:var(--text);font-size:14px}
-@media(max-width:900px){.shipment-finance-preview>div{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-filters{grid-template-columns:1fr}.finance-callout{align-items:flex-start;flex-direction:column}}
+@media(max-width:900px){.shipment-finance-preview>div{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-filters{grid-template-columns:1fr}.finance-callout{align-items:flex-start;flex-direction:column}.finance-section-title p{white-space:normal}.context-help::after{position:fixed;inset-inline:20px;top:auto;bottom:20px;width:auto;transform:none}.context-help:hover::after,.context-help:focus-visible::after,.context-help.open::after{transform:none}}
 .collection-mode-tabs{display:flex;gap:8px;margin:0 0 14px}
 .collection-entry-card,.collection-order-card,.collection-batch{margin-bottom:18px}
 .collection-entry-grid{display:grid;grid-template-columns:minmax(190px,1.3fr) minmax(150px,.8fr) minmax(150px,.8fr) minmax(170px,1fr) auto;gap:12px;align-items:end}
