@@ -192,6 +192,7 @@ let orderCollectionDraft = { trackingNumber:"", amount:"", collectionDate:"", sh
 let orderCollectionMode = "single";
 let orderCollectionBatchRows = [];
 let orderCollectionSearch = "";
+let notificationFilter = "unread";
 
 function moneyCents(value) {
   const number = Number(normalizeArabicNumericText(value));
@@ -467,10 +468,11 @@ function setStorageStatus(message, connected) {
 }
 
 function getNotificationItems() {
+  const stateByKey=new Map((data.notifications||[]).map(item=>[item.key||item.id,item]));
   const items = (data.notifications || [])
-    .filter(item => item.status !== "closed")
+    .filter(item => item.status !== "closed" && item.type !== "delivered")
     .map(item => ({
-      id: item.id,
+      id: item.id,key:item.key||item.id,
       kind: "tracking-alert",
       entityId: item.shipmentId,
       orderId: data.shipments.find(shipment => shipment.id === item.shipmentId)?.orderId || "",
@@ -478,48 +480,49 @@ function getNotificationItems() {
       title: item.trackingNumber || item.shipmentId || "تنبيه تتبع",
       description: item.message || "",
       tone: item.priority === "critical" || item.priority === "high" ? "red" : item.priority === "warning" ? "gold" : "blue",
-      icon: item.priority === "critical" ? "!" : item.type === "delivered" ? "✓" : item.type === "return_risk" || item.type === "returned" ? "↶" : "▣"
+      icon: item.priority === "critical" ? "!" : item.type === "return_risk" || item.type === "returned" ? "↶" : "▣",
+      source:"الشحن والتتبع",createdAt:item.createdAt,updatedAt:item.updatedAt
     }));
   data.books
     .filter(book => book.stock <= book.reorder)
     .forEach(book => items.push({
-      id: `stock-${book.id}`,
+      id: `stock-${book.id}`,key:`stock-${book.id}`,
       kind: "stock",
       entityId: book.id,
       priority: book.stock <= 0 ? 1 : 2,
       title: book.name,
       description: `الرصيد ${book.stock} ${itemUnitLabel(book)}، وحد إعادة الطلب ${book.reorder}.`,
       tone: "red",
-      icon: "!"
+      icon: "!",source:"المخزون",createdAt:book.updatedAt||book.createdAt
     }));
   data.books
     .filter(book => book.lastSale && (Date.now() - new Date(book.lastSale).getTime()) / 86400000 >= data.settings.staleDays)
     .forEach(book => items.push({
-      id: `stale-${book.id}`,
+      id: `stale-${book.id}`,key:`stale-${book.id}`,
       kind: "stale",
       entityId: book.id,
       priority: 3,
       title: `صنف راكد: ${book.name}`,
       description: `آخر بيع ${fmtDate(book.lastSale)} — راجع العرض أو المرتجع.`,
       tone: "",
-      icon: "↶"
+      icon: "↶",source:"المخزون",createdAt:book.lastSale
     }));
   data.books
     .filter(book => !book.owned && book.returnDeadline)
     .forEach(book => items.push({
-      id: `consignment-${book.id}`,
+      id: `consignment-${book.id}`,key:`consignment-${book.id}`,
       kind: "consignment",
       entityId: book.id,
       priority: 2,
       title: `أمانة: ${book.name}`,
       description: `موعد المرتجع ${fmtDate(book.returnDeadline)}.`,
       tone: "blue",
-      icon: "◇"
+      icon: "◇",source:"المشتريات والأمانة",createdAt:book.returnDeadline
     }));
   data.shipments
     .filter(shipment => shipment.status !== "تم التسليم")
     .forEach(shipment => items.push({
-      id: `shipment-${shipment.id}`,
+      id: `shipment-${shipment.id}`,key:`shipment-${shipment.id}`,
       kind: "shipment",
       entityId: shipment.id,
       orderId: shipment.orderId,
@@ -527,27 +530,70 @@ function getNotificationItems() {
       title: shipment.tracking,
       description: `${shipment.customer} — ${shipment.status}.`,
       tone: "blue",
-      icon: "▣"
+      icon: "▣",source:"الشحن",createdAt:shipment.updatedAt||shipment.createdAt
     }));
   data.onlineOrders
     .filter(order => !order.deletedAt && !["تم التسليم","ملغي"].includes(order.status) && ((Date.now() - new Date(order.createdAt || order.date).getTime()) / 3600000 >= (order.status === "طلب جديد" ? 2 : 24)))
     .forEach(order => items.push({
-      id:`order-${order.id}`, kind:"online-order", entityId:order.id, priority:order.status === "طلب جديد" ? 1 : 2,
-      title:`طلب متأخر: ${order.id}`, description:`${order.customerName} — ${order.status}.`, tone:"red", icon:"●"
+      id:`order-${order.id}`,key:`order-${order.id}`, kind:"online-order", entityId:order.id, priority:order.status === "طلب جديد" ? 1 : 2,
+      title:`طلب متأخر: ${order.id}`, description:`${order.customerName} — ${order.status}.`, tone:"red", icon:"●",source:"طلبات الأونلاين",createdAt:order.createdAt||order.date
     }));
-  return items.sort((a, b) => a.priority - b.priority);
+  (data.complaints||[]).filter(item=>!["closed","resolved"].includes(item.status||item.complaintStatus)).forEach(item=>items.push({
+    id:`complaint-${item.id}`,key:`complaint-${item.id}`,kind:"complaint",entityId:item.shipmentId,priority:1,title:"شكوى شحن مفتوحة",
+    description:`شكوى رقم ${item.complaintNumber||item.complaintReference||item.id} · الشحنة ${item.trackingNumber||"—"}`,tone:"red",icon:"!",source:"شكاوى الشحن",createdAt:item.createdAt||item.openedAt
+  }));
+  (data.orderCollections||[]).filter(item=>item.status!=="reversed"&&Math.abs(Number(item.difference||0))>.009&&!item.settlementId).forEach(item=>items.push({
+    id:`collection-difference-${item.id}`,key:`collection-difference-${item.id}`,kind:"collection",entityId:item.id,priority:1,title:"تحصيل يحتاج مراجعة",
+    description:`${item.orderId||item.trackingNumber} · يوجد فرق ${money(Math.abs(item.difference))}`,tone:"red",icon:"!",source:"تحصيل الأوردرات",createdAt:item.createdAt
+  }));
+  (data.carrierSettlements||[]).filter(item=>!item.deletedAt&&!item.approvedAt).forEach(item=>items.push({
+    id:`settlement-${item.id}`,key:`settlement-${item.id}`,kind:"settlement",entityId:item.id,priority:2,title:"تسوية بانتظار الاعتماد",
+    description:`${item.id} · ${(item.lines||[]).length} شحنة`,tone:"gold",icon:"⌛",source:"تسويات التحصيل",createdAt:item.createdAt
+  }));
+  const activeKeys=new Set(items.map(item=>item.key));
+  (data.notifications||[]).filter(item=>item.uiStatus&&item.uiStatus!=="resolved"&&!activeKeys.has(item.key||item.id)).forEach(item=>items.push({
+    id:item.id,key:item.key||item.id,kind:item.kind||"resolved",entityId:item.entityId||"",priority:4,
+    title:item.title||"تنبيه تمت معالجته",description:item.description||"انتهى سبب التنبيه ولم يعد يحتاج متابعة.",
+    tone:"",icon:"✓",source:item.source||"النظام",createdAt:item.createdAt,updatedAt:item.updatedAt,status:"resolved"
+  }));
+  return items.map(item=>{
+    const saved=stateByKey.get(item.key);
+    const status=item.status==="resolved"?"resolved":saved?.uiStatus||(["read","resolved"].includes(saved?.status)?saved.status:"unread");
+    return {...item,status,readAt:saved?.readAt||"",updatedAt:item.updatedAt||item.createdAt};
+  }).sort((a,b)=>a.status===b.status?a.priority-b.priority:a.status==="unread"?-1:1);
 }
 
 function updateNotificationBadge() {
-  const count = getNotificationItems().length;
+  const count = getNotificationItems().filter(item=>item.status==="unread").length;
   const badgeElement = document.getElementById("notification-count");
+  const button=document.getElementById("notification-btn");
   if (badgeElement) {
     badgeElement.textContent = count;
     badgeElement.hidden = count === 0;
   }
+  if(button)button.title=count?"تنبيهات النظام التي تحتاج متابعتك":"لا توجد تنبيهات جديدة";
+}
+
+function setNotificationStatus(key,status) {
+  let record=(data.notifications||[]).find(item=>(item.key||item.id)===key);
+  const now=new Date().toISOString();
+  if(!record){record={id:nextId("NTF-",data.notifications),key,type:"ui-state",channel:"in-app",createdAt:now};data.notifications.push(record);}
+  record.uiStatus=status;record.readAt=status==="read"?(record.readAt||now):record.readAt||"";record.updatedAt=now;
+}
+
+function markNotificationRead(key,{save=true}={}) {
+  const item=getNotificationItems().find(row=>row.key===key);
+  setNotificationStatus(key,"read");
+  const record=(data.notifications||[]).find(row=>(row.key||row.id)===key);
+  if(record&&item)Object.assign(record,{title:item.title,description:item.description,source:item.source,kind:item.kind,entityId:item.entityId});
+  updateNotificationBadge();
+  if(save)saveData("تحديد إشعار كمقروء","الإشعارات",key);
 }
 
 function notificationActionButtons(item) {
+  if(item.kind==="collection")return `<div class="notification-actions"><button class="row-action" data-modal-action="notification-open-collection" data-id="${item.entityId}" data-notification-key="${esc(item.key)}">فتح التحصيل</button></div>`;
+  if(item.kind==="settlement")return `<div class="notification-actions"><button class="row-action" data-modal-action="notification-open-settlement" data-id="${item.entityId}" data-notification-key="${esc(item.key)}">فتح التسوية</button></div>`;
+  if(item.kind==="complaint")return `<div class="notification-actions"><button class="row-action" data-modal-action="notification-view-shipment" data-id="${item.entityId}" data-notification-key="${esc(item.key)}">فتح الشحنة</button></div>`;
   if (item.kind === "tracking-alert") return `<div class="notification-actions"><button class="row-action" data-modal-action="notification-view-shipment" data-id="${item.entityId}">تفاصيل الشحنة</button><button class="row-action" data-modal-action="notification-shipping-page">مركز المتابعة</button></div>`;
   if (item.kind === "online-order") return `<div class="notification-actions"><button class="row-action" data-modal-action="notification-view-order" data-id="${item.entityId}">التفاصيل</button><button class="row-action" data-modal-action="notification-edit-order" data-id="${item.entityId}">تعديل</button><button class="row-action" data-modal-action="notification-orders-page">كل الطلبات</button></div>`;
   if (item.kind === "shipment") {
@@ -581,12 +627,15 @@ function dashboardAlertItem(item) {
 }
 
 function showNotificationCenter() {
-  const items = getNotificationItems();
+  const allItems=getNotificationItems();
+  const items=allItems.filter(item=>notificationFilter==="all"||item.status===notificationFilter);
   openModal("التنبيهات والإجراءات", "مركز المتابعة", `
+    <div class="notification-toolbar"><div class="finance-tabs">${[["all","الكل"],["unread","غير مقروء"],["resolved","تم حله"]].map(([value,label])=>`<button class="tab ${notificationFilter===value?"active":""}" data-modal-action="notification-filter" data-filter="${value}">${label}</button>`).join("")}</div>${allItems.some(item=>item.status==="unread")?`<button class="btn ghost small" data-modal-action="notification-read-all">تحديد الكل كمقروء</button>`:""}</div>
     <div class="alert-list notification-list">
-      ${items.map(item => `<article class="alert-item notification-item">
+      ${items.map(item => `<article class="alert-item notification-item ${item.status}" data-notification-key="${esc(item.key)}">
         <div class="alert-badge ${item.tone}">${item.icon}</div>
-        <div class="notification-content"><strong>${esc(item.title)}</strong><span>${esc(item.description)}</span>${notificationActionButtons(item)}</div>
+        <div class="notification-content"><strong>${esc(item.title)}</strong><span>${esc(item.description)}</span><small>${esc(item.source)} · ${arabicDateTimeLabel(item.updatedAt||item.createdAt)}</small>${notificationActionButtons(item)}</div>
+        <div class="notification-state">${item.status==="unread"?`<span class="badge danger">جديد</span><button class="row-action" data-modal-action="notification-mark-read" data-key="${esc(item.key)}">تحديد كمقروء</button>`:item.status==="resolved"?badge("تم حله","gray"):badge("مقروء","blue")}</div>
       </article>`).join("") || `<div class="empty-state"><div class="empty-icon">✓</div><h3>لا توجد تنبيهات عاجلة</h3><p>كل المؤشرات في وضع مستقر.</p></div>`}
     </div>
     ${items.length ? `<div class="form-actions"><button class="btn ghost" data-modal-action="notification-refresh">تحديث التنبيهات</button><button class="btn secondary" data-modal-action="notification-reports">فتح التقارير</button></div>` : ""}`);
@@ -3460,7 +3509,7 @@ async function updateTrackingWorkerNotice() {
 
 function cashRelatedReferences(item = {}) {
   const refs = new Set();
-  [item.receiptId, item.returnId, item.saleId, item.purchaseId, item.shipmentId, item.onlineOrderId, item.transferId].filter(Boolean).forEach(ref => refs.add(String(ref)));
+  [item.receiptId,item.returnId,item.saleId,item.purchaseId,item.shipmentId,item.onlineOrderId,item.orderId,item.invoiceId,item.collectionId,item.settlementId,item.expenseId,item.incomeId,item.transferId].filter(Boolean).forEach(ref=>refs.add(String(ref)));
   String(`${item.note || ""} ${item.reference || ""}`).match(/\b(-:INV|PUR|RCP|PAY|SR|PR|RET|SH|ORD|TR)-[\w-]+\b/g)?.forEach(ref => refs.add(ref));
   return [...refs];
 }
@@ -3551,7 +3600,8 @@ function renderFinanceExpenses() {
 
 function renderFinanceIncome() {
   const rows=(data.otherIncome||[]).filter(item=>!item.deletedAt).slice().reverse();
-  return `${financeTabsMarkup()}<div class="finance-callout"><strong>الإيرادات الأخرى فقط</strong><span>المبيعات وقيمة الشحن المحصلة من العميل وتحويلات شركات الشحن لا تُسجل هنا مرة أخرى.</span></div><article class="card"><div class="card-header"><div><h3>الإيرادات الأخرى</h3><p>أي دخل خارج فواتير المبيعات.</p></div>${canAction("add-other-income")?`<button class="btn" data-action="add-other-income">＋ إضافة إيراد</button>`:""}</div><div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>النوع</th><th>الجهة الدافعة</th><th>الحساب</th><th>المبلغ</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(item.incomeType)}</td><td>${esc(item.payer||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${expenseStatusBadge(item.status)}</td><td>${item.status==="مسجل"&&canAction("approve-other-income")?`<button class="row-action" data-action="approve-other-income" data-id="${item.id}">اعتماد</button>`:item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-other-income" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد إيرادات أخرى.</td></tr>`}</tbody></table></div></article>`;
+  const approved=sumMoney(rows.filter(item=>item.status==="معتمد"),item=>item.amount),pending=sumMoney(rows.filter(item=>item.status==="مسجل"),item=>item.amount);
+  return `${financeTabsMarkup()}<div class="finance-callout"><strong>الإيرادات الأخرى فقط</strong><span>المبيعات وقيمة الشحن المحصلة من العميل وتحويلات شركات الشحن لا تُسجل هنا مرة أخرى.</span></div><div class="stats-grid finance-summary">${statCard("إيرادات معتمدة",money(approved),"ظهرت في حركة الخزنة","＋")}${statCard("بانتظار الاعتماد",money(pending),`${rows.filter(item=>item.status==="مسجل").length} عملية`,"⌛","gold")}</div><article class="card"><div class="card-header"><div><h3>الإيرادات الأخرى</h3><p>أي دخل جديد خارج المبيعات والشحن والتحصيل.</p></div>${canAction("add-other-income")?`<button class="btn" data-action="add-other-income">＋ إضافة إيراد</button>`:""}</div><div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>النوع</th><th>الجهة الدافعة</th><th>الحساب</th><th>المبلغ</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(item.incomeType)}</td><td>${esc(item.payer||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${expenseStatusBadge(item.status)}</td><td>${item.status==="مسجل"&&canAction("approve-other-income")?`<button class="row-action" data-action="approve-other-income" data-id="${item.id}">اعتماد</button>`:item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-other-income" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد إيرادات أخرى.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function settlementSummary(settlement={}) {
@@ -3650,7 +3700,7 @@ function renderOrderCollections() {
   </article>${renderOrderCollectionCard(preview)}`;
   setTimeout(()=>document.getElementById("order-collection-code")?.focus(),0);
   return `${financeTabsMarkup()}<div class="collection-mode-tabs"><button class="tab ${orderCollectionMode==="single"?"active":""}" data-action="collection-mode" data-mode="single">تسجيل فردي</button><button class="tab ${orderCollectionMode==="batch"?"active":""}" data-action="collection-mode" data-mode="batch">إدخال مجموعة تحصيلات</button></div>${content}
-    <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td>${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+    <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th>الروابط</th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td><div class="row-actions">${item.onlineOrderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(item.onlineOrderId)}">${esc(item.onlineOrderId)}</button>`:""}${item.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(item.invoiceId)}">${esc(item.invoiceId)}</button>`:""}${item.shipmentId?`<button class="row-action" data-action="view-shipment" data-id="${esc(item.shipmentId)}">${esc(item.shipmentId)}</button>`:""}${item.settlementId?`<button class="row-action" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button>`:""}${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceSettlements() {
@@ -3670,6 +3720,7 @@ function renderFinancialReports() {
   const sales=(data.sales||[]).filter(i=>i.status!=="ملغاة"&&inRange(i));
   const shipments=(data.shipments||[]).filter(i=>!i.deletedAt&&inRange(i)&&(!financeReportFilters.carrier||[i.company,i.carrier].includes(financeReportFilters.carrier)));
   const settlements=(data.carrierSettlements||[]).filter(i=>i.approvedAt&&inRange(i)&&byAccount(i)&&(!financeReportFilters.carrier||i.company===financeReportFilters.carrier));
+  const collections=(data.orderCollections||[]).filter(i=>i.status!=="reversed"&&inRange(i)&&(!financeReportFilters.carrier||i.carrier===financeReportFilters.carrier));
   const salesTotal=sumMoney(sales,i=>i.total||0);
   const shippingCharge=sumMoney(shipments,i=>shipmentFinanceValues(i).customerShippingCharge);
   const expenseTotal=sumMoney(expenses,i=>i.amount||0);
@@ -3678,13 +3729,16 @@ function renderFinancialReports() {
   const commissions=sumMoney(expenses.filter(i=>/عمولة تحصيل/.test(i.expenseType||"")),i=>i.amount);
   const returnCosts=sumMoney(expenses.filter(i=>/مرتجع/.test(i.expenseType||"")),i=>i.amount);
   const shippingRelated=sumMoney(expenses.filter(i=>i.source==="تسوية شركة شحن"),i=>i.amount);
-  const carrierDue=sumMoney(shipments.filter(i=>shipmentStatusCode(i)==="delivered"&&!i.settlementId),i=>shipmentFinanceValues(i).expectedNetSettlement);
-  const settled=sumMoney(settlements,i=>i.actualNetSettlement||0);
+  const salesUncollected=sumMoney(sales,i=>i.remaining||0);
+  const collectedByCarriers=sumMoney(collections.filter(i=>i.status==="collected_by_carrier"),i=>i.amount||0);
+  const carrierDue=sumMoney(collections.filter(i=>i.status==="collected_by_carrier"&&!i.settlementId),i=>i.expectedNetTransfer||0);
+  const directlySettled=sumMoney(collections.filter(i=>i.status==="settled"&&!i.settlementId),i=>i.amount||0);
+  const settled=centsMoney(moneyCents(sumMoney(settlements,i=>i.actualNetSettlement||0))+moneyCents(directlySettled));
   const unresolvedDifference=sumMoney(settlements.filter(i=>Math.abs(Number(i.settlementDifference||0))>.009),i=>i.settlementDifference||0);
   const netResult=centsMoney(moneyCents(salesTotal)+moneyCents(incomeTotal)-moneyCents(expenseTotal));
   const shippingProfit=centsMoney(moneyCents(shippingCharge)-moneyCents(shippingCosts)-moneyCents(commissions)-moneyCents(returnCosts)-moneyCents(Math.max(0,shippingRelated-shippingCosts-commissions-returnCosts)));
   const movementOptions=["","دخل","مصروف","تسوية شركة شحن","تحويل بين الخزن","قيد عكسي"];
-  return `${financeTabsMarkup()}<article class="card finance-report-filters"><div class="card-header"><div><h3>فترة التقرير والفلاتر</h3><p>الفترة شاملة تاريخ البداية والنهاية بالكامل.</p></div><div class="finance-range-presets">${[["today","اليوم"],["week","هذا الأسبوع"],["month","هذا الشهر"],["custom","فترة مخصصة"]].map(([v,l])=>`<button class="tab ${financeReportFilters.preset===v?"active":""}" data-action="finance-report-preset" data-preset="${v}">${l}</button>`).join("")}</div></div><div class="form-grid four"><div class="form-field"><label>من تاريخ</label><input id="finance-report-from" type="date" value="${range.from}"></div><div class="form-field"><label>إلى تاريخ</label><input id="finance-report-to" type="date" value="${range.to}"></div><div class="form-field"><label>نوع الحركة</label><select id="finance-report-movement">${movementOptions.map(v=>`<option value="${v}" ${financeReportFilters.movementType===v?"selected":""}>${v||"كل الحركات"}</option>`).join("")}</select></div><div class="form-field"><label>الخزنة أو الحساب</label><select id="finance-report-account"><option value="">كل الحسابات</option>${activeCashAccounts().map(a=>`<option ${financeReportFilters.account===a.name?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div><div class="form-field"><label>نوع المصروف</label><select id="finance-report-expense-type"><option value="">كل الأنواع</option>${(data.expenseTypes||[]).map(t=>`<option ${financeReportFilters.expenseType===t.name?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div><div class="form-field"><label>شركة الشحن</label><select id="finance-report-carrier"><option value="">كل الشركات</option>${activeShippingCompanies().map(c=>`<option ${financeReportFilters.carrier===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div></div></article><div class="finance-callout"><strong>نتيجة الفترة ≠ التدفق النقدي</strong><span>المبيعات من الفواتير، والتحصيل من التسويات، والمصروفات من القيود المعتمدة فقط.</span></div><div class="report-grid">${statCard("مبيعات المنتجات",money(centsMoney(moneyCents(salesTotal)-moneyCents(shippingCharge))),"إجمالي الفواتير ناقص شحن العميل","▤")}${statCard("شحن محصل من العملاء",money(shippingCharge),"مجموع customerShippingCharge","▣","blue")}${statCard("إيرادات أخرى",money(incomeTotal),"إيرادات معتمدة خارج المبيعات","＋")}${statCard("تكلفة الشحن",money(shippingCosts),"مصروفات الشحن المعتمدة","−","red")}${statCard("عمولات التحصيل",money(commissions),"عمولات معتمدة","−","red")}${statCard("إجمالي المصروفات",money(expenseTotal),"المعتمد فقط","−","red")}${statCard("صافي النتيجة",money(netResult),"المبيعات + الإيرادات الأخرى − المصروفات","≋","gold")}${statCard("مستحق لدى الشركات",money(carrierDue),"مسلمة غير مسواة","⌛","blue")}${statCard("مبالغ تمت تسويتها",money(settled),"actualNetSettlement المعتمد","✓")}${statCard("فروق غير معالجة",money(unresolvedDifference),"تسويات بفروق","!","red")}${statCard("صافي نتيجة الشحن",money(shippingProfit),"شحن العميل − تكاليف الشحن","≋","gold")}</div>`;
+  return `${financeTabsMarkup()}<article class="card finance-report-filters"><div class="card-header"><div><h3>فترة التقرير والفلاتر</h3><p>الفترة شاملة تاريخ البداية والنهاية بالكامل.</p></div><div class="finance-range-presets">${[["today","اليوم"],["week","هذا الأسبوع"],["month","هذا الشهر"],["custom","فترة مخصصة"]].map(([v,l])=>`<button class="tab ${financeReportFilters.preset===v?"active":""}" data-action="finance-report-preset" data-preset="${v}">${l}</button>`).join("")}</div></div><div class="form-grid four"><div class="form-field"><label>من تاريخ</label><input id="finance-report-from" type="date" value="${range.from}"></div><div class="form-field"><label>إلى تاريخ</label><input id="finance-report-to" type="date" value="${range.to}"></div><div class="form-field"><label>نوع الحركة</label><select id="finance-report-movement">${movementOptions.map(v=>`<option value="${v}" ${financeReportFilters.movementType===v?"selected":""}>${v||"كل الحركات"}</option>`).join("")}</select></div><div class="form-field"><label>الخزنة أو الحساب</label><select id="finance-report-account"><option value="">كل الحسابات</option>${activeCashAccounts().map(a=>`<option ${financeReportFilters.account===a.name?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div><div class="form-field"><label>نوع المصروف</label><select id="finance-report-expense-type"><option value="">كل الأنواع</option>${(data.expenseTypes||[]).map(t=>`<option ${financeReportFilters.expenseType===t.name?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div><div class="form-field"><label>شركة الشحن</label><select id="finance-report-carrier"><option value="">كل الشركات</option>${activeShippingCompanies().map(c=>`<option ${financeReportFilters.carrier===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div></div></article><div class="finance-callout"><strong>نتيجة الفترة ≠ التدفق النقدي</strong><span>كل مؤشر يُقرأ من مستنده الأصلي؛ لا تُكرر المبيعات أو الشحن داخل الإيرادات الأخرى.</span></div><div class="report-grid">${statCard("مبيعات المنتجات",money(centsMoney(moneyCents(salesTotal)-moneyCents(shippingCharge))),"من فواتير البيع","▤")}${statCard("مبيعات غير محصلة",money(salesUncollected),"الرصيد المتبقي بالفواتير","⌛","gold")}${statCard("تم تحصيله لدى الشركات",money(collectedByCarriers),"لم يدخل الخزنة بعد","▣","blue")}${statCard("مستحق لدى الشركات",money(carrierDue),"صافي التحويل المتوقع","⌛","blue")}${statCard("تم تحويله فعليًا",money(settled),"تسويات وتحويلات معتمدة","✓")}${statCard("شحن محصل من العملاء",money(shippingCharge),"من الشحنات والفواتير","▣","blue")}${statCard("إيرادات أخرى",money(incomeTotal),"خارج المبيعات والشحن","＋")}${statCard("تكلفة الشحن",money(shippingCosts),"مصروفات آلية معتمدة","−","red")}${statCard("عمولات التحصيل",money(commissions),"مصروفات آلية معتمدة","−","red")}${statCard("إجمالي المصروفات",money(expenseTotal),"المعتمد فقط","−","red")}${statCard("صافي النتيجة",money(netResult),"المبيعات + الإيرادات الأخرى − المصروفات","≋","gold")}${statCard("فروق غير معالجة",money(unresolvedDifference),"تسويات بفروق","!","red")}${statCard("صافي نتيجة الشحن",money(shippingProfit),"شحن العميل − تكاليف الشحن","≋","gold")}</div>`;
 }
 
 function financeReportRange() {
@@ -4862,7 +4916,8 @@ function financeTypesModal() {
 }
 
 function newSettlementModal(item=null) {
-  openModal(item?`التسوية ${item.id}`:"تسوية تحصيل جديدة","المالية",`<form id="finance-settlement-form" data-edit-id="${item?.id||""}"><div class="form-grid"><div class="form-field"><label>شركة الشحن</label><select name="company" required>${shippingCompanyOptions(item?.company)}</select></div><div class="form-field"><label>تاريخ التحويل</label><input name="transferDate" type="date" value="${item?.transferDate||today()}"></div><div class="form-field"><label>مرجع التحويل</label><input name="transferReference" value="${esc(item?.transferReference||"")}"></div><div class="form-field"><label>الحساب المستلم</label><select name="account">${cashAccountOptions(item?.account)}</select></div><div class="form-field full"><label>أكواد التتبع — كود في كل سطر</label><textarea name="trackingCodes" rows="6" dir="ltr" placeholder="EG123456789EG">${esc((item?.trackingCodes||[]).join("\n"))}</textarea><small>سيتم حذف المسافات والتكرارات تلقائيًا، مع توضيح الأكواد غير الموجودة وغير المؤهلة.</small></div><div class="form-field"><label>المبلغ المستلم فعليًا</label><input ${numericFieldAttributes({name:"actualNetSettlement",value:item?.actualNetSettlement||0})}></div><div class="form-field"><label>خصومات أخرى</label><input ${numericFieldAttributes({name:"otherDeductions",value:item?.otherDeductions||0})}></div><div class="form-field"><label>سبب الفرق</label><select name="differenceReason"><option value="">بدون فرق</option>${["رسوم شحن إضافية","رسوم مرتجع","خصم من شركة الشحن","عمولة مختلفة","تحصيل جزئي","خطأ في قيمة الطلب","تعويض","فرق غير معروف يحتاج مراجعة","سبب آخر"].map(v=>`<option ${item?.differenceReason===v?"selected":""}>${v}</option>`).join("")}</select></div><div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(item?.notes||"")}</textarea></div></div><div class="form-actions">${item?.status&&item.status!=="مسودة"?`<span>${expenseStatusBadge(item.status)}</span>`:`<button class="btn secondary" type="submit">حفظ المسودة</button>`}${item?.id&&item.status!=="تمت التسوية"?`<button class="btn" type="button" data-action="approve-settlement" data-id="${item.id}">اعتماد التسوية</button>`:""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div></form>${item?.lines?.length?`<div class="table-wrap"><table><thead><tr><th>التتبع</th><th>الفاتورة</th><th>العميل</th><th>الحالة</th><th>التحصيل</th><th>تكلفة الشحن</th><th>العمولة</th><th>الصافي</th></tr></thead><tbody>${item.lines.map(line=>`<tr><td dir="ltr">${esc(line.trackingNumber)}</td><td>${esc(line.invoiceId||"—")}</td><td>${esc(line.customer||"—")}</td><td>${shipmentStatusBadge(data.shipments.find(s=>s.id===line.shipmentId)||{})}</td><td>${money(line.collectionAmount)}</td><td>${money(line.carrierShippingCostExpected)}</td><td>${money(line.collectionCommissionExpected)}</td><td>${money(line.expectedNetSettlement)}</td></tr>`).join("")}</tbody></table></div>`:""}`);
+  const relatedExpenses=item?.id?(data.expenses||[]).filter(expense=>expense.settlementId===item.id):[];
+  openModal(item?`التسوية ${item.id}`:"تسوية تحصيل جديدة","المالية",`<form id="finance-settlement-form" data-edit-id="${item?.id||""}"><div class="form-grid"><div class="form-field"><label>شركة الشحن</label><select name="company" required>${shippingCompanyOptions(item?.company)}</select></div><div class="form-field"><label>تاريخ التحويل</label><input name="transferDate" type="date" value="${item?.transferDate||today()}"></div><div class="form-field"><label>مرجع التحويل</label><input name="transferReference" value="${esc(item?.transferReference||"")}"></div><div class="form-field"><label>الحساب المستلم</label><select name="account">${cashAccountOptions(item?.account)}</select></div><div class="form-field full"><label>أكواد التتبع — كود في كل سطر</label><textarea name="trackingCodes" rows="6" dir="ltr" placeholder="EG123456789EG">${esc((item?.trackingCodes||[]).join("\n"))}</textarea><small>سيتم حذف المسافات والتكرارات تلقائيًا، مع توضيح الأكواد غير الموجودة وغير المؤهلة.</small></div><div class="form-field"><label>المبلغ المستلم فعليًا</label><input ${numericFieldAttributes({name:"actualNetSettlement",value:item?.actualNetSettlement||0})}></div><div class="form-field"><label>خصومات أخرى</label><input ${numericFieldAttributes({name:"otherDeductions",value:item?.otherDeductions||0})}></div><div class="form-field"><label>سبب الفرق</label><select name="differenceReason"><option value="">بدون فرق</option>${["رسوم شحن إضافية","رسوم مرتجع","خصم من شركة الشحن","عمولة مختلفة","تحصيل جزئي","خطأ في قيمة الطلب","تعويض","فرق غير معروف يحتاج مراجعة","سبب آخر"].map(v=>`<option ${item?.differenceReason===v?"selected":""}>${v}</option>`).join("")}</select></div><div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(item?.notes||"")}</textarea></div></div><div class="form-actions">${item?.status&&item.status!=="مسودة"?`<span>${expenseStatusBadge(item.status)}</span>`:`<button class="btn secondary" type="submit">حفظ المسودة</button>`}${item?.id&&item.status!=="تمت التسوية"?`<button class="btn" type="button" data-action="approve-settlement" data-id="${item.id}">اعتماد التسوية</button>`:""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div></form>${item?.lines?.length?`<div class="table-wrap"><table><thead><tr><th>التتبع</th><th>المستندات</th><th>العميل</th><th>الحالة</th><th>التحصيل</th><th>تكلفة الشحن</th><th>العمولة</th><th>الصافي</th></tr></thead><tbody>${item.lines.map(line=>`<tr><td><button class="row-action" data-modal-action="notification-view-shipment" data-id="${esc(line.shipmentId)}" dir="ltr">${esc(line.trackingNumber)}</button></td><td><div class="row-actions">${line.orderId?`<button class="row-action" data-modal-action="notification-view-invoice" data-id="${esc(line.orderId)}">${esc(line.orderId)}</button>`:""}${line.invoiceId&&line.invoiceId!==line.orderId?`<button class="row-action" data-modal-action="notification-view-invoice" data-id="${esc(line.invoiceId)}">${esc(line.invoiceId)}</button>`:""}</div></td><td>${esc(line.customer||"—")}</td><td>${shipmentStatusBadge(data.shipments.find(s=>s.id===line.shipmentId)||{})}</td><td>${money(line.collectionAmount)}</td><td>${money(line.carrierShippingCostExpected)}</td><td>${money(line.collectionCommissionExpected)}</td><td>${money(line.expectedNetSettlement)}</td></tr>`).join("")}</tbody></table></div>`:""}${relatedExpenses.length?`<div class="finance-callout"><strong>المصروفات المرتبطة</strong><span>${relatedExpenses.map(expense=>`${expense.id} — ${expense.expenseType} — ${money(expense.amount)}`).join(" · ")}</span></div>`:""}`);
   if (!canAction("approve-settlement")) modalBody.querySelector('[data-action="approve-settlement"]')?.remove();
   if (!canAction("create-settlement")) modalBody.querySelector('#finance-settlement-form button[type="submit"]')?.remove();
 }
@@ -4939,6 +4994,10 @@ function openStatementRecord(reference = "") {
   if (ref.startsWith("PUR-")) return viewPurchase(ref);
   if (ref.startsWith("RCP-") || ref.startsWith("PAY-")) return viewPartyVoucher(ref);
   if (ref.startsWith("SH-")) return viewShipment(ref);
+  if(ref.startsWith("SET-"))return newSettlementModal((data.carrierSettlements||[]).find(item=>item.id===ref));
+  if(ref.startsWith("COL-")){closeModal();financeTab="order-collections";navigate("accounting");return setTimeout(()=>document.getElementById(`collection-${CSS.escape(ref)}`)?.scrollIntoView({block:"center"}),80);}
+  if(ref.startsWith("EXP-")){closeModal();financeTab="expenses";return navigate("accounting");}
+  if(ref.startsWith("TX-"))return viewCashTransaction(ref);
   const returnDoc = (data.returns || []).find(item => item.id === ref || returnNo(item) === ref || item.returnInvoiceId === ref);
   if (returnDoc) return viewReturn(returnDoc.id);
   return toast("لم يتم العثور على المستند المرتبط بهذه الحركة.", "error");
@@ -5930,6 +5989,8 @@ modalBody.addEventListener("click", event => {
   if (!target) return;
   const action = target.dataset.modalAction;
   if (action && !requireAction(action)) return;
+  const notificationKey=target.dataset.notificationKey||target.closest("[data-notification-key]")?.dataset.notificationKey;
+  if(notificationKey&&!["notification-mark-read","notification-filter","notification-read-all"].includes(action))markNotificationRead(notificationKey);
   if (action === "dashboard-view-sale") viewSale(target.dataset.id);
   if (action === "dashboard-collect-sale") salePaymentModal(target.dataset.id);
   if (action === "dashboard-sales-search") showSalesList();
@@ -5970,6 +6031,14 @@ modalBody.addEventListener("click", event => {
     closeModal();
     navigate("reports");
   }
+  if(action==="notification-filter"){notificationFilter=target.dataset.filter;showNotificationCenter();}
+  if(action==="notification-mark-read"){markNotificationRead(target.dataset.key);showNotificationCenter();}
+  if(action==="notification-read-all"){
+    getNotificationItems().filter(item=>item.status==="unread").forEach(item=>markNotificationRead(item.key,{save:false}));
+    saveData("تحديد كل الإشعارات كمقروء","الإشعارات","all");showNotificationCenter();
+  }
+  if(action==="notification-open-collection"){closeModal();financeTab="order-collections";navigate("accounting");setTimeout(()=>document.getElementById(`collection-${CSS.escape(target.dataset.id)}`)?.scrollIntoView({block:"center"}),80);}
+  if(action==="notification-open-settlement"){closeModal();financeTab="settlements";navigate("accounting");setTimeout(()=>newSettlementModal(data.carrierSettlements.find(item=>item.id===target.dataset.id)),80);}
   if (action === "notification-refresh") showNotificationCenter();
   if (action === "start-partial-count") partialStockCountModal();
   if (action === "start-full-count") openInventoryCountForm(data.books, "كلي");
@@ -7954,6 +8023,13 @@ function deleteParty(id, kind) {
   toast("تم حذف السجل.");
 }
 
+function shipmentFinancialLinksMarkup(item) {
+  const collection=(data.orderCollections||[]).find(row=>row.shipmentId===item.id&&row.status!=="reversed");
+  const settlement=(data.carrierSettlements||[]).find(row=>row.id===(item.settlementId||collection?.settlementId));
+  const expenses=(data.expenses||[]).filter(row=>row.shipmentId===item.id&&row.status!=="ملغي");
+  return `<div class="finance-callout shipment-finance-links"><strong>الربط المالي</strong><span>التحصيل: ${collection?`${money(collection.amount)} — ${collection.status==="settled"?"تمت التسوية":"لدى شركة الشحن"}`:"غير مسجل"}${settlement?` · التسوية ${settlement.id}`:""}${expenses.length?` · ${expenses.length} مصروف مرتبط`:""}</span><div class="row-actions">${item.onlineOrderId?`<button class="row-action" data-modal-action="notification-view-order" data-id="${esc(item.onlineOrderId)}">${esc(item.onlineOrderId)}</button>`:""}${item.invoiceId||item.orderId?`<button class="row-action" data-modal-action="notification-view-invoice" data-id="${esc(item.invoiceId||item.orderId)}">${esc(item.invoiceId||item.orderId)}</button>`:""}${collection?`<button class="row-action" data-modal-action="notification-open-collection" data-id="${esc(collection.id)}">${esc(collection.id)}</button>`:""}${settlement?`<button class="row-action" data-modal-action="notification-open-settlement" data-id="${esc(settlement.id)}">${esc(settlement.id)}</button>`:""}</div></div>`;
+}
+
 function shipmentHistoryModal(id) {
   const item = data.shipments.find(row => row.id === id);
   if (!item) return toast("لم يتم العثور على الشحنة.", "error");
@@ -7980,6 +8056,7 @@ function shipmentHistoryModal(id) {
         </article>`;
       }).join("") || `<div class="empty-state"><strong>لا توجد تحديثات محفوظة بعد</strong><p>استخدم «تحديث إلكتروني» أو عدّل الحالة يدويًا.</p></div>`}
     </div>
+    ${shipmentFinancialLinksMarkup(item)}
     ${isAdmin ? `<details class="technical-details"><summary>التفاصيل التقنية للإدارة</summary><div class="metric-strip"><div class="mini-metric"><span>آخر Run</span><strong>${esc(latestShipmentTrackingRun(id)?.id || "—")}</strong></div><div class="mini-metric"><span>الحالة الداخلية</span><strong>${esc(item.normalizedStatus || "—")}</strong></div><div class="mini-metric"><span>Failure Code</span><strong>${esc(item.trackingFailureCode || "—")}</strong></div></div></details>` : ""}
     <div class="form-actions">${isTerminalShipment(item) ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="btn" type="button" disabled>تحديث إلكتروني</button>` : `<button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث إلكتروني</button>`}<button class="btn secondary" data-action="edit-shipment-status" data-id="${item.id}">تعديل الحالة</button><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
 }
@@ -8018,6 +8095,7 @@ function viewShipment(id) {
       <div class="mini-metric"><span>diagnostics</span><strong>${debugFiles.length ? `${debugFiles.length} ملفات` : "غير متاحة"}</strong></div>
     </div>
     ${lastRun || item.trackingDebug || item.trackingDiagnostics ? `<div class="alert-item ${tracking.siteBlocked ? "warning" : ""}"><div class="alert-badge ${tracking.siteBlocked ? "gold" : "blue"}">${tracking.siteBlocked ? "!" : "i"}</div><div><strong>${esc(failureMessage)}</strong><span>Screenshot: ${esc(item.trackingDebug?.screenshotFile || lastRun?.screenshotPath || "—")}</span><span>HTML: ${esc(item.trackingDebug?.htmlFile || lastRun?.htmlSnapshotPath || "—")}</span><span>JSON: ${esc(item.trackingDebug?.jsonFile || lastRun?.diagnosticsPath || "—")}</span></div></div>` : ""}
+    ${shipmentFinancialLinksMarkup(item)}
     <h3 style="margin-top:16px">Timeline التتبع</h3>
     <div class="table-wrap"><table><thead><tr><th>وقت الحدث</th><th>الحالة الأصلية</th><th>الحالة الموحدة</th><th>الموقع</th><th>المصدر</th></tr></thead><tbody>${history.map(row => `<tr><td>${dateTimeLabel(row.eventAt || row.fetchedAt)}</td><td>${esc(cleanDisplayText(row.statusText, "غير متاح", "—"))}</td><td>${esc(row.normalizedStatus || "unknown")}</td><td>${esc(cleanDisplayText(row.location, "غير متاح", "لا يوجد موقع مؤكد"))}</td><td>${esc(row.provider || "—")}</td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">لا توجد حركات تتبع محفوظة بعد. لن يتم إنشاء أحداث إلا بعد Response حقيقي مؤكد من مزود التتبع.</td></tr>`}</tbody></table></div>
     <div class="form-actions">${isTerminalShipment(item) ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="btn" type="button" disabled>تحديث التتبع الآن</button>` : `<button class="btn" data-action="update-tracking-now" data-id="${item.id}">تحديث التتبع الآن</button>`}${item.requiresComplaint ? `<button class="btn secondary" data-action="prepare-complaint" data-id="${item.id}">تجهيز شكوى</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);

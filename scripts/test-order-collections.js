@@ -66,6 +66,18 @@ async function request(path,{token,method="GET",body}={}){
   assert(accountantSettle.status===403,"accountant cannot settle into cash account");
   const accountantProof=await request("/api/finance/order-collections",{token:accountant,method:"POST",body:{trackingNumber:"QA-COL-ACCOUNTANT",amount:600,registrationType:"collected_by_carrier"}});
   assert(accountantProof.status===201&&accountantProof.body.collection.expectedCommission===5,"accountant can record carrier proof");
+  const beforeSettlement=await request("/api/db",{token:owner});
+  beforeSettlement.body.carrierSettlements=beforeSettlement.body.carrierSettlements||[];
+  beforeSettlement.body.carrierSettlements.push({id:"SET-QA-COL-LINK",company:"البريد المصري",transferDate:"2026-07-28",account:"الخزينة الرئيسية",actualNetSettlement:595,otherDeductions:0,status:"مسودة",lines:[{shipmentId:"SH-QA-COL-ACCOUNTANT",trackingNumber:"QA-COL-ACCOUNTANT",orderId:"INV-QA-COL-5",invoiceId:"INV-QA-COL-5",collectionAmount:600,carrierShippingCostExpected:0,collectionCommissionExpected:5,expectedNetSettlement:595}]});
+  const settlementDraft=await request("/api/db",{token:owner,method:"PUT",body:beforeSettlement.body});
+  assert(settlementDraft.status===200,"linked settlement draft saved");
+  const settlementApproval=await request("/api/finance/settlements/SET-QA-COL-LINK/approve",{token:owner,method:"POST",body:{}});
+  assert(settlementApproval.status===200,"linked settlement approved");
+  const linkedState=await request("/api/db",{token:owner});
+  const linkedCollection=linkedState.body.orderCollections.find(item=>item.id===accountantProof.body.collection.id);
+  assert(linkedCollection.settlementId==="SET-QA-COL-LINK"&&linkedCollection.status==="settled","collection linked to approved settlement");
+  const linkedExpenses=linkedState.body.expenses.filter(item=>item.settlementId==="SET-QA-COL-LINK");
+  assert(linkedExpenses.length===1&&linkedExpenses[0].orderId==="INV-QA-COL-5"&&linkedExpenses[0].invoiceId==="INV-QA-COL-5"&&linkedExpenses[0].cashMovementId,"automatic commission expense keeps full references");
   const zero=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-ZERO",amount:0,registrationType:"collected_by_carrier"}});
   assert(zero.status===201&&zero.body.collection.expectedCommission===0,"zero collection has zero commission");
   const cashierDenied=await request("/api/finance/order-collections",{token:cashier,method:"POST",body:{trackingNumber:"QA-COL-ZERO",amount:0}});

@@ -528,6 +528,14 @@ nav { display: grid; gap: 12px; overflow-y: auto; padding-inline: 0; }
 .notification-content { flex: 1; min-width: 0; }
 .notification-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .notification-actions .row-action { color: var(--green-800); }
+.notification-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.notification-toolbar .finance-tabs{margin:0;padding:0}
+.notification-item.unread{border-color:#f0c5c5;background:#fffafa}
+.notification-item.read{opacity:.9}
+.notification-item.resolved{background:#f7f8fa;color:var(--muted)}
+.notification-content small{display:block;margin-top:6px;color:var(--muted)}
+.notification-state{display:grid;justify-items:end;gap:7px;flex:0 0 auto}
+@media(max-width:700px){.notification-toolbar,.notification-item{align-items:stretch;flex-direction:column}.notification-state{justify-items:start}}
 .dashboard-alert-item {
   position: relative;
   align-items: center;

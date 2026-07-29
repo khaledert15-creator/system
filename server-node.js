@@ -166,6 +166,7 @@ function createOrderCollectionAtomic(db,payload,user) {
     id:nextId("COL-",next.orderCollections),sourceKey,idempotencyKey:sourceKey,
     shipmentId:shipment.id,trackingNumber,orderId:shipment.orderId||shipment.invoiceId||"",
     invoiceId:shipment.invoiceId||shipment.orderId||"",customerId:shipment.customerId||values.sale?.customerId||"",
+    onlineOrderId:shipment.onlineOrderId||values.sale?.onlineOrderId||"",
     customerName:shipment.customer||shipment.customerName||values.customer?.name||"",
     customerPhone:shipment.phone||shipment.customerPhone||values.customer?.phone||"",
     carrier:values.company,collectionDate:String(payload.collectionDate||now.slice(0,10)),
@@ -178,13 +179,17 @@ function createOrderCollectionAtomic(db,payload,user) {
   };
   next.orderCollections.push(collection);
   Object.assign(shipment,{financialCollectionStatus:registrationType,collectionId:collection.id,collectedAmount:collection.amount,collectedAt:now,collectedBy:actor.name});
+  const order=next.onlineOrders?.find(item=>item.id===shipment.onlineOrderId);
+  if(order)Object.assign(order,{collectionId:collection.id,financialCollectionStatus:registrationType,collectedAmount:collection.amount,collectedAt:now,updatedAt:now});
   if(registrationType==="settled"){
-    next.cash.push({id:nextId("TX-",next.cash),date:collection.collectionDate,type:"قبض",direction:"in",movementType:"تحصيل أوردر",account,party:values.company,amount:collection.amount,category:"تحصيل شركة شحن",collectionId:collection.id,shipmentId:shipment.id,sourceKey:`${sourceKey}:cash-in`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
+    const collectionCash={id:nextId("TX-",next.cash),date:collection.collectionDate,type:"قبض",direction:"in",movementType:"تحصيل أوردر",account,party:values.company,amount:collection.amount,category:"تحصيل شركة شحن",collectionId:collection.id,shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,sourceKey:`${sourceKey}:cash-in`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
+    next.cash.push(collectionCash);collection.cashTransactionId=collectionCash.id;
     const addExpense=(amount,type,suffix)=>{
       if(toCents(amount)<=0)return;
-      const expense={id:nextId("EXP-",next.expenses),date:collection.collectionDate,expenseType:type,amount:fromCents(toCents(amount)),account,beneficiary:values.company,source:"تحصيل أوردر",shipmentId:shipment.id,collectionId:collection.id,sourceKey:`${sourceKey}:${suffix}`,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+      const expense={id:nextId("EXP-",next.expenses),date:collection.collectionDate,expenseType:type,amount:fromCents(toCents(amount)),account,beneficiary:values.company,carrier:values.company,source:"تحصيل أوردر",shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,collectionId:collection.id,cashTransactionId:collectionCash.id,sourceKey:`${sourceKey}:${suffix}`,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
       next.expenses.push(expense);
-      next.cash.push({id:nextId("TX-",next.cash),date:collection.collectionDate,type:"صرف",direction:"out",movementType:"مصروف",account,party:values.company,amount:expense.amount,category:type,expenseId:expense.id,collectionId:collection.id,shipmentId:shipment.id,sourceKey:expense.sourceKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});
+      const expenseCash={id:nextId("TX-",next.cash),date:collection.collectionDate,type:"صرف",direction:"out",movementType:"مصروف",account,party:values.company,amount:expense.amount,category:type,expenseId:expense.id,collectionId:collection.id,shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,sourceKey:expense.sourceKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name};
+      next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
     };
     addExpense(values.expectedCommission,`عمولة تحصيل ${values.company}`,"commission");
     addExpense(values.shippingCost,`تكلفة شحن ${values.company}`,"shipping-cost");
@@ -239,6 +244,7 @@ function approveSettlementAtomic(db, settlementId, user) {
     const shipment=next.shipments.find(item=>item.id===line.shipmentId);
     if(!shipment)throw Object.assign(new Error(`الشحنة ${line.shipmentId} غير موجودة.`),{status:400});
     if(shipment.settlementId&&shipment.settlementId!==settlementId)throw Object.assign(new Error(`الشحنة ${line.trackingNumber||line.shipmentId} تمت تسويتها سابقًا.`),{status:409});
+    if(shipment.financialCollectionStatus==="settled"&&!shipment.settlementId)throw Object.assign(new Error(`الشحنة ${line.trackingNumber||line.shipmentId} دخلت الخزنة سابقًا من تحصيل مباشر.`),{status:409});
   }
   const sumCents=selector=>lines.reduce((total,line)=>total+toCents(selector(line)),0);
   const collectionCents=sumCents(line=>line.collectionAmount),shippingCents=sumCents(line=>line.carrierShippingCostActual??line.carrierShippingCostExpected),commissionCents=sumCents(line=>line.collectionCommissionActual??line.collectionCommissionExpected);
@@ -246,20 +252,26 @@ function approveSettlementAtomic(db, settlementId, user) {
   const actual=fromCents(toCents(settlement.actualNetSettlement||0)),difference=fromCents(toCents(actual)-toCents(expected));
   if(actual<0)throw Object.assign(new Error("لا يمكن اعتماد مبلغ تسوية سالب."),{status:400});
   if(Math.abs(difference)>.01&&!settlement.differenceReason)throw Object.assign(new Error("يجب تحديد سبب الفرق قبل الاعتماد."),{status:400});
-  next.cash.push({id:nextId("TX-",next.cash),date:settlement.transferDate||now.slice(0,10),type:"قبض",direction:"in",movementType:"تسوية شركة شحن",account:settlement.account,party:settlement.company,amount:actual,category:"تسوية شركة شحن",settlementId:settlementId,sourceKey:cashKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
+  const settlementCash={id:nextId("TX-",next.cash),date:settlement.transferDate||now.slice(0,10),type:"قبض",direction:"in",movementType:"تسوية شركة شحن",account:settlement.account,party:settlement.company,amount:actual,category:"تسوية شركة شحن",settlementId:settlementId,sourceKey:cashKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
+  next.cash.push(settlementCash);
   if(process.env.NODE_ENV==="test"&&process.env.FINANCE_TEST_FAIL_STAGE==="after-cash")throw Object.assign(new Error("Injected finance test failure."),{status:500});
   const addExpense=(line,amount,type,key)=>{
     if(Number(amount)<=0)return;
     if(next.expenses.some(item=>item.sourceKey===key)||next.cash.some(item=>item.sourceKey===key))throw Object.assign(new Error("اكتُشف قيد مكرر داخل التسوية."),{status:409});
-    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||now.slice(0,10),expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,settlementId,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||now.slice(0,10),expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,carrier:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,cashTransactionId:settlementCash.id,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
     next.expenses.push(expense);
-    next.cash.push({id:nextId("TX-",next.cash),date:expense.date,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:expense.amount,category:type,expenseId:expense.id,shipmentId:line.shipmentId,settlementId,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});
+    const expenseCash={id:nextId("TX-",next.cash),date:expense.date,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:expense.amount,category:type,expenseId:expense.id,shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name};
+    next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
   };
   for(const line of lines){
     addExpense(line,line.carrierShippingCostActual??line.carrierShippingCostExpected,`تكلفة شحن ${settlement.company}`,`shipment:${line.shipmentId}:settlement:${settlementId}:shipping-cost`);
     addExpense(line,line.collectionCommissionActual??line.collectionCommissionExpected,`عمولة تحصيل ${settlement.company}`,`shipment:${line.shipmentId}:settlement:${settlementId}:commission`);
     const shipment=next.shipments.find(item=>item.id===line.shipmentId);
     Object.assign(shipment,{settlementId,financialSettlementStatus:Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية",settledAt:now,settledBy:actor.name,carrierShippingCostActual:Number(line.carrierShippingCostActual??line.carrierShippingCostExpected??0),collectionCommissionActual:Number(line.collectionCommissionActual??line.collectionCommissionExpected??0),actualNetSettlement:Number(line.actualNetSettlement??0)});
+    const collection=next.orderCollections.find(item=>item.shipmentId===line.shipmentId&&item.status!=="reversed");
+    if(collection)Object.assign(collection,{settlementId,status:"settled",financialSettlementStatus:"settled",settledAt:now,settledBy:actor.name,account:settlement.account,cashTransactionId:settlementCash.id});
+    const order=next.onlineOrders?.find(item=>item.id===shipment.onlineOrderId);
+    if(order)Object.assign(order,{collectionId:collection?.id||order.collectionId||"",settlementId,financialCollectionStatus:"settled",updatedAt:now});
   }
   Object.assign(settlement,{expectedNetSettlement:expected,settlementDifference:difference,status:Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية",approvedAt:now,approvedBy:actor.name});
   next.audit.push({id:`AUD-FIN-${crypto.randomUUID()}`,date:now,createdAt:now,action:"اعتماد تسوية شركة شحن",entity:"المالية",entityId:settlementId,user:actor.name,username:actor.username,role:actor.role,reference:settlement.transferReference||"",details:`${lines.length} شحنة`});
