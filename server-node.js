@@ -123,6 +123,48 @@ function canFinance(db,user,action) {
   return actions.includes("*")||actions.includes(action);
 }
 
+function orderRole(user={}) {
+  return ({owner:"مالك",manager:"مدير",accountant:"محاسب",cashier:"كاشير",warehouse:"مخزن",shipping:"شحن"}[user.role]||user.role||"");
+}
+
+function canOrderAction(db,user={},action) {
+  const role=orderRole(user);
+  if(role==="مالك"||role==="مدير"||user.username==="owner")return true;
+  const configured=db.settings?.permissions?.users?.[user.username]?.actions||db.settings?.permissions?.roles?.[role]?.actions;
+  if(Array.isArray(configured))return configured.includes(action);
+  const defaults={
+    "كاشير":["order.quick.create","order.quick.confirm","order.quick.edit"],
+    "مخزن":["order.prepare","order.pack"],
+    "شحن":["order.shipping"]
+  };
+  return (defaults[role]||[]).includes(action);
+}
+
+function normalizeCustomerPhone(value="") {
+  const digits=String(value||"").replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/\D/g,"");
+  if(digits.startsWith("20")&&digits.length===12)return `0${digits.slice(2)}`;
+  return digits;
+}
+
+function quickOrderTotals(lines=[],shippingCost=0) {
+  let subtotal=0,discountTotal=0;
+  const computed=lines.map(line=>{
+    const qty=Math.max(1,Number(line.qty||1)),price=Math.max(0,Number(line.price||0));
+    const base=qty*price,discountValue=Math.max(0,Number(line.discount||0));
+    const discount=line.discountType==="amount"?Math.min(base,discountValue):base*Math.min(100,discountValue)/100;
+    subtotal+=base;discountTotal+=discount;
+    return {...line,qty,price,discount:discountValue,discountType:line.discountType==="amount"?"amount":"percent",lineTotal:Number((base-discount).toFixed(2))};
+  });
+  const shipping=Math.max(0,Number(shippingCost||0));
+  return {lines:computed,subtotal:Number(subtotal.toFixed(2)),discountTotal:Number(discountTotal.toFixed(2)),goods:Number((subtotal-discountTotal).toFixed(2)),shipping,total:Number((subtotal-discountTotal+shipping).toFixed(2))};
+}
+
+function appendOrderAudit(db,user,order,action,details="") {
+  const now=new Date().toISOString();
+  db.audit=db.audit||[];
+  db.audit.push({id:`AUD-ORD-${crypto.randomUUID()}`,date:now,createdAt:now,action,entity:"طلبات الأونلاين",entityId:order.id,user:user.name||user.username,username:user.username,role:orderRole(user),details});
+}
+
 function normalizeCollectionTracking(value="") {
   return String(value).trim().replace(/\s+/g,"").toUpperCase();
 }
@@ -2029,6 +2071,142 @@ const server = http.createServer(async (req, res) => {
       const token = req.headers["x-session-token"];
       if (token) sessions.delete(token);
       return send(res, 200, { ok:true });
+    }
+
+    if (route === "/api/orders/quick" && req.method === "POST") {
+      const user=sessionUser(req);
+      if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());
+      if(!canOrderAction(db,user,"order.quick.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إنشاء طلب واتساب سريع."});
+      const payload=JSON.parse(await readBody(req)||"{}"),conversationId=String(payload.chatwootConversationId||"").trim();
+      if(conversationId){
+        const found=(db.onlineOrders||[]).find(item=>item.chatwootConversationId===conversationId&&!item.deletedAt);
+        if(found)return send(res,200,{ok:true,order:found,existing:true,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }
+      const phone=normalizeCustomerPhone(payload.phone);
+      if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
+      db.customers=db.customers||[];db.onlineOrders=db.onlineOrders||[];db.books=db.books||[];
+      let customer=db.customers.find(item=>!item.deletedAt&&normalizeCustomerPhone(item.phone)===phone);
+      const now=new Date().toISOString();
+      if(!customer){
+        if(!String(payload.customerName||"").trim()||!String(payload.governorate||"").trim()||!String(payload.address||"").trim())return send(res,400,{ok:false,message:"أدخل اسم العميل والمحافظة والعنوان."});
+        customer={id:nextId("C",db.customers),name:String(payload.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),createdAt:now,updatedAt:now,deletedAt:null};
+        db.customers.push(customer);
+      }
+      const requested=Array.isArray(payload.lines)?payload.lines:[];
+      if(!requested.length)return send(res,400,{ok:false,message:"أضف كتابًا واحدًا على الأقل."});
+      const lines=[];
+      for(const line of requested){
+        const book=db.books.find(item=>item.id===line.bookId&&!item.deletedAt);
+        if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
+        const qty=Math.max(1,Number(line.qty||1));
+        if(qty>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية المتاحة من «${book.name}» هي ${book.stock}.`});
+        lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
+      }
+      const totals=quickOrderTotals(lines,payload.shippingCost);
+      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
+      writeDb(db);
+      return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/quick") && req.method === "PATCH") {
+      const user=sessionUser(req);
+      if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());
+      if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تعديل الطلب السريع."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
+      const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
+      if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
+      const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
+      const requested=Array.isArray(payload.lines)?payload.lines:[];
+      if(!requested.length)return send(res,400,{ok:false,message:"أضف كتابًا واحدًا على الأقل."});
+      const lines=[];
+      for(const line of requested){
+        const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);
+        if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
+        const qty=Math.max(1,Number(line.qty||1));
+        if(qty>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية المتاحة من «${book.name}» هي ${book.stock}.`});
+        lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
+      }
+      const totals=quickOrderTotals(lines,payload.shippingCost),now=new Date().toISOString();
+      const preparationStarted=["preparing","needs_review","awaiting_packing"].includes(order.workflowStage);
+      Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),updatedAt:now});
+      if(preparationStarted){
+        order.workflowStage="preparing";
+        order.status="قيد التجهيز";
+        order.preparedAt=null;order.preparedBy=null;
+        order.preparationChecklist=order.lines.map(line=>({bookId:line.bookId,qty:line.qty,done:false}));
+        db.notifications=db.notifications||[];
+        db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-updated-${order.id}-${Date.now()}`,title:"تم تعديل طلب بعد بدء التجهيز",description:`${order.id} — راجع قائمة الكتب المحدثة`,source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
+      }
+      appendOrderAudit(db,user,order,"تعديل طلب واتساب سريع",preparationStarted?"تم تحديث قائمة التجهيز وإعادة ضبط علاماتها":"تحديث المسودة");
+      writeDb(db);
+      return send(res,200,{ok:true,order,preparationReset:preparationStarted,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/confirm") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.confirm"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تأكيد الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.confirmedAt)return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      for(const line of order.lines||[]){const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);if(!book||Number(line.qty)>Number(book.stock||0))return send(res,409,{ok:false,code:"INSUFFICIENT_STOCK",message:`الكمية غير متاحة للصنف ${book?.name||line.bookId}.`});}
+      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"awaiting_preparation",confirmedAt:now,confirmedBy:user.name||user.username,confirmedByUsername:user.username,updatedAt:now});
+      appendOrderAudit(db,user,order,"تأكيد طلب واتساب","انتقل إلى قائمة التجهيز");writeDb(db);
+      return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/prepare/start") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية بدء التجهيز."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.preparingByUsername&&order.preparingByUsername!==user.username&&!order.preparedAt)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`بدأ ${order.preparingBy} تجهيز الطلب بالفعل.`,order});
+      if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب غير متاح للتجهيز."});
+      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"preparing",preparingBy:user.name||user.username,preparingByUsername:user.username,preparingAt:order.preparingAt||now,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      appendOrderAudit(db,user,order,"بدء تجهيز الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/prepare/checklist") && req.method === "PATCH") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تجهيز الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`الطلب محجوز لدى ${order.preparingBy||"موظف آخر"}.`});
+      const payload=JSON.parse(await readBody(req)||"{}"),doneIds=new Set(payload.doneBookIds||[]);
+      order.preparationChecklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneIds.has(line.bookId)}));order.updatedAt=new Date().toISOString();writeDb(db);
+      return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/prepare/issue") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل مشكلة تجهيز."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();Object.assign(order,{status:"يحتاج مراجعة",workflowStage:"needs_review",preparationIssue:{reason:String(payload.reason||"مشكلة في الطلب"),notes:String(payload.notes||""),createdAt:now,createdBy:user.name||user.username},updatedAt:now});
+      db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-review-${order.id}`,title:"طلب يحتاج مراجعة أثناء التجهيز",description:`${order.id} — ${order.preparationIssue.reason}`,source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
+      appendOrderAudit(db,user,order,"تسجيل مشكلة أثناء التجهيز",order.preparationIssue.reason);writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/prepare/complete") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إكمال التجهيز."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب محجوز لموظف آخر."});
+      if(!(order.preparationChecklist||[]).length||(order.preparationChecklist||[]).some(item=>!item.done))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_packing",status:"قيد التجهيز",preparedAt:now,preparedBy:user.name||user.username,updatedAt:now});appendOrderAudit(db,user,order,"اكتمال تجهيز الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/pack/complete") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تغليف الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.workflowStage!=="awaiting_packing")return send(res,409,{ok:false,message:"يجب إكمال التجهيز أولًا."});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",packedAt:now,packedBy:user.name||user.username,updatedAt:now});
+      db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} جاهز لإنشاء الشحنة`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
+      appendOrderAudit(db,user,order,"اكتمال تغليف الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/shipping/shipments/") && route.endsWith("/status") && req.method === "PATCH") {
