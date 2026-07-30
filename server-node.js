@@ -172,6 +172,21 @@ function normalizeCustomerPhone(value="") {
   return digits;
 }
 
+function quickOrderMissingCustomerFields(payload={},customer={}) {
+  const values={
+    customerName:String(payload.customerName||customer.name||"").trim(),
+    governorate:String(payload.governorate||customer.governorate||"").trim(),
+    address:String(payload.address||customer.address||"").trim()
+  };
+  return Object.entries(values).filter(([,value])=>!value).map(([field])=>field);
+}
+
+function quickOrderValidationMessage(fields=[]) {
+  const labels={customerName:"اسم العميل",governorate:"المحافظة",address:"عنوان العميل"};
+  if(fields.length===1)return fields[0]==="customerName"?"أدخل اسم العميل":fields[0]==="governorate"?"اختر المحافظة":"أدخل عنوان العميل";
+  return `أكمل الحقول التالية: ${fields.map(field=>labels[field]).join("، ")}`;
+}
+
 function quickOrderTotals(lines=[],shippingCost=0,orderDiscount=0,orderDiscountType="percent") {
   return OrderFinance.calculateOrder(lines,{shippingCost,orderDiscount,orderDiscountType});
 }
@@ -225,9 +240,9 @@ function quickOrderBookLine(db,book,line,user) {
   if(!Number.isFinite(requested))throw Object.assign(new Error("قيمة الخصم غير صالحة."),{status:400});
   const changed=requestedType!==defaultDiscountType||OrderFinance.round(requested)!==OrderFinance.round(defaultDiscount);
   if(changed&&!canOrderAction(db,user,"order.discount.override"))throw Object.assign(new Error("ليس لديك صلاحية تعديل خصم النظام."),{status:403,code:"DISCOUNT_OVERRIDE_FORBIDDEN"});
-  try{OrderFinance.calculateDiscount(qty*Number(book.price||0),requested,requestedType);}
+  try{OrderFinance.calculateDiscount(Number(book.price||0),requested,requestedType);}
   catch(error){throw Object.assign(error,{status:400,code:"INVALID_DISCOUNT"});}
-  return {bookId:book.id,qty,price:Number(book.price||0),discount:requested,discountType:requestedType,discountOverridden:changed,systemDiscount:defaultDiscount,systemDiscountType:defaultDiscountType};
+  return {bookId:book.id,qty,price:Number(book.price||0),discount:requested,discountType:requestedType,discountScope:"unit",discountOverridden:changed,systemDiscount:defaultDiscount,systemDiscountType:defaultDiscountType};
 }
 
 function reservedStock(book={}) {
@@ -2308,8 +2323,9 @@ const server = http.createServer(async (req, res) => {
       db.customers=db.customers||[];db.onlineOrders=db.onlineOrders||[];db.books=db.books||[];
       let customer=db.customers.find(item=>!item.deletedAt&&normalizeCustomerPhone(item.phone)===phone);
       const now=new Date().toISOString();
+      const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
+      if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
       if(!customer){
-        if(!String(payload.customerName||"").trim()||!String(payload.governorate||"").trim()||!String(payload.address||"").trim())return send(res,400,{ok:false,message:"أدخل اسم العميل والمحافظة والعنوان."});
         customer={id:nextId("C",db.customers),name:String(payload.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),createdAt:now,updatedAt:now,deletedAt:null};
         db.customers.push(customer);
       }
@@ -2346,6 +2362,8 @@ const server = http.createServer(async (req, res) => {
       const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
+      const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
+      if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
       const requested=Array.isArray(payload.lines)?payload.lines:[];
       if(!requested.length)return send(res,400,{ok:false,message:"أضف كتابًا واحدًا على الأقل."});
       const lines=[];

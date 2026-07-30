@@ -35,14 +35,20 @@
       const price = normalizeNumber(source.price ?? source.unitPrice ?? 0);
       if (!Number.isFinite(price) || price < 0) throw new Error(`سعر الصنف رقم ${index + 1} غير صالح.`);
       const originalTotal = round(qty * price);
-      const discount = calculateDiscount(originalTotal, source.discount ?? source.discountPercent ?? source.discountAmount ?? 0, source.discountType || (source.discountAmount != null ? "amount" : "percent"));
+      const discountScope=source.discountScope==="unit"?"unit":"line";
+      const discountBase=discountScope==="unit"?price:originalTotal;
+      const discount = calculateDiscount(discountBase, source.discount ?? source.discountPercent ?? source.discountAmount ?? 0, source.discountType || (source.discountAmount != null ? "amount" : "percent"));
+      const unitDiscountAmount=discountScope==="unit"?discount.discountAmount:round(discount.discountAmount/qty);
+      const lineDiscountAmount=discountScope==="unit"?round(discount.discountAmount*qty):discount.discountAmount;
+      const finalUnitPrice=round(price-unitDiscountAmount),lineFinalAmount=round(originalTotal-lineDiscountAmount);
       return {
         ...source, qty, price:round(price), originalTotal,
-        discount:discount.inputValue, discountType:discount.inputType,
-        discountAmount:discount.discountAmount, discountPercent:discount.discountPercent,
-        lineDiscount:discount.discountAmount, totalDiscount:discount.discountAmount,
-        finalUnitPrice:round(discount.finalAmount / qty), finalNet:discount.finalAmount,
-        lineTotal:discount.finalAmount
+        discount:discount.inputValue, discountType:discount.inputType,discountScope,
+        unitOriginalPrice:round(price),unitDiscountAmount,unitFinalPrice:finalUnitPrice,
+        discountAmount:lineDiscountAmount, discountPercent:discount.discountPercent,
+        lineDiscount:lineDiscountAmount,lineDiscountTotal:lineDiscountAmount,totalDiscount:lineDiscountAmount,
+        finalUnitPrice, lineFinalAmount, finalNet:lineFinalAmount,
+        lineTotal:lineFinalAmount
       };
     });
     const subtotalBeforeDiscount = round(computed.reduce((sum, line) => sum + line.originalTotal, 0));

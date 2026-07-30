@@ -2859,7 +2859,7 @@ function quickOrderPaymentNow(totals=quickOrderTotalsNow()) {
 
 function quickOrderLinePriceMarkup(line) {
   const hasDiscount=line.discountAmount>0;
-  return `<small>السعر للوحدة</small>${hasDiscount?`<del>${money(line.price)}</del><strong>${money(line.finalUnitPrice)} <small>بعد الخصم</small></strong><span class="quick-saving">خصم ${line.discountPercent}% · وفرت ${money(line.discountAmount)}</span>`:`<strong>${money(line.price)}</strong>`}`;
+  return `<span><small>قبل الخصم</small>${hasDiscount?`<del>${money(line.unitOriginalPrice)}</del>`:`<strong>${money(line.unitOriginalPrice)}</strong>`}<em>للنسخة</em></span><span class="${hasDiscount?"discounted":""}"><small>بعد الخصم</small><strong>${money(line.unitFinalPrice)}</strong><em>للنسخة</em></span>`;
 }
 
 function refreshQuickOrderComputedUi() {
@@ -2870,8 +2870,8 @@ function refreshQuickOrderComputedUi() {
     const discount=document.querySelector(`[data-quick-line-discount-derived="${index}"]`);
     const total=document.querySelector(`[data-quick-line-total="${index}"]`);
     if(price)price.innerHTML=quickOrderLinePriceMarkup(line);
-    if(discount)discount.textContent=`${line.discountPercent}% = ${money(line.discountAmount)}`;
-    if(total)total.textContent=money(line.originalTotal-line.discountAmount);
+    if(discount)discount.textContent=`خصم النسخة: ${money(line.unitDiscountAmount)} (${line.discountPercent}%) · إجمالي الخصم: ${money(line.lineDiscountTotal)}`;
+    if(total)total.textContent=money(line.lineFinalAmount??line.finalNet);
   });
   const values={
     books:totals.lines.length,
@@ -2909,10 +2909,10 @@ function quickPaymentStatusLabel(value) {
 function quickOrderMessage(confirmed=false) {
   const totals=quickOrderTotalsNow(),payment=quickOrderPaymentNow(totals),order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null;
   const rows=totals.lines.map((line,index)=>{
-    const book=getBook(line.bookId),unitAfter=line.qty?(line.originalTotal-line.discountAmount)/line.qty:0,hasDiscount=line.discountAmount>0;
-    const lines=[`${index+1}️⃣ ${book?.name||line.bookId}`];
-    if(line.qty>1)lines.push(`الكمية: ${line.qty}`,`السعر قبل الخصم للوحدة: ${Number(line.price).toFixed(2)} ج.م`,...(hasDiscount?[`السعر بعد الخصم للوحدة: ${unitAfter.toFixed(2)} ج.م`,`الخصم: ${line.discountPercent}% — توفير ${line.discountAmount.toFixed(2)} ج.م`]:[]),`إجمالي الصنف: ${(line.originalTotal-line.discountAmount).toFixed(2)} ج.م`);
-    else lines.push(hasDiscount?`السعر قبل الخصم: ${Number(line.price).toFixed(2)} ج.م`:`السعر: ${Number(line.price).toFixed(2)} ج.م`,...(hasDiscount?[`السعر بعد الخصم: ${unitAfter.toFixed(2)} ج.م`,`الخصم: ${line.discountPercent}% — توفير ${line.discountAmount.toFixed(2)} ج.م`]:[]));
+    const book=getBook(line.bookId),hasDiscount=line.lineDiscountTotal>0;
+    const lines=[`${index+1}️⃣ ${book?.name||line.bookId}`,`الكمية: ${line.qty}`,`السعر قبل الخصم: ${line.unitOriginalPrice.toFixed(2)} ج.م للنسخة`,`السعر بعد الخصم: ${line.unitFinalPrice.toFixed(2)} ج.م للنسخة`,`إجمالي قبل الخصم: ${line.originalTotal.toFixed(2)} ج.م`];
+    if(hasDiscount)lines.push(`خصم النسخة: ${line.unitDiscountAmount.toFixed(2)} ج.م (${line.discountPercent}%)`,`إجمالي الخصم: ${line.lineDiscountTotal.toFixed(2)} ج.م`);
+    lines.push(`الإجمالي بعد الخصم: ${line.finalNet.toFixed(2)} ج.م`);
     return lines.join("\n");
   }).join("\n\n");
   return `${confirmed?"✅ تم تأكيد طلبك من مكتبة دوت كوم":"📚 ملخص طلبك من مكتبة دوت كوم"}\n${confirmed&&order?`\n🧾 رقم الطلب: ${order.id}\n`:""}\n👤 الاسم: ${quickOrderDraft.customerName||quickOrderCustomer()?.name||"—"}\n\n📖 الكتب:\n\n${rows}\n\n────────────────\n💰 إجمالي الكتب قبل الخصم: ${totals.subtotal.toFixed(2)} ج.م\n${totals.productDiscountTotal?`🏷️ خصومات الكتب: ${totals.productDiscountTotal.toFixed(2)} ج.م\n`:""}${totals.orderDiscountAmount?`🏷️ خصم إضافي على الطلب: ${totals.orderDiscountAmount.toFixed(2)} ج.م\n`:""}${totals.discountTotal?`🏷️ إجمالي الخصم: ${totals.discountTotal.toFixed(2)} ج.م\n`:""}📚 بعد الخصم: ${totals.goods.toFixed(2)} ج.م\n${totals.shipping?`🚚 الشحن: ${totals.shipping.toFixed(2)} ج.م`:"🚚 الشحن: مجاني"}\n\n✅ إجمالي الطلب: ${totals.total.toFixed(2)} ج.م\n\n💵 طريقة الدفع: ${paymentPlanLabel()}\n💳 المدفوع: ${payment.paidAmount.toFixed(2)} ج.م\n📌 المتبقي: ${payment.remainingAmount.toFixed(2)} ج.م`;
@@ -2923,6 +2923,64 @@ function quickOrderBookResults() {
   if(!term)return "";
   const matches=(data.books||[]).filter(book=>!book.deletedAt&&normalizeSmartSearch([book.name,book.barcode,book.extraBarcode,book.sku,book.grade,book.category,book.publisher].join(" ")).includes(term)).slice(0,8);
   return `<div class="quick-book-results">${matches.map(book=>{const available=bookAvailableStock(book);return `<button type="button" class="quick-book-result" data-action="quick-order-add-book" data-id="${book.id}" ${available<=0?"disabled":""}><span><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.sku||book.id)} · ${esc(book.grade||book.category||"")}</small></span><span><b>${money(book.price)}</b><small>${available} متاح للبيع</small>${available<=Number(book.reorder||0)?badge(available?"كمية منخفضة":"غير متاح",available?"warning":"danger"):""}</span></button>`}).join("")||`<div class="empty-state compact">لا توجد نتائج مطابقة.</div>`}</div>`;
+}
+
+function quickGovernorateOptions() {
+  return EGYPT_GOVERNORATES.map((value,index)=>`<button type="button" role="option" id="quick-governorate-option-${index}" data-action="quick-order-select-governorate" data-value="${esc(value)}" aria-selected="${quickOrderDraft.governorate===value}">${esc(value)}</button>`).join("");
+}
+
+function openQuickGovernorateList(open=true) {
+  const input=document.getElementById("quick-order-governorate-search"),list=document.getElementById("quick-order-governorate-list");
+  if(!input||!list)return;
+  list.hidden=!open;input.setAttribute("aria-expanded",String(open));
+  if(open)filterQuickGovernorates(input.value);
+}
+
+function filterQuickGovernorates(query="") {
+  const term=normalizeSmartSearch(query),options=[...document.querySelectorAll("[data-action='quick-order-select-governorate']")];
+  let first=null;
+  options.forEach(option=>{const visible=!term||normalizeSmartSearch(option.dataset.value).includes(term);option.hidden=!visible;option.classList.remove("active");if(visible&&!first)first=option;});
+  if(first){first.classList.add("active");document.getElementById("quick-order-governorate-search")?.setAttribute("aria-activedescendant",first.id);}
+  else document.getElementById("quick-order-governorate-search")?.removeAttribute("aria-activedescendant");
+}
+
+function selectQuickGovernorate(value) {
+  if(!EGYPT_GOVERNORATES.includes(value))return;
+  quickOrderDraft.governorate=value;
+  const input=document.getElementById("quick-order-governorate-search");
+  if(input)input.value=value;
+  clearQuickOrderFieldError("governorate");
+  openQuickGovernorateList(false);
+  if(!quickOrderDraft.shippingManual){
+    quickOrderDraft.shippingCost=quickOrderShipping(value,quickOrderDraft.lines);
+    const shipping=document.getElementById("quick-order-shipping-cost");
+    if(shipping)shipping.value=quickOrderDraft.shippingCost||0;
+  }
+  refreshQuickOrderComputedUi();
+}
+
+function quickOrderFieldNode(field) {
+  return field==="customerName"?document.getElementById("quick-order-name"):field==="governorate"?document.getElementById("quick-order-governorate-search"):document.getElementById("quick-order-address");
+}
+
+function clearQuickOrderFieldError(field) {
+  const node=quickOrderFieldNode(field);if(!node)return;
+  node.removeAttribute("aria-invalid");node.closest(".form-field")?.classList.remove("field-error");
+}
+
+function validateQuickOrderCustomerFields() {
+  const fields=[
+    ["customerName",String(quickOrderDraft.customerName||quickOrderCustomer()?.name||"").trim(),"أدخل اسم العميل"],
+    ["governorate",String(quickOrderDraft.governorate||"").trim(),"اختر المحافظة"],
+    ["address",String(quickOrderDraft.address||"").trim(),"أدخل عنوان العميل"]
+  ];
+  fields.forEach(([field,value])=>{if(value)clearQuickOrderFieldError(field);});
+  const missing=fields.filter(([,value])=>!value);
+  if(!missing.length)return true;
+  missing.forEach(([field])=>{const node=quickOrderFieldNode(field);node?.setAttribute("aria-invalid","true");node?.closest(".form-field")?.classList.add("field-error");});
+  const first=quickOrderFieldNode(missing[0][0]);first?.scrollIntoView({behavior:"smooth",block:"center"});setTimeout(()=>first?.focus({preventScroll:true}),180);
+  toast(missing.length===1?missing[0][2]:`أكمل الحقول التالية: ${missing.map(item=>item[2].replace(/^(أدخل|اختر)\s/,"")).join("، ")}`,"error");
+  return false;
 }
 
 function renderQuickOrderScreen() {
@@ -2938,11 +2996,11 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. بيانات العميل</h3><p>ابدأ برقم الموبايل لاسترجاع البيانات المسجلة.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>تم العثور على عميل سابق: ${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:`<div class="quick-customer-insight new"><span class="quick-customer-check">+</span><div><strong>عميل جديد</strong><small>ستُحفظ بياناته مع الطلب بعد التأكيد.</small></div></div>`}
-      <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required">المحافظة</label><select id="quick-order-governorate"><option value="">اختر المحافظة</option>${EGYPT_GOVERNORATES.map(value=>`<option ${quickOrderDraft.governorate===value?"selected":""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>ابحث ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="ابحث باسم الكتاب أو الكود أو الصف أو المادة">${quickOrderBookResults()}</div>
-      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved;return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><label><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="decimal" min="1" max="${available}" value="${line.qty}"></label><div class="quick-line-price" data-quick-line-price="${index}">${quickOrderLinePriceMarkup(line)}</div><div class="quick-line-discount"><label><span>إدخال الخصم ${helpIcon("يمكن إدخاله كنسبة أو قيمة، وسيحسب النظام القيمة الأخرى تلقائيًا.","شرح الخصم")}</span><select data-quick-order-discount-type="${index}" ${canOverride?"":"disabled"}><option value="percent" ${line.discountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${line.discountType==="amount"?"selected":""}>قيمة ج.م</option></select></label><input data-quick-order-discount="${index}" inputmode="decimal" value="${line.discount||0}" ${canOverride?"":"disabled"} aria-label="قيمة الخصم"><small data-quick-line-discount-derived="${index}">${line.discountPercent}% = ${money(line.discountAmount)}</small></div><div class="quick-line-total"><small>إجمالي الصنف</small><strong data-quick-line-total="${index}">${money(line.originalTotal-line.discountAmount)}</strong></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></article>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
+      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved;return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><label><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="decimal" min="1" max="${available}" value="${line.qty}"></label><div class="quick-line-price" data-quick-line-price="${index}">${quickOrderLinePriceMarkup(line)}</div><div class="quick-line-discount"><label><span>خصم النسخة ${helpIcon("الخصم المدخل يطبق على كل نسخة، وإجمالي الخصم يتغير تلقائيًا مع الكمية.","شرح خصم النسخة")}</span><select data-quick-order-discount-type="${index}" ${canOverride?"":"disabled"}><option value="percent" ${line.discountType==="percent"?"selected":""}>نسبة % لكل نسخة</option><option value="amount" ${line.discountType==="amount"?"selected":""}>قيمة ج.م لكل نسخة</option></select></label><input data-quick-order-discount="${index}" inputmode="decimal" value="${line.discount||0}" ${canOverride?"":"disabled"} aria-label="خصم النسخة"><small data-quick-line-discount-derived="${index}">خصم النسخة: ${money(line.unitDiscountAmount)} (${line.discountPercent}%) · إجمالي الخصم: ${money(line.lineDiscountTotal)}</small></div><div class="quick-line-total"><small>إجمالي قبل الخصم</small><span>${money(line.originalTotal)}</span><small>إجمالي الصنف بعد الخصم</small><strong data-quick-line-total="${index}">${money(line.finalNet)}</strong></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></article>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
       <div class="quick-order-level-discount"><div><strong>خصم إضافي على الطلب</strong><small>مستقل عن خصومات الكتب ولا يُحتسب مرتين.</small></div><select id="quick-order-order-discount-type" ${canOverride?"":"disabled"}><option value="percent" ${quickOrderDraft.orderDiscountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${quickOrderDraft.orderDiscountType==="amount"?"selected":""}>قيمة ج.م</option></select><input id="quick-order-order-discount" inputmode="decimal" value="${quickOrderDraft.orderDiscount||0}" ${canOverride?"":"disabled"}><span data-quick-order-discount-derived>${quickOrderDraft.orderDiscountType==="amount"?`${totals.orderDiscountPercent}%`:`${money(totals.orderDiscountAmount)}`}</span></div>
     </article>
     <article class="card quick-shipping-card"><div class="card-header"><div><h3>3. الشحن للعميل</h3><p>القيمة التي ستظهر للعميل وتدخل في إجمالي الطلب والتحصيل.</p></div>${badge(quickOrderDraft.shippingManual?"قيمة يدوية":"حسب المحافظة",quickOrderDraft.shippingManual?"warning":"gray")}</div>
@@ -2999,7 +3057,7 @@ async function orderWorkflowRequest(path,{method="POST",body}={}) {
 
 function quickOrderPayload() {
   const {shippingManual,...persistedDraft}=quickOrderDraft;
-  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent"}))};
+  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
 async function saveQuickOrderDraft({silent=false}={}) {
@@ -3013,6 +3071,7 @@ async function saveQuickOrderDraft({silent=false}={}) {
 }
 
 async function saveAndConfirmQuickOrder() {
+  if(!validateQuickOrderCustomerFields())return;
   if(quickOrderDraft.savedOrderId){
     const existing=getOnlineOrder(quickOrderDraft.savedOrderId);
     if(existing?.confirmedAt)return toast("تم تأكيد هذا الطلب من قبل.");
@@ -3029,7 +3088,7 @@ function editQuickOrder(id) {
   if(order.saleId)return toast("تم إنشاء فاتورة لهذا الطلب؛ استخدم إجراءات التصحيح الحالية.","error");
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent"})),shippingCost:Number(order.shippingCost||0),shippingManual:true,paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:Number(order.shippingCost||0),shippingManual:true,paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";onlineOrdersMode="quick";renderOnlineOrders();
 }
 
@@ -5792,11 +5851,13 @@ root.addEventListener("click", event => {
     const available=bookAvailableStock(book)+ownReserved;
     if(existing){if(existing.qty>=available)return toast(`المتاح للبيع من ${book.name} هو ${available}.`,"error");existing.qty++;}
     else if(available<=0)return toast(`لا توجد كمية متاحة للبيع من ${book.name}.`,"error");
-    else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:Number(book.discount??book.saleDiscount??0),discountType:book.discountType==="amount"?"amount":"percent"});
+    else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:Number(book.discount??book.saleDiscount??0),discountType:book.discountType==="amount"?"amount":"percent",discountScope:"unit"});
     quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders();
   }
   if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderOnlineOrders(); }
   if (action === "quick-order-reset-shipping") { quickOrderDraft.shippingManual=false;quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders(); }
+  if (action === "quick-order-toggle-governorate") { const input=document.getElementById("quick-order-governorate-search");openQuickGovernorateList(input?.getAttribute("aria-expanded")!=="true");input?.focus(); }
+  if (action === "quick-order-select-governorate") selectQuickGovernorate(target.dataset.value);
   if (action === "quick-order-copy") copyQuickOrderMessage();
   if (action === "quick-order-save") saveQuickOrderDraft().then(renderOnlineOrders).catch(error=>toast(error.message,"error"));
   if (action === "quick-order-confirm") saveAndConfirmQuickOrder();
@@ -6081,6 +6142,16 @@ root.addEventListener("keydown", event => {
   if(event.target.id==="quick-order-book-search"&&event.key==="Enter"){
     event.preventDefault();const book=smartBookSearch(event.target.value,1)[0];if(book)root.querySelector(`[data-action="quick-order-add-book"][data-id="${CSS.escape(book.id)}"]`)?.click();return;
   }
+  if(event.target.id==="quick-order-governorate-search"){
+    const list=document.getElementById("quick-order-governorate-list"),visible=[...document.querySelectorAll("[data-action='quick-order-select-governorate']")].filter(option=>!option.hidden);
+    if(event.key==="Escape"){event.preventDefault();openQuickGovernorateList(false);return;}
+    if(["ArrowDown","ArrowUp"].includes(event.key)){
+      event.preventDefault();openQuickGovernorateList(true);
+      const active=visible.findIndex(option=>option.classList.contains("active")),next=event.key==="ArrowDown"?(active+1)%visible.length:(active<=0?visible.length-1:active-1);
+      visible.forEach(option=>option.classList.remove("active"));if(visible[next]){visible[next].classList.add("active");event.target.setAttribute("aria-activedescendant",visible[next].id);visible[next].scrollIntoView({block:"nearest"});}return;
+    }
+    if(event.key==="Enter"){const active=visible.find(option=>option.classList.contains("active"))||visible[0];if(active){event.preventDefault();selectQuickGovernorate(active.dataset.value);}return;}
+  }
   if (event.target.id === "omni-reply-text" && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
     if (selectedOmniConversationId) omniSendAdvanced(selectedOmniConversationId);
@@ -6152,6 +6223,9 @@ root.addEventListener("input", event => {
     return;
   }
   if(event.target.id==="quick-order-book-search"){quickOrderSearch=event.target.value;renderOnlineOrders();return;}
+  if(event.target.id==="quick-order-governorate-search"){clearQuickOrderFieldError("governorate");openQuickGovernorateList(true);filterQuickGovernorates(event.target.value);return;}
+  if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");return;}
+  if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");return;}
   if(event.target.matches("[data-quick-order-qty]")){
     const index=Number(event.target.dataset.quickOrderQty),line=quickOrderDraft.lines[index],book=getBook(line?.bookId);if(!line)return;
     const order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,ownReserved=order?.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0;
@@ -6233,8 +6307,8 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
-  const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-governorate":"governorate","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
-  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;if(event.target.id==="quick-order-governorate"&&!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(event.target.value,quickOrderDraft.lines);renderOnlineOrders();return;}
+  const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
+  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
   if(event.target.matches("[data-quick-order-discount-type]")){const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscountType)];if(line){line.discountType=event.target.value==="amount"?"amount":"percent";line.discount=0;renderOnlineOrders();}return;}
   if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderOnlineOrders();return;}
   if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderOnlineOrders();return;}
@@ -7661,7 +7735,7 @@ function convertOnlineOrderToSale(id, options = {}) {
     saleOperationType: "طلب أونلاين",
     payment: order.paymentMethod, paymentStatus:paymentSummary.paymentStatus, subtotal: totals.subtotal, subtotalBeforeDiscount:totals.subtotalBeforeDiscount, productDiscountTotal:totals.productDiscountTotal, orderDiscount:totals.orderDiscountAmount, discount: totals.discountTotal, subtotalAfterDiscount:totals.goods, shipping: totals.shipping, total: grandTotal,
     paid, paidAmount:paid, remaining: paymentSummary.remainingAmount, remainingAmount:paymentSummary.remainingAmount, status: "معتمدة", pointsAwarded: 0,
-    lines: totals.lines.map(line => ({ bookId: line.bookId, productId: line.bookId, qty: line.qty, quantity: line.qty, price: line.price, originalPrice:line.price, originalTotal:line.originalTotal, unitSellingPrice: line.finalUnitPrice, finalUnitPrice:line.finalUnitPrice, totalSellingPrice: line.finalNet, finalNet:line.finalNet, discount:line.discountPercent, discountPercent:line.discountPercent, discountAmount:line.discountAmount, discountType:line.discountType })),
+    lines: totals.lines.map(line => ({ bookId: line.bookId, productId: line.bookId, qty: line.qty, quantity: line.qty, price: line.price, originalPrice:line.price, originalTotal:line.originalTotal, unitOriginalPrice:line.unitOriginalPrice, unitSellingPrice: line.finalUnitPrice, unitFinalPrice:line.unitFinalPrice, finalUnitPrice:line.finalUnitPrice, totalSellingPrice: line.finalNet, finalNet:line.finalNet, discount:line.discountPercent, discountPercent:line.discountPercent, discountAmount:line.discountAmount, unitDiscountAmount:line.unitDiscountAmount, lineDiscountTotal:line.lineDiscountTotal, discountType:line.discountType, discountScope:line.discountScope })),
     onlineOrderId: order.id,
     customerSnapshot: customerSnapshot(customer, order),
     createdByUserId: actor.userId, createdByName: actor.name, createdByUsername: actor.username, createdByRole: actor.role,
