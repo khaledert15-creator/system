@@ -174,6 +174,7 @@ let batchShippingPreviewRows = [];
 const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
+let quickOrderContextRender = false;
 let shippingQuickFilter = "";
 let recordFocusTimer = null;
 let shipmentRefreshTimer = null;
@@ -1740,10 +1741,14 @@ function normalizeSmartSearch(value) {
     .trim();
 }
 
-function normalizeArabicNumericText(value = "") {
+function normalizeArabicDigits(value = "") {
   return String(value)
     .replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
-    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
+}
+
+function normalizeArabicNumericText(value = "") {
+  return normalizeArabicDigits(value)
     .replace(/[٫،]/g, ".")
     .replace(/٬/g, "")
     .replace(/[−–—]/g, "-")
@@ -3003,6 +3008,46 @@ function validateQuickOrderCustomerFields() {
   return false;
 }
 
+function quickOrderFieldIdentity(element) {
+  if(!(element instanceof HTMLElement)||!root.contains(element))return "";
+  if(element.id)return `#${CSS.escape(element.id)}`;
+  for(const name of ["quickOrderQty","quickOrderDiscount","quickOrderDiscountType"]){
+    if(element.dataset[name]!==undefined)return `[data-${name.replace(/[A-Z]/g,letter=>`-${letter.toLowerCase()}`)}="${CSS.escape(element.dataset[name])}"]`;
+  }
+  return "";
+}
+
+function renderQuickOrderPreservingContext({focusSelector=""}={}) {
+  const active=document.activeElement,selector=focusSelector||quickOrderFieldIdentity(active);
+  const selection=active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement
+    ? {start:active.selectionStart,end:active.selectionEnd,direction:active.selectionDirection}
+    : null;
+  const scroll={x:window.scrollX,y:window.scrollY};
+  quickOrderContextRender=true;
+  renderOnlineOrders();
+  quickOrderContextRender=false;
+  requestAnimationFrame(()=>{
+    window.scrollTo(scroll.x,scroll.y);
+    const next=selector?document.querySelector(selector):null;
+    if(next instanceof HTMLElement){
+      next.focus({preventScroll:true});
+      if(selection&&(next instanceof HTMLInputElement||next instanceof HTMLTextAreaElement)){
+        const length=next.value.length;
+        next.setSelectionRange(Math.min(selection.start??length,length),Math.min(selection.end??length,length),selection.direction||"none");
+      }
+    }
+    window.scrollTo(scroll.x,scroll.y);
+  });
+}
+
+function refreshQuickOrderBookResults() {
+  const wrap=document.getElementById("quick-order-book-search")?.closest(".quick-book-search");
+  if(!wrap)return;
+  wrap.querySelector(".quick-book-results")?.remove();
+  const markup=quickOrderBookResults();
+  if(markup)wrap.insertAdjacentHTML("beforeend",markup);
+}
+
 function renderQuickOrderScreen() {
   const customer=quickOrderCustomer();
   if(customer&&!quickOrderDraft.customerId)Object.assign(quickOrderDraft,{customerId:customer.id,customerName:customer.name,governorate:customer.governorate||"",city:customer.city||"",address:customer.address||"",alternativePhone:customer.alternativePhone||""});
@@ -3010,7 +3055,7 @@ function renderQuickOrderScreen() {
   let totals,payment;
   try{totals=quickOrderTotalsNow();payment=quickOrderPaymentNow(totals);}catch(error){totals=OrderFinance.calculateOrder([]);payment=OrderFinance.calculatePayment(0,0);setTimeout(()=>toast(error.message,"error"),0);}
   const confirmed=Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt),canOverride=canAction("order.discount.override"),canReceive=canAction("order.payment.receive"),customerInsight=quickOrderCustomerInsight(customer);
-  setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus(),0);
+  if(!quickOrderContextRender)setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
   return `${workflowModeTabs("quick")}
   <div class="section-title"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>طلب واتساب سريع</h2><p>سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل.</p></div>${confirmed?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
   <div class="quick-order-layout"><div class="quick-order-main">
@@ -3077,7 +3122,7 @@ async function orderWorkflowRequest(path,{method="POST",body}={}) {
 
 function quickOrderPayload() {
   const {shippingManual,...persistedDraft}=quickOrderDraft;
-  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
+  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
 async function saveQuickOrderDraft({silent=false}={}) {
@@ -3208,7 +3253,7 @@ function shipReadyOrderModal(id) {
 }
 
 async function submitReadyOrderShipment(orderId,payload,{silent=false}={}) {
-  const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/ship`,{body:payload});
+  const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(normalizeArabicDigits(orderId))}/ship`,{body:{...payload,trackingNumber:normalizeArabicDigits(payload.trackingNumber||payload.tracking||"")}});
   if(!silent)toast(`تم شحن ${orderId} بنجاح`);
   return result;
 }
@@ -5756,6 +5801,23 @@ document.addEventListener("focusin", event => {
 }, true);
 document.addEventListener("input", event => {
   const input = event.target;
+  if(input instanceof HTMLInputElement&&(
+    input.dataset.normalizeDigits==="true"||
+    ["numeric","decimal","tel"].includes(input.getAttribute("inputmode")||"")||
+    ["quick-order-phone","quick-order-alt-phone","quick-shipping-order-code","quick-shipping-tracking"].includes(input.id)||
+    ["tracking","trackingNumber","phone","alternativePhone"].includes(input.name)
+  )){
+    const before=input.value,normalized=normalizeArabicDigits(before);
+    if(before!==normalized){
+      const start=input.selectionStart,end=input.selectionEnd,direction=input.selectionDirection;
+      input.value=normalized;
+      if(start!==null&&end!==null)input.setSelectionRange(
+        normalizeArabicDigits(before.slice(0,start)).length,
+        normalizeArabicDigits(before.slice(0,end)).length,
+        direction||"none"
+      );
+    }
+  }
   if (!configureNumericInput(input)) return;
   const normalized = sanitizeNumericInputValue(input);
   if (input.value === normalized) return;
@@ -5857,6 +5919,8 @@ async function reverseOrderCollection(id) {
 root.addEventListener("click", event => {
   const target = event.target.closest("[data-action], [data-view-jump], [data-party-tab]");
   if (!target) return;
+  if(target instanceof HTMLButtonElement&&target.type!=="submit")event.preventDefault();
+  if(target instanceof HTMLButtonElement&&target.hasAttribute("data-action")&&!target.hasAttribute("type"))event.preventDefault();
   if (target.dataset.viewJump) return navigate(target.dataset.viewJump);
   if (target.dataset.partyTab) {
     partyTab = target.dataset.partyTab;
@@ -5894,10 +5958,10 @@ root.addEventListener("click", event => {
     if(existing){if(existing.qty>=available)return toast(`المتاح للبيع من ${book.name} هو ${available}.`,"error");existing.qty++;}
     else if(available<=0)return toast(`لا توجد كمية متاحة للبيع من ${book.name}.`,"error");
     else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:Number(book.discount??book.saleDiscount??0),discountType:book.discountType==="amount"?"amount":"percent",discountScope:"unit"});
-    quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders();
+    quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderQuickOrderPreservingContext({focusSelector:"#quick-order-book-search"});
   }
-  if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderOnlineOrders(); }
-  if (action === "quick-order-reset-shipping") { quickOrderDraft.shippingManual=false;quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders(); }
+  if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderQuickOrderPreservingContext(); }
+  if (action === "quick-order-reset-shipping") { quickOrderDraft.shippingManual=false;quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderQuickOrderPreservingContext(); }
   if (action === "quick-order-toggle-governorate") { const input=document.getElementById("quick-order-governorate-search");openQuickGovernorateList(input?.getAttribute("aria-expanded")!=="true");input?.focus(); }
   if (action === "quick-order-select-governorate") selectQuickGovernorate(target.dataset.value);
   if (action === "quick-order-copy") copyQuickOrderMessage();
@@ -6260,25 +6324,33 @@ root.addEventListener("submit", async event => {
 
 root.addEventListener("input", event => {
   if(event.target.id==="quick-order-phone"){
+    event.target.value=normalizeArabicDigits(event.target.value);
+    const previousCustomerId=quickOrderDraft.customerId;
     quickOrderDraft.phone=event.target.value;
-    if(normalizePhone(event.target.value).length===11){quickOrderDraft.customerId="";renderOnlineOrders();}
+    const matchedCustomer=quickOrderCustomer();
+    if(normalizePhone(event.target.value).length===11&&(matchedCustomer?.id||"")!==previousCustomerId){
+      quickOrderDraft.customerId="";
+      renderQuickOrderPreservingContext();
+    }
     return;
   }
-  if(event.target.id==="quick-order-book-search"){quickOrderSearch=event.target.value;renderOnlineOrders();return;}
+  if(event.target.id==="quick-order-book-search"){quickOrderSearch=event.target.value;refreshQuickOrderBookResults();return;}
   if(event.target.id==="quick-order-governorate-search"){clearQuickOrderFieldError("governorate");openQuickGovernorateList(true);filterQuickGovernorates(event.target.value);return;}
   if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");return;}
   if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");return;}
   if(event.target.matches("[data-quick-order-qty]")){
+    event.target.value=normalizeArabicNumericText(event.target.value).replace(/[^0-9]/g,"");
     const index=Number(event.target.dataset.quickOrderQty),line=quickOrderDraft.lines[index],book=getBook(line?.bookId);if(!line)return;
     const order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,ownReserved=order?.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0;
     const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=1){line.qty=Math.max(1,Math.min(bookAvailableStock(book)+ownReserved,Math.trunc(parsed)));refreshQuickOrderComputedUi();}return;
   }
   if(event.target.matches("[data-quick-order-discount]")){
+    event.target.value=normalizeArabicNumericText(event.target.value);
     const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscount)],parsed=OrderFinance.normalizeNumber(event.target.value);if(line&&Number.isFinite(parsed)&&parsed>=0){const previous=line.discount;line.discount=parsed;try{if(!refreshQuickOrderComputedUi())line.discount=previous;}catch(error){line.discount=previous;}}return;
   }
-  if(event.target.id==="quick-order-paid-amount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.paidAmount;quickOrderDraft.paidAmount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.paidAmount=previous;}return;}
-  if(event.target.id==="quick-order-order-discount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.orderDiscount;quickOrderDraft.orderDiscount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.orderDiscount=previous;}return;}
-  if(event.target.id==="quick-order-shipping-cost"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){quickOrderDraft.shippingCost=parsed;quickOrderDraft.shippingManual=true;refreshQuickOrderComputedUi();}return;}
+  if(event.target.id==="quick-order-paid-amount"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.paidAmount;quickOrderDraft.paidAmount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.paidAmount=previous;}return;}
+  if(event.target.id==="quick-order-order-discount"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.orderDiscount;quickOrderDraft.orderDiscount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.orderDiscount=previous;}return;}
+  if(event.target.id==="quick-order-shipping-cost"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){quickOrderDraft.shippingCost=parsed;quickOrderDraft.shippingManual=true;refreshQuickOrderComputedUi();}return;}
   if(event.target.id==="order-collection-history-search"){orderCollectionSearch=event.target.value;return renderAccounting();}
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
@@ -6351,10 +6423,10 @@ root.addEventListener("change", event => {
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
   if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
-  if(event.target.matches("[data-quick-order-discount-type]")){const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscountType)];if(line){line.discountType=event.target.value==="amount"?"amount":"percent";line.discount=0;renderOnlineOrders();}return;}
-  if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderOnlineOrders();return;}
-  if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderOnlineOrders();return;}
-  if(event.target.id==="quick-order-payment-confirmed"){quickOrderDraft.paymentConfirmed=event.target.checked;renderOnlineOrders();return;}
+  if(event.target.matches("[data-quick-order-discount-type]")){const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscountType)];if(line){line.discountType=event.target.value==="amount"?"amount":"percent";line.discount=0;renderQuickOrderPreservingContext();}return;}
+  if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderQuickOrderPreservingContext();return;}
+  if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderQuickOrderPreservingContext();return;}
+  if(event.target.id==="quick-order-payment-confirmed"){quickOrderDraft.paymentConfirmed=event.target.checked;renderQuickOrderPreservingContext();return;}
   if(event.target.id==="quick-order-cash-account"){quickOrderDraft.cashAccountId=event.target.value;return;}
   const index = Number(event.target.dataset.index);
   if(event.target.id==="order-collection-type"){
