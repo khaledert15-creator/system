@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const net = require("net");
 const os = require("os");
 const { spawn } = require("child_process");
+const OrderFinance = require("./app/order-finance.js");
 
 const ROOT = __dirname;
 const APP_ROOT = path.join(ROOT, "app");
@@ -158,7 +159,7 @@ function canOrderAction(db,user={},action) {
   const configured=db.settings?.permissions?.users?.[user.username]?.actions||db.settings?.permissions?.roles?.[role]?.actions;
   if(Array.isArray(configured))return configured.includes(action);
   const defaults={
-    "كاشير":["order.quick.create","order.quick.confirm","order.quick.edit"],
+    "كاشير":["order.quick.create","order.quick.confirm","order.quick.edit","order.payment.receive"],
     "مخزن":["order.prepare","order.pack"],
     "شحن":["order.shipping"]
   };
@@ -171,17 +172,62 @@ function normalizeCustomerPhone(value="") {
   return digits;
 }
 
-function quickOrderTotals(lines=[],shippingCost=0) {
-  let subtotal=0,discountTotal=0;
-  const computed=lines.map(line=>{
-    const qty=Math.max(1,Number(line.qty||1)),price=Math.max(0,Number(line.price||0));
-    const base=qty*price,discountValue=Math.max(0,Number(line.discount||0));
-    const discount=line.discountType==="amount"?Math.min(base,discountValue):base*Math.min(100,discountValue)/100;
-    subtotal+=base;discountTotal+=discount;
-    return {...line,qty,price,discount:discountValue,discountType:line.discountType==="amount"?"amount":"percent",lineTotal:Number((base-discount).toFixed(2))};
+function quickOrderTotals(lines=[],shippingCost=0,orderDiscount=0,orderDiscountType="percent") {
+  return OrderFinance.calculateOrder(lines,{shippingCost,orderDiscount,orderDiscountType});
+}
+
+function confirmedOrderPayments(db,orderId) {
+  return Array.isArray(db.orderPayments)
+    ? db.orderPayments.filter(item=>item.orderId===orderId&&item.status!=="reversed"&&item.confirmed!==false)
+    : [];
+}
+
+function applyQuickOrderPayment(db,order,payload,user) {
+  const payments=confirmedOrderPayments(db,order.id);
+  const alreadyPaid=OrderFinance.round(payments.reduce((sum,item)=>sum+Number(item.amount||0),0));
+  const requested=OrderFinance.normalizeNumber(payload.paidAmount||0);
+  const wantsReceipt=payload.paymentConfirmed===true&&requested>0;
+  if(!Number.isFinite(requested)||requested<0)throw Object.assign(new Error("المبلغ المدفوع غير صالح."),{status:400});
+  if(wantsReceipt&&!canOrderAction(db,user,"order.payment.receive"))throw Object.assign(new Error("ليس لديك صلاحية تسجيل استلام دفعة."),{status:403});
+  if(wantsReceipt&&alreadyPaid>0&&OrderFinance.round(requested)!==alreadyPaid)throw Object.assign(new Error("توجد دفعة مؤكدة بالفعل. استخدم إجراء التحصيل أو العكس المالي بدل تسجيلها مرة ثانية."),{status:409,code:"PAYMENT_ALREADY_RECORDED"});
+  const intendedPaid=wantsReceipt?requested:alreadyPaid;
+  const payment=OrderFinance.calculatePayment(order.total,intendedPaid);
+  if(wantsReceipt&&alreadyPaid===0){
+    const sourceKey=`quick-order-payment:${order.id}:advance`;
+    db.orderPayments=Array.isArray(db.orderPayments)?db.orderPayments:[];
+    db.cash=Array.isArray(db.cash)?db.cash:[];
+    if(db.orderPayments.some(item=>item.sourceKey===sourceKey&&item.status!=="reversed"))throw Object.assign(new Error("تم تسجيل هذه الدفعة من قبل."),{status:409,code:"DUPLICATE_PAYMENT"});
+    const accountId=String(payload.cashAccountId||"").trim();
+    const account=(db.cashAccounts||[]).find(item=>item.id===accountId&&item.active!==false);
+    if(!account)throw Object.assign(new Error("اختر خزنة أو حسابًا لاستلام المبلغ."),{status:400});
+    const now=new Date().toISOString(),receiptId=`PAY-${crypto.randomUUID()}`;
+    const receipt={id:receiptId,sourceKey,idempotencyKey:sourceKey,orderId:order.id,invoiceId:"",customerId:order.customerId,amount:payment.paidAmount,paymentMethod:String(payload.receiptMethod||payload.paymentMethod||"كاش"),cashAccountId:account.id,cashAccountName:account.name,confirmed:true,status:"confirmed",receivedBy:user.name||user.username,receivedByUsername:user.username,receivedAt:now,source:"quick_order"};
+    db.orderPayments.push(receipt);
+    db.cash.push({id:nextId("TX-",db.cash),date:now.slice(0,10),type:"قبض",direction:"in",locked:true,account:account.name,party:order.customerName,amount:receipt.amount,category:"دفعة طلب",orderId:order.id,paymentId:receipt.id,sourceKey:`${sourceKey}:cash`,note:`دفعة مقدمة للطلب ${order.id}`,createdAt:now,createdBy:receipt.receivedBy});
+    appendOrderAudit(db,user,order,"تسجيل دفعة مؤكدة",`${receipt.amount} · ${account.name}`);
+    order.paymentReceiptId=receipt.id;
+  }
+  Object.assign(order,{
+    paymentPlan:payload.paymentPlan||order.paymentPlan||"cash_on_delivery",
+    paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",
+    paidAmount:payment.paidAmount,remainingAmount:payment.remainingAmount,remaining:payment.remainingAmount,
+    amountDueAtDelivery:payment.amountDueAtDelivery,paymentStatus:payment.paymentStatus
   });
-  const shipping=Math.max(0,Number(shippingCost||0));
-  return {lines:computed,subtotal:Number(subtotal.toFixed(2)),discountTotal:Number(discountTotal.toFixed(2)),goods:Number((subtotal-discountTotal).toFixed(2)),shipping,total:Number((subtotal-discountTotal+shipping).toFixed(2))};
+  return payment;
+}
+
+function quickOrderBookLine(db,book,line,user) {
+  const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
+  const defaultDiscountType=book.discountType==="amount"?"amount":"percent";
+  const defaultDiscount=Math.max(0,Number(book.discount??book.saleDiscount??0));
+  const requestedType=line.discountType==="amount"?"amount":"percent";
+  const requested=OrderFinance.normalizeNumber(line.discount??defaultDiscount);
+  if(!Number.isFinite(requested))throw Object.assign(new Error("قيمة الخصم غير صالحة."),{status:400});
+  const changed=requestedType!==defaultDiscountType||OrderFinance.round(requested)!==OrderFinance.round(defaultDiscount);
+  if(changed&&!canOrderAction(db,user,"order.discount.override"))throw Object.assign(new Error("ليس لديك صلاحية تعديل خصم النظام."),{status:403,code:"DISCOUNT_OVERRIDE_FORBIDDEN"});
+  try{OrderFinance.calculateDiscount(qty*Number(book.price||0),requested,requestedType);}
+  catch(error){throw Object.assign(error,{status:400,code:"INVALID_DISCOUNT"});}
+  return {bookId:book.id,qty,price:Number(book.price||0),discount:requested,discountType:requestedType,discountOverridden:changed,systemDiscount:defaultDiscount,systemDiscountType:defaultDiscountType};
 }
 
 function reservedStock(book={}) {
@@ -352,7 +398,16 @@ function createOrderCollectionAtomic(db,payload,user) {
   next.orderCollections.push(collection);
   Object.assign(shipment,{financialCollectionStatus:registrationType,collectionId:collection.id,collectedAmount:collection.amount,collectedAt:now,collectedBy:actor.name});
   const order=next.onlineOrders?.find(item=>item.id===shipment.onlineOrderId);
-  if(order)Object.assign(order,{collectionId:collection.id,financialCollectionStatus:registrationType,collectedAmount:collection.amount,collectedAt:now,updatedAt:now});
+  const sale=values.sale;
+  if(sale){
+    const previousPaid=Number(sale.paidAmount??sale.paid??0),summary=OrderFinance.calculatePayment(Number(sale.total||0),Math.min(Number(sale.total||0),previousPaid+collection.amount));
+    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
+  }
+  if(order){
+    const confirmed=confirmedOrderPayments(next,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
+    const summary=OrderFinance.calculatePayment(Number(order.total||0),Math.min(Number(order.total||0),confirmed+collection.amount));
+    Object.assign(order,{collectionId:collection.id,financialCollectionStatus:registrationType,collectedAmount:collection.amount,collectedAt:now,paidAmount:summary.paidAmount,remainingAmount:summary.remainingAmount,remaining:summary.remainingAmount,paymentStatus:summary.paymentStatus,amountDueAtDelivery:summary.remainingAmount,updatedAt:now});
+  }
   if(registrationType==="settled"){
     const collectionCash={id:nextId("TX-",next.cash),date:collection.collectionDate,type:"قبض",direction:"in",movementType:"تحصيل أوردر",account,party:values.company,amount:collection.amount,category:"تحصيل شركة شحن",collectionId:collection.id,shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,sourceKey:`${sourceKey}:cash-in`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
     next.cash.push(collectionCash);collection.cashTransactionId=collectionCash.id;
@@ -2220,12 +2275,16 @@ const server = http.createServer(async (req, res) => {
       for(const line of requested){
         const book=db.books.find(item=>item.id===line.bookId&&!item.deletedAt);
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
-        const qty=Math.max(1,Number(line.qty||1));
+        const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
         if(qty>availableStock(book))return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)}.`});
-        lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
+        try{lines.push(quickOrderBookLine(db,book,line,user));}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       }
-      const totals=quickOrderTotals(lines,payload.shippingCost);
-      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      let totals;
+      try{totals=quickOrderTotals(lines,payload.shippingCost,payload.orderDiscount,payload.orderDiscountType);}catch(error){return send(res,400,{ok:false,code:"INVALID_ORDER_TOTALS",message:error.message});}
+      if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
+      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+      if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
       writeDb(db);
       return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
@@ -2248,15 +2307,22 @@ const server = http.createServer(async (req, res) => {
       for(const line of requested){
         const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
-        const qty=Math.max(1,Number(line.qty||1));
+        const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
         const ownReserved=aggregateOrderLines(activeReservation(order)?.lines||[]).get(book.id)||0;
         if(qty>availableStock(book)+ownReserved)return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)+ownReserved}.`});
-        lines.push({bookId:book.id,qty,price:Number(book.price||0),discount:Math.max(0,Number(line.discount||0)),discountType:line.discountType==="amount"?"amount":"percent"});
+        try{lines.push(quickOrderBookLine(db,book,line,user));}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       }
-      const totals=quickOrderTotals(lines,payload.shippingCost),now=new Date().toISOString();
+      let totals;
+      try{totals=quickOrderTotals(lines,payload.shippingCost,payload.orderDiscount,payload.orderDiscountType);}catch(error){return send(res,400,{ok:false,code:"INVALID_ORDER_TOTALS",message:error.message});}
+      if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
+      const now=new Date().toISOString();
       const preparationStarted=["preparing","needs_review","awaiting_packing"].includes(order.workflowStage);
+      const paidBefore=confirmedOrderPayments(db,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
+      if(paidBefore>totals.total)return send(res,409,{ok:false,code:"PAID_EXCEEDS_NEW_TOTAL",message:"القيمة الجديدة للطلب أقل من المبلغ المدفوع. راجع الاسترداد أو المعالجة المالية قبل الحفظ."});
       if(order.confirmedAt)reserveOrderInventory(db,order,user,lines);
-      Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),updatedAt:now});
+      Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:String(payload.notes||""),updatedAt:now});
+      try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+      if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       if(preparationStarted){
         order.workflowStage="preparing";
         order.status="قيد التجهيز";
@@ -2289,6 +2355,7 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"تم إنشاء فاتورة للطلب؛ استخدم إجراء إلغاء الفاتورة الحالي."});
       if(order.status==="ملغي")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(confirmedOrderPayments(db,order.id).length)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"يوجد مبلغ مدفوع على الطلب. يجب تنفيذ Refund / Reversal مالي قبل الإلغاء، ولن يتم حذف الإيصال."});
       const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();
       releaseOrderInventory(db,order,user,String(payload.reason||"إلغاء الطلب"));
       Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});

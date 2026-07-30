@@ -75,6 +75,8 @@ function runtimeMaterializedPayload(source) {
   const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "database.json"), "utf8"));
   legacy.books.forEach(book => delete book.reservedStock);
   FINANCE_KEYS.forEach(key => delete legacy[key]);
+  delete legacy.orderPayments;
+  legacy.onlineOrders.forEach(order => ["paymentPlan","paymentStatus","paidAmount","remainingAmount","amountDueAtDelivery","paymentReceiptId"].forEach(key => delete order[key]));
   const dbPath = path.join(temp, "data", "database.json");
   fs.writeFileSync(dbPath, JSON.stringify(legacy, null, 2));
   const initialHash = sha(fs.readFileSync(dbPath));
@@ -92,6 +94,7 @@ function runtimeMaterializedPayload(source) {
     let db = (await request(base, "/api/db", { token })).body;
     assert(db.books.every(book => !hasOwn(book, "reservedStock")), "load and read do not materialize reservedStock");
     assert(FINANCE_KEYS.every(key => !hasOwn(db, key)), "load and read do not materialize finance arrays");
+    assert(!hasOwn(db,"orderPayments")&&db.onlineOrders.every(order=>!hasOwn(order,"paidAmount")&&!hasOwn(order,"paymentStatus")),"load and read do not materialize payment fields");
 
     const noOp = runtimeMaterializedPayload(db);
     let result = await request(base, "/api/db", { token, method:"PUT", body:noOp });
@@ -99,6 +102,7 @@ function runtimeMaterializedPayload(source) {
     db = (await request(base, "/api/db", { token })).body;
     assert(db.books.every(book => !hasOwn(book, "reservedStock")), "no-op save strips runtime-only reservedStock defaults");
     assert(FINANCE_KEYS.every(key => !hasOwn(db, key)), "no-op save strips runtime-only finance defaults");
+    assert(!hasOwn(db,"orderPayments")&&db.onlineOrders.every(order=>!hasOwn(order,"paidAmount")&&!hasOwn(order,"paymentStatus")),"no-op save does not materialize payment fields");
     assert(sha(fs.readFileSync(dbPath)) === initialHash, "no-op save preserves database bytes and SHA-256");
 
     const customerId = db.customers[0].id;
@@ -111,6 +115,7 @@ function runtimeMaterializedPayload(source) {
     assert(db.customers.find(item => item.id === customerId).name === `${oldName} QA`, "unrelated customer field is the intended change");
     assert(db.books.every(book => !hasOwn(book, "reservedStock")), "unrelated save does not materialize reservedStock");
     assert(FINANCE_KEYS.every(key => !hasOwn(db, key)), "unrelated save does not materialize finance arrays");
+    assert(!hasOwn(db,"orderPayments")&&db.onlineOrders.every(order=>!hasOwn(order,"paidAmount")&&!hasOwn(order,"paymentStatus")),"unrelated save does not materialize payment fields");
 
     const book = db.books.find(item => Number(item.stock || 0) >= 3);
     assert(Boolean(book), "legacy reservation fixture has stock");
