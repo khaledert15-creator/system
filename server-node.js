@@ -332,6 +332,50 @@ function appendOrderAudit(db,user,order,action,details="") {
   db.audit.push({id:`AUD-ORD-${crypto.randomUUID()}`,date:now,createdAt:now,action,entity:"طلبات الأونلاين",entityId:order.id,user:user.name||user.username,username:user.username,role:orderRole(user),details});
 }
 
+function shippingOrderInvoice(db, order) {
+  return (db.sales||[]).find(sale=>!sale.deletedAt&&(sale.id===order.saleId||sale.onlineOrderId===order.id))||null;
+}
+
+function shipmentForOnlineOrder(db, order) {
+  return (db.shipments||[]).find(shipment=>!shipment.deletedAt&&(shipment.id===order.shipmentId||shipment.onlineOrderId===order.id))||null;
+}
+
+function createReadyOrderShipment(db,order,payload,user) {
+  if(!order||order.deletedAt)throw Object.assign(new Error("الطلب غير موجود."),{status:404,code:"ORDER_NOT_FOUND"});
+  const existing=shipmentForOnlineOrder(db,order);
+  if(existing)throw Object.assign(new Error(`تم شحن ${order.id} بالفعل — ${existing.trackingNumber||existing.tracking||existing.id}.`),{status:409,code:"ORDER_ALREADY_SHIPPED",shipment:existing});
+  if(order.workflowStage!=="awaiting_shipping"||!order.preparedAt)throw Object.assign(new Error("الطلب غير جاهز للشحن."),{status:409,code:"ORDER_NOT_READY"});
+  const sale=shippingOrderInvoice(db,order);
+  if(!sale)throw Object.assign(new Error("يجب إنشاء فاتورة الطلب قبل الشحن."),{status:409,code:"INVOICE_REQUIRED"});
+  const trackingNumber=normalizeTrackingNumber(payload.trackingNumber||payload.tracking||"");
+  if(!trackingNumber||!isValidTrackingNumber(trackingNumber))throw Object.assign(new Error("أدخل كود تتبع صالحًا."),{status:400,code:"INVALID_TRACKING"});
+  const duplicate=(db.shipments||[]).find(shipment=>!shipment.deletedAt&&normalizeTrackingNumber(shipment.trackingNumber||shipment.tracking)===trackingNumber);
+  if(duplicate)throw Object.assign(new Error("كود التتبع مستخدم في شحنة أخرى."),{status:409,code:"TRACKING_ALREADY_USED",shipmentId:duplicate.id});
+  const company=String(payload.company||payload.carrier||"").trim();
+  const registered=(db.shippingCompanies||[]).find(item=>!item.deletedAt&&item.active!==false&&item.name===company);
+  if(!registered)throw Object.assign(new Error("اختر شركة شحن مسجلة وفعالة."),{status:400,code:"INVALID_CARRIER"});
+  const now=new Date().toISOString(),payment=OrderFinance.calculatePayment(Number(order.total||sale.total||0),Number(order.paidAmount??sale.paidAmount??sale.paid??0));
+  const snapshot=sale.customerSnapshot||{};
+  const shipment={
+    id:nextId("SH-",db.shipments||[]),orderId:sale.id,invoiceId:sale.id,onlineOrderId:order.id,
+    company,carrier:company,carrierCode:/البريد المصري|egypt post/i.test(company)?"EGYPT_POST":"",
+    tracking:trackingNumber,trackingNumber,trackingEnabled:/البريد المصري|egypt post/i.test(company),
+    trackingProvider:/البريد المصري|egypt post/i.test(company)?db.settings?.tracking?.providerName||"":"",
+    customerId:sale.customerId||order.customerId||"",customer:snapshot.name||order.customerName||"",customerName:snapshot.name||order.customerName||"",
+    phone:snapshot.phone||order.phone||"",customerPhone:snapshot.phone||order.phone||"",
+    governorate:snapshot.governorate||order.governorate||"",city:snapshot.city||order.city||"",address:snapshot.address||order.address||"",
+    cost:Math.max(0,Number(OrderFinance.normalizeNumber(payload.cost)||0)),productsValue:Math.max(0,Number(sale.total||order.total||0)-Number(sale.shipping||order.shippingCost||0)),
+    customerShippingCharge:Number(sale.shipping||order.shippingCost||0),collectionAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,
+    status:"تم الشحن",currentStatus:"تم الشحن",normalizedStatus:"shipped",shippingStatus:"shipped",
+    shippedAt:String(payload.shippedAt||now),shippedBy:user.name||user.username,createdAt:now,updatedAt:now,updated:now,deletedAt:null
+  };
+  db.shipments=db.shipments||[];db.shipments.unshift(shipment);
+  Object.assign(sale,{shipmentId:shipment.id,shippingCost:shipment.cost,updatedAt:now});
+  Object.assign(order,{shipmentId:shipment.id,tracking:trackingNumber,trackingNumber,status:"تم الشحن",workflowStage:"shipped",shippedAt:shipment.shippedAt,shippedBy:user.name||user.username,shippedByUsername:user.username,amountDueAtDelivery:payment.remainingAmount,updatedAt:now});
+  appendOrderAudit(db,user,order,"تأكيد شحن الطلب",`${company} · ${trackingNumber}`);
+  return shipment;
+}
+
 function normalizeCollectionTracking(value="") {
   return String(value).trim().replace(/\s+/g,"").toUpperCase();
 }
@@ -2298,6 +2342,7 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
+      if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,code:"REOPEN_PREPARATION_REQUIRED",message:"تم تجهيز هذا الطلب بالفعل. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار."});
       const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
@@ -2316,7 +2361,7 @@ const server = http.createServer(async (req, res) => {
       try{totals=quickOrderTotals(lines,payload.shippingCost,payload.orderDiscount,payload.orderDiscountType);}catch(error){return send(res,400,{ok:false,code:"INVALID_ORDER_TOTALS",message:error.message});}
       if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
       const now=new Date().toISOString();
-      const preparationStarted=["preparing","needs_review","awaiting_packing"].includes(order.workflowStage);
+      const preparationStarted=["preparing","needs_review"].includes(order.workflowStage);
       const paidBefore=confirmedOrderPayments(db,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
       if(paidBefore>totals.total)return send(res,409,{ok:false,code:"PAID_EXCEEDS_NEW_TOTAL",message:"القيمة الجديدة للطلب أقل من المبلغ المدفوع. راجع الاسترداد أو المعالجة المالية قبل الحفظ."});
       if(order.confirmedAt)reserveOrderInventory(db,order,user,lines);
@@ -2370,7 +2415,8 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.preparingByUsername&&order.preparingByUsername!==user.username&&!order.preparedAt)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`بدأ ${order.preparingBy} تجهيز الطلب بالفعل.`,order});
       if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب غير متاح للتجهيز."});
-      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"preparing",preparingBy:user.name||user.username,preparingByUsername:user.username,preparingAt:order.preparingAt||now,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      const previousDone=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)]));
+      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"preparing",preparingBy:user.name||user.username,preparingByUsername:user.username,preparingAt:order.preparingAt||now,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:previousDone.get(line.bookId)||false})),updatedAt:now});
       appendOrderAudit(db,user,order,"بدء تجهيز الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
@@ -2400,7 +2446,10 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب محجوز لموظف آخر."});
       if(!(order.preparationChecklist||[]).length||(order.preparationChecklist||[]).some(item=>!item.done))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
-      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_packing",status:"قيد التجهيز",preparedAt:now,preparedBy:user.name||user.username,updatedAt:now});appendOrderAudit(db,user,order,"اكتمال تجهيز الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+      if(order.preparedAt&&order.workflowStage==="awaiting_shipping")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",status:"تم التجهيز",preparedAt:order.preparedAt||now,preparedBy:order.preparedBy||user.name||user.username,preparedByUsername:order.preparedByUsername||user.username,packedAt:order.packedAt||now,packedBy:order.packedBy||user.name||user.username,updatedAt:now});
+      db.notifications=db.notifications||[];if(!db.notifications.some(item=>item.key===`order-shipping-${order.id}`))db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} تم تجهيزه وتغليفه وهو جاهز للشحن`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
+      appendOrderAudit(db,user,order,"تم التجهيز — جاهز للشحن");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/pack/complete") && req.method === "POST") {
@@ -2411,6 +2460,39 @@ const server = http.createServer(async (req, res) => {
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",packedAt:now,packedBy:user.name||user.username,updatedAt:now});
       db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} جاهز لإنشاء الشحنة`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
       appendOrderAudit(db,user,order,"اكتمال تغليف الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/prepare/reopen") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إعادة فتح التجهيز."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});
+      if(!order.preparedAt&&!["awaiting_packing","awaiting_shipping"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب لم يكتمل تجهيزه بعد."});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز","إعادة مراجعة محتويات الطرد");writeDb(db);
+      return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/ship") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt),payload=JSON.parse(await readBody(req)||"{}");
+      try{const shipment=createReadyOrderShipment(db,order,payload,user);writeDb(db);return send(res,201,{ok:true,order,shipment,revision:dbRevision()});}
+      catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message,shipmentId:error.shipmentId});}
+    }
+
+    if (route === "/api/orders/shipping/batch" && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلبات."});
+      const payload=JSON.parse(await readBody(req)||"{}"),rows=Array.isArray(payload.rows)?payload.rows:[],results=[];
+      for(const row of rows){
+        const order=(db.onlineOrders||[]).find(item=>item.id===String(row.orderId||"").trim()&&!item.deletedAt);
+        try{const shipment=createReadyOrderShipment(db,order,{...row,company:row.company||payload.company},user);results.push({orderId:order.id,trackingNumber:shipment.trackingNumber,ok:true,shipmentId:shipment.id});}
+        catch(error){results.push({orderId:String(row.orderId||""),trackingNumber:normalizeTrackingNumber(row.trackingNumber||""),ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message});}
+      }
+      if(results.some(row=>row.ok))writeDb(db);
+      return send(res,200,{ok:true,results,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/shipping/shipments/") && route.endsWith("/status") && req.method === "PATCH") {

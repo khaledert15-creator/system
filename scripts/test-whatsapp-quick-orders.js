@@ -59,9 +59,9 @@ async function request(path,{token,method="GET",body}={}){
   result=await request(`/api/orders/${orderId}/prepare/checklist`,{token:warehouse,method:"PATCH",body:{doneBookIds:payload.lines.map(line=>line.bookId)}});
   assert(result.status===200&&result.body.order.preparationChecklist.every(item=>item.done),"all preparation items checked");
   result=await request(`/api/orders/${orderId}/prepare/complete`,{token:warehouse,method:"POST"});
-  assert(result.status===200&&result.body.order.workflowStage==="awaiting_packing","order moved to packing");
-  result=await request(`/api/orders/${orderId}/pack/complete`,{token:warehouse,method:"POST"});
-  assert(result.status===200&&result.body.order.workflowStage==="awaiting_shipping","order moved to shipping");
+  assert(result.status===200&&result.body.order.workflowStage==="awaiting_shipping"&&result.body.order.preparedAt,"completed preparation moved directly to ready shipping");
+  result=await request(`/api/orders/${orderId}/prepare/start`,{token:warehouse,method:"POST"});
+  assert(result.status===409,"ready order cannot start preparation again");
   const finalDb=(await request("/api/db",{token:owner})).body;
   assert(finalDb.audit.filter(item=>item.entityId===orderId).length>=6,"workflow actions recorded in the audit log");
   assert(finalDb.notifications.some(item=>item.entityId===orderId&&item.title.includes("مراجعة")),"customer-service review notification created");

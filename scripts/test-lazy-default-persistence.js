@@ -73,6 +73,9 @@ function runtimeMaterializedPayload(source) {
   fs.copyFileSync(path.join(ROOT, "server-node.js"), path.join(temp, "server-node.js"));
   fs.mkdirSync(path.join(temp, "data"), { recursive:true });
   const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "database.json"), "utf8"));
+  // Build a true pre-reservation legacy fixture even when the developer's ignored
+  // local QA database contains newer active-reservation orders.
+  legacy.onlineOrders = (legacy.onlineOrders || []).filter(order => order.inventoryReservation?.status !== "active");
   legacy.books.forEach(book => delete book.reservedStock);
   FINANCE_KEYS.forEach(key => delete legacy[key]);
   delete legacy.orderPayments;
