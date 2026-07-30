@@ -2789,26 +2789,46 @@ function renderSaleInvoice() {
   setTimeout(() => document.getElementById("sale-book-search")?.focus(), 30);
 }
 
-const ONLINE_ORDER_STATUSES = ["مسودة","طلب جديد","قيد التجهيز","يحتاج مراجعة","تم التجهيز","تم إنشاء الفاتورة","لم يتم الشحن بعد","تم الشحن","تم إنشاء الشحنة","خرج للتوصيل","تم التسليم","مرتجع","ملغي"];
+const ONLINE_ORDER_STATUSES = ["new","preparing","ready","shipped","delivered","cancelled"];
 const INVOICE_READY_ORDER_STATUSES = ["قيد التجهيز","تم التجهيز"];
 const SHIPMENT_READY_ORDER_STATUSES = ["تم إنشاء الفاتورة","لم يتم الشحن بعد","تم إنشاء الشحنة","خرج للتوصيل","تم التسليم","مرتجع"];
 
 function onlineOrderQuickFilterLabel(filter = onlineOrderQuickFilter) {
   return ({
-    new: "طلبات جديدة",
+    new: "جديد",
     preparing: "قيد التجهيز",
-    shipping: "في الشحن",
-    delivered: "تم التسليم"
+    ready: "جاهز للشحن",
+    shipped: "تم الشحن",
+    delivered: "تم التسليم",
+    cancelled: "ملغي / مرتجع"
   })[filter] || "";
+}
+
+function onlineOrderWorkflowStage(order={}) {
+  if(order.workflowStage==="cancelled"||order.status==="ملغي")return "cancelled";
+  if(order.workflowStage==="returned"||order.status==="مرتجع")return "cancelled";
+  if(order.workflowStage==="delivered"||order.status==="تم التسليم")return "delivered";
+  if(order.workflowStage==="shipped"||order.shipmentId||["تم الشحن","تم إنشاء الشحنة","خرج للتوصيل"].includes(order.status))return "shipped";
+  if(order.workflowStage==="awaiting_shipping"||Boolean(order.preparedAt))return "ready";
+  if(["preparing","needs_review"].includes(order.workflowStage))return "preparing";
+  return "new";
+}
+
+function onlineOrderWorkflowLabel(order={}) {
+  const stage=onlineOrderWorkflowStage(order);
+  if(order.workflowStage==="needs_review")return "يحتاج مراجعة";
+  if(stage==="cancelled")return order.status==="مرتجع"||order.workflowStage==="returned"?"مرتجع":"ملغي";
+  return ({new:"طلب جديد",preparing:"جاري التجهيز",ready:"جاهز للشحن",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
+}
+
+function onlineOrderWorkflowBadge(order={}) {
+  const stage=onlineOrderWorkflowStage(order);
+  return badge(onlineOrderWorkflowLabel(order),stage==="cancelled"||order.workflowStage==="needs_review"?"danger":stage==="new"||stage==="ready"?"warning":stage==="delivered"?"":"gray");
 }
 
 function onlineOrderMatchesQuickFilter(order, filter = onlineOrderQuickFilter) {
   if (!filter) return true;
-  if (filter === "new") return order.status === "طلب جديد";
-  if (filter === "preparing") return order.status === "قيد التجهيز";
-  if (filter === "shipping") return ["تم إنشاء الشحنة", "خرج للتوصيل"].includes(order.status);
-  if (filter === "delivered") return order.status === "تم التسليم";
-  return true;
+  return onlineOrderWorkflowStage(order)===filter;
 }
 
 function applyOnlineOrderQuickFilter(stat) {
@@ -3114,8 +3134,17 @@ async function openPreparationOrder(id,start=false) {
     if(start)await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/start`);
     const order=getOnlineOrder(id);if(!order)return;
     const doneMap=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)])),checklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneMap.get(line.bookId)||false}));
-    openModal(`تجهيز ${order.id}`,"قائمة التجهيز",`<div class="preparation-owner"><strong>${esc(order.customerName)}</strong><span>${order.source==="whatsapp"?"واتساب":"الموقع"} · بدأ ${esc(order.preparingBy||currentUser?.name||"")}</span></div><div class="preparation-source-note">الكتب والكميات معروضة مباشرة من الطلب الأصلي · آخر تحديث ${arabicDateTimeLabel(order.updatedAt||order.createdAt)}</div><div class="preparation-checklist">${checklist.map(item=>{const book=getBook(item.bookId);return `<label class="choice-card"><input type="checkbox" data-preparation-book="${item.bookId}" ${item.done?"checked":""}><span><strong>${esc(book?.name||item.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · الكمية ${item.qty}</small></span></label>`}).join("")}</div>${order.preparationIssue?`<div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>${esc(order.preparationIssue.reason)}</strong><span>${esc(order.preparationIssue.notes||"")}</span></div></div>`:""}<div class="form-actions"><button class="btn" data-action="prepare-order-complete" data-id="${order.id}" ${(checklist.length&&!checklist.some(item=>!item.done))?"":"disabled"}>تم التجهيز — جاهز للشحن</button><button class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${order.id}">مشكلة في التجهيز</button></div>`);
+    openModal(`تجهيز ${order.id}`,"قائمة التجهيز",`<div class="preparation-owner"><strong>${esc(order.customerName)}</strong><span>${order.source==="whatsapp"?"واتساب":"الموقع"} · بدأ ${esc(order.preparingBy||currentUser?.name||"")}</span></div><div class="preparation-source-note">الكتب والكميات معروضة مباشرة من الطلب الأصلي · آخر تحديث ${arabicDateTimeLabel(order.updatedAt||order.createdAt)}</div><div class="preparation-checklist">${checklist.map(item=>{const book=getBook(item.bookId);return `<label class="choice-card"><input type="checkbox" data-preparation-book="${item.bookId}" ${item.done?"checked":""}><span><strong>${esc(book?.name||item.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · الكمية ${item.qty}</small></span></label>`}).join("")}</div>${order.preparationIssue?`<div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>${esc(order.preparationIssue.reason)}</strong><span>${esc(order.preparationIssue.notes||"")}</span></div></div>`:""}<div class="form-actions"><button class="btn" data-action="prepare-order-finish-choice" data-id="${order.id}" ${(checklist.length&&!checklist.some(item=>!item.done))?"":"disabled"}>إنهاء التجهيز</button><button class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${order.id}">مشكلة في التجهيز</button></div>`);
   }catch(error){toast(error.message,"error");}
+}
+
+function finishPreparationModal(id) {
+  const order=getOnlineOrder(id);if(!order)return;
+  const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  openModal(`إنهاء تجهيز ${order.id}`,"اختر الخطوة التالية",`<div class="finish-preparation-options">
+    <button type="button" class="finish-preparation-card preferred" data-action="prepare-order-complete" data-id="${order.id}"><span class="finish-option-icon">✓</span><span><strong>جاهز للشحن لاحقًا</strong><small>الخيار المعتاد: ينقل الطلب إلى قائمة «جاهز للشحن» دون إنشاء شحنة الآن.</small></span></button>
+    <form id="prepare-and-ship-form" data-order-id="${order.id}" class="finish-preparation-card direct"><span class="finish-option-icon">↗</span><div><strong>تجهيز وشحن مباشر</strong><small>ينشئ الفاتورة تلقائيًا عند الحاجة ثم يسجل الشحنة مرة واحدة.</small><div class="form-grid two"><div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions(company)}</select></div><div class="form-field"><label class="required">كود التتبع</label><input name="trackingNumber" dir="ltr" required></div></div><button class="btn secondary" type="submit">تأكيد التجهيز والشحن</button></div></form>
+  </div><div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>`);
 }
 
 function preparationIssueModal(id) {
@@ -3192,40 +3221,52 @@ function renderOnlineOrders() {
   const active = data.onlineOrders.filter(order => !order.deletedAt);
   const visible = active.filter(order => onlineOrderMatchesQuickFilter(order));
   const quickLabel = onlineOrderQuickFilterLabel();
+  const count=stage=>active.filter(order=>onlineOrderWorkflowStage(order)===stage).length;
   root.innerHTML = `
     ${workflowModeTabs("orders")}
-    <div class="section-title"><div><h2>طلبات الأونلاين</h2><p>من استلام الطلب حتى الفاتورة والشحن والتسليم.</p></div><button class="btn" data-action="add-online-order">＋ طلب جديد</button></div>
-    <div class="stats-grid">
-      ${statCard("طلبات جديدة", active.filter(o => o.status === "طلب جديد").length, "اضغط لعرض الطلبات الجديدة", "●", "red", "", "online-orders:new")}
-      ${statCard("قيد التجهيز", active.filter(o => o.status === "قيد التجهيز").length, "اضغط لعرض الجاهزة للفاتورة", "▤", "gold", "", "online-orders:preparing")}
-      ${statCard("في الشحن", active.filter(o => ["تم إنشاء الشحنة","خرج للتوصيل"].includes(o.status)).length, "اضغط لعرض الشحنات الجارية", "▣", "blue", "", "online-orders:shipping")}
-      ${statCard("تم التسليم", active.filter(o => o.status === "تم التسليم").length, "اضغط لعرض الطلبات المكتملة", "✓", "", "", "online-orders:delivered")}
+    <div class="section-title"><div><span class="eyebrow">السجل الرئيسي</span><h2>كل طلبات الأونلاين</h2><p>كل طلب يظل هنا منذ إنشائه وحتى التسليم أو الإلغاء.</p></div><button class="btn" data-action="add-online-order">＋ طلب جديد</button></div>
+    <div class="order-stage-filters" role="group" aria-label="فلترة الطلبات حسب المرحلة">
+      ${[["","الكل",active.length],["new","جديد",count("new")],["preparing","قيد التجهيز",count("preparing")],["ready","جاهز للشحن",count("ready")],["shipped","تم الشحن",count("shipped")],["delivered","تم التسليم",count("delivered")],["cancelled","ملغي / مرتجع",count("cancelled")]].map(([value,label,total])=>`<button class="${onlineOrderQuickFilter===value?"active":""}" data-action="online-order-stat" data-stat="online-orders:${value||"all"}"><span>${label}</span><b>${total}</b></button>`).join("")}
     </div>
     <article class="card">
       ${quickLabel ? `<div class="alert-item" style="margin-bottom:12px"><div class="alert-badge blue">↥</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>يمكنك فتح أي طلب أو تعديله من الجدول بالأسفل.</span></div><button class="row-action" data-action="online-order-stat" data-stat="online-orders:all">عرض كل الطلبات</button></div>` : ""}
-      <div class="toolbar"><div class="search"><input id="online-order-search" placeholder="بحث برقم الطلب أو العميل أو الهاتف أو التتبع"></div><select id="online-order-status" class="filter-select"><option value="">كل الحالات</option>${ONLINE_ORDER_STATUSES.map(status => `<option>${status}</option>`).join("")}</select></div>
+      <div class="toolbar"><div class="search"><input id="online-order-search" placeholder="بحث برقم الطلب أو الفاتورة أو العميل أو الهاتف أو التتبع"></div><button class="btn ghost compact" data-action="online-order-stat" data-stat="online-orders:all">إعادة الضبط</button></div>
       <div class="table-wrap" id="online-orders-table">${onlineOrdersTable(visible)}</div>
     </article>`;
 }
 
+function onlineOrderPrimaryAction(order) {
+  const stage=onlineOrderWorkflowStage(order);
+  if(stage==="new"&&!order.confirmedAt)return `<button class="btn compact" data-action="confirm-online-order" data-id="${order.id}">تأكيد الطلب</button>`;
+  if(stage==="new"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-start" data-id="${order.id}">بدء التجهيز</button>`;
+  if(stage==="preparing"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-open" data-id="${order.id}">${order.workflowStage==="needs_review"?"مراجعة الطلب":"فتح التجهيز"}</button>`;
+  if(stage==="ready")return order.saleId?`<button class="btn compact" data-action="ship-ready-order" data-id="${order.id}">تم الشحن</button>`:`<button class="btn compact" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`;
+  if(stage==="shipped"&&order.shipmentId)return `<button class="btn compact" data-action="create-order-shipment" data-id="${order.id}">فتح الشحنة</button>`;
+  return `<button class="btn ghost compact" data-action="view-online-order" data-id="${order.id}">عرض الطلب</button>`;
+}
+
+function onlineOrderMoreActions(order) {
+  const terminal=["delivered","cancelled"].includes(onlineOrderWorkflowStage(order));
+  return `<details class="table-actions-menu order-actions-more"><summary class="row-action">⋯ المزيد</summary><div class="table-actions-popover">
+    <button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل الطلب</button>
+    ${order.source==="whatsapp"&&canAction("order.quick.edit")&&!order.saleId&&!terminal?`<button class="row-action" data-action="edit-quick-order" data-id="${order.id}">تعديل الطلب</button>`:""}
+    ${order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">عرض الفاتورة</button>`:""}
+    ${order.preparedAt&&!order.shipmentId?`<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة فتح للتجهيز</button>`:""}
+    ${!order.saleId&&!terminal&&canAction("order.quick.edit")?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء الطلب</button>`:""}
+  </div></details>`;
+}
+
 function onlineOrdersTable(list) {
-  return `<table><thead><tr><th>الطلب</th><th>العميل</th><th>العنوان</th><th>المصدر / الدفع</th><th>الإجمالي</th><th>الشحن</th><th>الحالة</th><th></th></tr></thead><tbody>
+  return `<table class="online-orders-master-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المحافظة</th><th>القطع</th><th>الإجمالي / الدفع</th><th>الحالة</th><th>وقت الإنشاء</th><th>الخطوة التالية</th></tr></thead><tbody>
     ${list.slice().reverse().map(order => `<tr data-record-type="online-order" data-record-id="${order.id}">
-      <td><strong>${order.id}</strong><br><span class="muted">${fmtDate(order.date || order.createdAt)}</span></td>
+      <td><strong>${order.id}</strong>${order.saleId?`<br><span class="muted">${esc(order.saleId)}</span>`:""}</td>
       <td>${esc(order.customerName)}<br><span dir="ltr" class="muted">${esc(order.phone)}</span></td>
-      <td>${esc(order.governorate)}، ${esc(order.city)}<br><span class="muted">${esc(order.address)}</span></td>
-      <td>${order.source==="whatsapp"?badge("واتساب","success"):esc(order.source||"الموقع")}<br><span class="muted">${esc(order.paymentMethod)}</span></td>
-      <td class="money">${money(order.total || 0)}</td>
-      <td>${order.tracking ? `<strong>${esc(order.tracking)}</strong>` : "—"}</td>
-      <td>${badge(order.status, ["مرتجع","ملغي"].includes(order.status) ? "danger" : order.status === "طلب جديد" ? "warning" : "")}</td>
-      <td><div class="row-actions">
-        <button class="row-action" data-action="view-online-order" data-id="${order.id}">عرض</button>
-        ${order.preparedAt&&!order.shipmentId?`<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة فتح للتجهيز</button>`:order.source==="whatsapp"&&canAction("order.quick.edit")&&!order.saleId?`<button class="row-action" data-action="edit-quick-order" data-id="${order.id}">تعديل سريع</button>`:`<button class="row-action" data-action="edit-online-order" data-id="${order.id}">تعديل</button>`}
-        ${!order.confirmedAt&&!order.saleId&&!["ملغي","تم التسليم"].includes(order.status)&&canAction("order.quick.confirm")?`<button class="row-action" data-action="confirm-online-order" data-id="${order.id}">تأكيد وحجز</button>`:""}
-        ${order.saleId ? `<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">عرض الفاتورة</button>` : `<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء فاتورة من الطلب</button>`}
-        ${order.shipmentId ? `<button class="row-action" data-action="create-order-shipment" data-id="${order.id}">تم الشحن · ${esc(order.tracking||"عرض الشحنة")}</button>` : order.workflowStage==="awaiting_shipping"&&order.saleId?`<button class="row-action" data-action="ship-ready-order" data-id="${order.id}">تم الشحن</button>`:`<button class="row-action" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`}
-        ${!order.saleId&&!["ملغي","تم التسليم"].includes(order.status)&&canAction("order.quick.edit")?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}
-      </div></td>
+      <td>${esc(order.governorate||"—")}<br><span class="muted">${esc(order.city||"")}</span></td>
+      <td><strong>${(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0)}</strong></td>
+      <td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)} · متبقي ${money(Math.max(0,Number(order.total||0)-Number(order.paidAmount||0)))}</span></td>
+      <td>${onlineOrderWorkflowBadge(order)}${order.tracking?`<small class="order-tracking" dir="ltr">${esc(order.tracking)}</small>`:""}</td>
+      <td><span class="order-created-time">${arabicDateTimeLabel(order.createdAt||order.date)}</span></td>
+      <td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td>
     </tr>`).join("") || `<tr><td colspan="8" class="text-center muted">لا توجد طلبات أونلاين.</td></tr>`}
   </tbody></table>`;
 }
@@ -5706,6 +5747,7 @@ document.addEventListener("click", event => {
   }
   if(action==="approve-settlement")financeConfirmation({title:"اعتماد التسوية؟",description:"سيتم تسجيل المبلغ في الخزنة وإنشاء مصروفات الشحن وعمولة التحصيل تلقائيًا. تأكد من المبالغ قبل المتابعة.",confirmLabel:"اعتماد التسوية",onConfirm:()=>approveCarrierSettlement(target.dataset.id)});
   if(action==="prepare-order-issue")preparationIssueModal(target.dataset.id);
+  if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
   if(action==="prepare-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/complete`);closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast("تم التجهيز — الطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
   if(action==="pack-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/pack/complete`);closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم التغليف والطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
 });
@@ -6870,6 +6912,26 @@ modalBody.addEventListener("submit", async event => {
     try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/prepare/issue`,{body:formData});closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم إيقاف الطلب وإرساله لخدمة العملاء للمراجعة.");}catch(error){toast(error.message,"error");}
     return;
   }
+  if(form.id==="prepare-and-ship-form"){
+    const button=form.querySelector('button[type="submit"]');button.disabled=true;
+    try{
+      const orderId=form.dataset.orderId;
+      await orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/prepare/complete`);
+      let order=getOnlineOrder(orderId);
+      if(!order.saleId){
+        const sale=convertOnlineOrderToSale(orderId,{print:false,askShipping:false,keepModal:true});
+        if(!sale)throw new Error("تعذر إنشاء فاتورة الطلب تلقائيًا.");
+        await saveQueue;
+        await reloadRemoteData();
+        order=getOnlineOrder(orderId);
+      }
+      if(!order?.saleId)throw new Error("وصل الطلب إلى جاهز للشحن، لكن تعذر ربط الفاتورة.");
+      shippingSessionCompany=formData.company;
+      await submitReadyOrderShipment(orderId,{company:formData.company,trackingNumber:formData.trackingNumber});
+      closeModal();onlineOrdersMode="orders";renderOnlineOrders();toast(`تم تجهيز وشحن ${orderId} بنجاح.`);
+    }catch(error){button.disabled=false;toast(error.message,"error");}
+    return;
+  }
   if (form.id === "omni-account-form") {
     const payload = {
       channelKey: formData.channelKey || form.querySelector("[name='channelKey']")?.value,
@@ -7600,8 +7662,12 @@ function filterShipments() {
 
 function filterOnlineOrders() {
   const term = document.getElementById("online-order-search")?.value.trim().toLowerCase() || "";
-  const status = document.getElementById("online-order-status")?.value || "";
-  const list = data.onlineOrders.filter(order => !order.deletedAt && onlineOrderMatchesQuickFilter(order) && `${order.id} ${order.customerName} ${order.phone} ${order.tracking || ""}`.toLowerCase().includes(term) && (!status || order.status === status));
+  const list = data.onlineOrders.filter(order => {
+    const sale=(data.sales||[]).find(item=>item.id===order.saleId||item.onlineOrderId===order.id);
+    const shipment=(data.shipments||[]).find(item=>item.id===order.shipmentId||item.onlineOrderId===order.id);
+    const haystack=`${order.id} ${order.saleId||sale?.id||""} ${order.customerName||""} ${order.phone||""} ${order.tracking||order.trackingNumber||shipment?.trackingNumber||shipment?.tracking||""}`.toLowerCase();
+    return !order.deletedAt&&onlineOrderMatchesQuickFilter(order)&&haystack.includes(term);
+  });
   const table = document.getElementById("online-orders-table");
   if (table) table.innerHTML = onlineOrdersTable(list);
   scheduleStickyTableScrollbar();
@@ -7759,7 +7825,8 @@ function convertOnlineOrderToSale(id, options = {}) {
   data.sales.push(sale);
   order.saleId = sale.id; order.status = "تم إنشاء الفاتورة"; order.updatedAt = new Date().toISOString();
   saveData("تحويل طلب أونلاين إلى فاتورة", "طلبات الأونلاين", order.id);
-  closeModal(); renderOnlineOrders(); toast(`تم إنشاء الفاتورة ${sale.id} وربطها بالطلب.`);
+  if(!options.keepModal){closeModal();renderOnlineOrders();}
+  toast(`تم إنشاء الفاتورة ${sale.id} وربطها بالطلب.`);
   if (options.askShipping !== false) setTimeout(() => postInvoiceShippingChoice(order.id, sale.id), 100);
   if (options.print !== false) setTimeout(() => printSale(sale.id), 150);
   return sale;

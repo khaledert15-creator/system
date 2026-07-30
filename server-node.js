@@ -1834,8 +1834,14 @@ function applyTrackingAlerts(db, shipment) {
 function syncLinkedOrder(db, shipment) {
   const order = db.onlineOrders?.find(item => item.id === shipment.onlineOrderId);
   if (!order) return;
-  if (shipment.normalizedStatus === "delivered") order.status = "تم التسليم";
-  if (shipment.normalizedStatus === "returned") order.status = "مرتجع";
+  if (shipment.normalizedStatus === "delivered") {
+    order.status = "تم التسليم";
+    order.workflowStage = "delivered";
+  }
+  if (shipment.normalizedStatus === "returned") {
+    order.status = "مرتجع";
+    order.workflowStage = "returned";
+  }
   if (["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3"].includes(shipment.normalizedStatus)) order.requiresCustomerFollowUp = true;
   order.updatedAt = new Date().toISOString();
 }
