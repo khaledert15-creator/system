@@ -168,7 +168,7 @@ let draftPurchase = { supplierId: "S001", supplierInvoiceNumber: "", type: "شر
 let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
-const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
+const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
 let shippingQuickFilter = "";
@@ -2837,6 +2837,12 @@ function quickOrderCustomer() {
   return (data.customers||[]).find(item=>!item.deletedAt&&normalizePhone(item.phone)===phone)||null;
 }
 
+function quickOrderCustomerInsight(customer=quickOrderCustomer()) {
+  if(!customer)return null;
+  const orders=(data.onlineOrders||[]).filter(order=>!order.deletedAt&&(order.customerId===customer.id||normalizePhone(order.phone)===normalizePhone(customer.phone))).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+  return {count:orders.length,last:orders[0]||null};
+}
+
 function quickOrderTotalsNow() {
   return onlineOrderTotals(quickOrderDraft.lines,quickOrderDraft.orderDiscount||0,quickOrderDraft.orderDiscountType||"percent",quickOrderDraft.shippingCost);
 }
@@ -2846,6 +2852,47 @@ function quickOrderPaymentNow(totals=quickOrderTotalsNow()) {
   const confirmed=Number(saved?.paidAmount??0);
   const intended=quickOrderDraft.paymentConfirmed?quickOrderDraft.paidAmount:confirmed;
   return OrderFinance.calculatePayment(totals.total,intended||0);
+}
+
+function quickOrderLinePriceMarkup(line) {
+  const hasDiscount=line.discountAmount>0;
+  return `<small>السعر للوحدة</small>${hasDiscount?`<del>${money(line.price)}</del><strong>${money(line.finalUnitPrice)} <small>بعد الخصم</small></strong><span class="quick-saving">خصم ${line.discountPercent}% · وفرت ${money(line.discountAmount)}</span>`:`<strong>${money(line.price)}</strong>`}`;
+}
+
+function refreshQuickOrderComputedUi() {
+  let totals,payment;
+  try{totals=quickOrderTotalsNow();payment=quickOrderPaymentNow(totals);}catch(error){return false;}
+  totals.lines.forEach((line,index)=>{
+    const price=document.querySelector(`[data-quick-line-price="${index}"]`);
+    const discount=document.querySelector(`[data-quick-line-discount-derived="${index}"]`);
+    const total=document.querySelector(`[data-quick-line-total="${index}"]`);
+    if(price)price.innerHTML=quickOrderLinePriceMarkup(line);
+    if(discount)discount.textContent=`${line.discountPercent}% = ${money(line.discountAmount)}`;
+    if(total)total.textContent=money(line.originalTotal-line.discountAmount);
+  });
+  const values={
+    books:totals.lines.length,
+    units:totals.lines.reduce((sum,line)=>sum+Number(line.qty||0),0),
+    subtotal:money(totals.subtotal),
+    productDiscount:money(totals.productDiscountTotal),
+    orderDiscount:money(totals.orderDiscountAmount),
+    discountTotal:`${money(totals.discountTotal)}${totals.subtotal?` (${OrderFinance.round(totals.discountTotal*100/totals.subtotal)}%)`:""}`,
+    goods:money(totals.goods),
+    shipping:totals.shipping?money(totals.shipping):"مجاني",
+    total:money(totals.total),
+    paymentPlan:paymentPlanLabel(),
+    paid:money(payment.paidAmount),
+    remaining:money(payment.remainingAmount),
+    cod:money(payment.remainingAmount)
+  };
+  Object.entries(values).forEach(([key,value])=>document.querySelectorAll(`[data-quick-summary="${key}"]`).forEach(node=>node.textContent=value));
+  const orderDiscountDerived=document.querySelector("[data-quick-order-discount-derived]");
+  if(orderDiscountDerived)orderDiscountDerived.textContent=quickOrderDraft.orderDiscountType==="amount"?`${totals.orderDiscountPercent}%`:money(totals.orderDiscountAmount);
+  const paymentBadge=document.getElementById("quick-order-payment-status");
+  if(paymentBadge){paymentBadge.textContent=quickPaymentStatusLabel(payment.paymentStatus);paymentBadge.className=`badge ${payment.paymentStatus==="partially_paid"?"warning":payment.paymentStatus==="unpaid"?"gray":""}`.trim();}
+  const message=document.getElementById("quick-order-message");
+  if(message)message.textContent=quickOrderMessage(Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt));
+  return true;
 }
 
 function paymentPlanLabel(value=quickOrderDraft.paymentPlan) {
@@ -2878,23 +2925,27 @@ function quickOrderBookResults() {
 function renderQuickOrderScreen() {
   const customer=quickOrderCustomer();
   if(customer&&!quickOrderDraft.customerId)Object.assign(quickOrderDraft,{customerId:customer.id,customerName:customer.name,governorate:customer.governorate||"",city:customer.city||"",address:customer.address||"",alternativePhone:customer.alternativePhone||""});
-  quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);
+  if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);
   let totals,payment;
   try{totals=quickOrderTotalsNow();payment=quickOrderPaymentNow(totals);}catch(error){totals=OrderFinance.calculateOrder([]);payment=OrderFinance.calculatePayment(0,0);setTimeout(()=>toast(error.message,"error"),0);}
-  const confirmed=Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt),canOverride=canAction("order.discount.override"),canReceive=canAction("order.payment.receive");
+  const confirmed=Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt),canOverride=canAction("order.discount.override"),canReceive=canAction("order.payment.receive"),customerInsight=quickOrderCustomerInsight(customer);
   setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus(),0);
   return `<div class="online-order-mode-tabs"><button class="tab" data-action="online-orders-mode" data-mode="orders">كل الطلبات</button><button class="tab active" data-action="online-orders-mode" data-mode="quick">طلب واتساب سريع</button>${canAction("order.prepare")?`<button class="tab" data-action="online-orders-mode" data-mode="preparation">قائمة التجهيز</button>`:""}</div>
   <div class="section-title"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>طلب واتساب سريع</h2><p>سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل.</p></div>${confirmed?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
   <div class="quick-order-layout"><div class="quick-order-main">
-    <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل</h3><p>ابدأ برقم الموبايل لاسترجاع البيانات المسجلة.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
+    <article class="card quick-customer-card"><div class="card-header"><div><h3>1. بيانات العميل</h3><p>ابدأ برقم الموبايل لاسترجاع البيانات المسجلة.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
+      ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>تم العثور على عميل سابق: ${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:`<div class="quick-customer-insight new"><span class="quick-customer-check">+</span><div><strong>عميل جديد</strong><small>ستُحفظ بياناته مع الطلب بعد التأكيد.</small></div></div>`}
       <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required">المحافظة</label><select id="quick-order-governorate"><option value="">اختر المحافظة</option>${EGYPT_GOVERNORATES.map(value=>`<option ${quickOrderDraft.governorate===value?"selected":""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>ابحث ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="ابحث باسم الكتاب أو الكود أو الصف أو المادة">${quickOrderBookResults()}</div>
-      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved,hasDiscount=line.discountAmount>0;return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><label><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="numeric" min="1" max="${available}" value="${line.qty}"></label><div class="quick-line-price"><small>السعر للوحدة</small>${hasDiscount?`<del>${money(line.price)}</del><strong>${money(line.finalUnitPrice)} <small>بعد الخصم</small></strong><span class="quick-saving">خصم ${line.discountPercent}% · وفرت ${money(line.discountAmount)}</span>`:`<strong>${money(line.price)}</strong>`}</div><div class="quick-line-discount"><label><span>إدخال الخصم ${helpIcon("يمكن إدخاله كنسبة أو قيمة، وسيحسب النظام القيمة الأخرى تلقائيًا.","شرح الخصم")}</span><select data-quick-order-discount-type="${index}" ${canOverride?"":"disabled"}><option value="percent" ${line.discountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${line.discountType==="amount"?"selected":""}>قيمة ج.م</option></select></label><input data-quick-order-discount="${index}" inputmode="decimal" value="${line.discount||0}" ${canOverride?"":"disabled"} aria-label="قيمة الخصم"><small>${line.discountPercent}% = ${money(line.discountAmount)}</small></div><div class="quick-line-total"><small>إجمالي الصنف</small><strong>${money(line.originalTotal-line.discountAmount)}</strong></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></article>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
-      <div class="quick-order-level-discount"><div><strong>خصم إضافي على الطلب</strong><small>مستقل عن خصومات الكتب ولا يُحتسب مرتين.</small></div><select id="quick-order-order-discount-type" ${canOverride?"":"disabled"}><option value="percent" ${quickOrderDraft.orderDiscountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${quickOrderDraft.orderDiscountType==="amount"?"selected":""}>قيمة ج.م</option></select><input id="quick-order-order-discount" inputmode="decimal" value="${quickOrderDraft.orderDiscount||0}" ${canOverride?"":"disabled"}><span>${quickOrderDraft.orderDiscountType==="amount"?`${totals.orderDiscountPercent}%`:`${money(totals.orderDiscountAmount)}`}</span></div>
+      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved;return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><label><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="decimal" min="1" max="${available}" value="${line.qty}"></label><div class="quick-line-price" data-quick-line-price="${index}">${quickOrderLinePriceMarkup(line)}</div><div class="quick-line-discount"><label><span>إدخال الخصم ${helpIcon("يمكن إدخاله كنسبة أو قيمة، وسيحسب النظام القيمة الأخرى تلقائيًا.","شرح الخصم")}</span><select data-quick-order-discount-type="${index}" ${canOverride?"":"disabled"}><option value="percent" ${line.discountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${line.discountType==="amount"?"selected":""}>قيمة ج.م</option></select></label><input data-quick-order-discount="${index}" inputmode="decimal" value="${line.discount||0}" ${canOverride?"":"disabled"} aria-label="قيمة الخصم"><small data-quick-line-discount-derived="${index}">${line.discountPercent}% = ${money(line.discountAmount)}</small></div><div class="quick-line-total"><small>إجمالي الصنف</small><strong data-quick-line-total="${index}">${money(line.originalTotal-line.discountAmount)}</strong></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></article>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
+      <div class="quick-order-level-discount"><div><strong>خصم إضافي على الطلب</strong><small>مستقل عن خصومات الكتب ولا يُحتسب مرتين.</small></div><select id="quick-order-order-discount-type" ${canOverride?"":"disabled"}><option value="percent" ${quickOrderDraft.orderDiscountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${quickOrderDraft.orderDiscountType==="amount"?"selected":""}>قيمة ج.م</option></select><input id="quick-order-order-discount" inputmode="decimal" value="${quickOrderDraft.orderDiscount||0}" ${canOverride?"":"disabled"}><span data-quick-order-discount-derived>${quickOrderDraft.orderDiscountType==="amount"?`${totals.orderDiscountPercent}%`:`${money(totals.orderDiscountAmount)}`}</span></div>
     </article>
-    <article class="card quick-payment-card"><div class="card-header"><div><h3>3. الدفع</h3><p>سجّل فقط المبلغ الذي استلمته المكتبة فعليًا.</p></div>${badge(quickPaymentStatusLabel(payment.paymentStatus),payment.paymentStatus==="paid"?"":payment.paymentStatus==="partially_paid"?"warning":"gray")}</div>
+    <article class="card quick-shipping-card"><div class="card-header"><div><h3>3. الشحن للعميل</h3><p>القيمة التي ستظهر للعميل وتدخل في إجمالي الطلب والتحصيل.</p></div>${badge(quickOrderDraft.shippingManual?"قيمة يدوية":"حسب المحافظة",quickOrderDraft.shippingManual?"warning":"gray")}</div>
+      <div class="quick-shipping-grid"><div class="form-field"><label>تكلفة الشحن على العميل ${helpIcon("هذه ليست تكلفة شركة الشحن الداخلية؛ إنها القيمة المضافة إلى فاتورة العميل.","شرح تكلفة الشحن")}</label><input id="quick-order-shipping-cost" inputmode="decimal" min="0" value="${quickOrderDraft.shippingCost||0}" aria-describedby="quick-order-shipping-help"></div><div class="quick-shipping-preview"><span>يضاف للطلب</span><strong data-quick-summary="shipping">${totals.shipping?money(totals.shipping):"مجاني"}</strong><small id="quick-order-shipping-help">تؤثر على الإجمالي والمتبقي والتحصيل عند الاستلام.</small></div><button class="btn ghost" type="button" data-action="quick-order-reset-shipping">استخدام سعر المحافظة</button></div>
+    </article>
+    <article class="card quick-payment-card"><div class="card-header"><div><h3>4. الدفع والتحصيل</h3><p>سجّل فقط المبلغ الذي استلمته المكتبة فعليًا.</p></div><span id="quick-order-payment-status" class="badge ${payment.paymentStatus==="partially_paid"?"warning":payment.paymentStatus==="unpaid"?"gray":""}">${quickPaymentStatusLabel(payment.paymentStatus)}</span></div>
       <div class="form-grid two"><div class="form-field"><label>طريقة الدفع</label><select id="quick-order-payment-plan"><option value="cash_on_delivery" ${quickOrderDraft.paymentPlan==="cash_on_delivery"?"selected":""}>الدفع عند الاستلام</option><option value="advance_cod" ${quickOrderDraft.paymentPlan==="advance_cod"?"selected":""}>دفع مقدم + الباقي عند الاستلام</option><option value="prepaid_full" ${quickOrderDraft.paymentPlan==="prepaid_full"?"selected":""}>مدفوع بالكامل مسبقًا</option><option value="cash" ${quickOrderDraft.paymentPlan==="cash"?"selected":""}>كاش</option></select></div>
       <div class="form-field"><label>المبلغ المستلم فعليًا ${helpIcon("اكتب فقط المبلغ الذي استلمته المكتبة بالفعل من العميل.","شرح المبلغ المدفوع")}</label><input id="quick-order-paid-amount" inputmode="decimal" value="${quickOrderDraft.paidAmount||0}" ${canReceive?"":"disabled"}></div>
       <label class="choice-card"><input id="quick-order-payment-confirmed" type="checkbox" ${quickOrderDraft.paymentConfirmed?"checked":""} ${canReceive?"":"disabled"}><span><strong>تأكيد استلام المال</strong><small>ينشئ إيصالًا وحركة خزنة واحدة فقط. اختيار الطريقة وحده لا يكفي.</small></span></label>
@@ -2902,7 +2953,7 @@ function renderQuickOrderScreen() {
       ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>يوجد مبلغ مدفوع على الطلب</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.</span></div>`:""}
     </article>
   </div><aside class="quick-order-summary card"><div class="card-header"><div><h3>ملخص الطلب للعميل</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ رسالة التأكيد.":"يتحدث تلقائيًا من نفس بيانات الطلب."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
-    <div class="quick-finance-summary"><span>عدد الكتب <b>${totals.lines.length}</b></span><span>إجمالي القطع <b>${totals.lines.reduce((sum,line)=>sum+Number(line.qty||0),0)}</b></span><span>قبل الخصم <b>${money(totals.subtotal)}</b></span><span>خصومات الكتب <b>${money(totals.productDiscountTotal)}</b></span>${totals.orderDiscountAmount?`<span>خصم الطلب <b>${money(totals.orderDiscountAmount)}</b></span>`:""}<span>إجمالي الخصم <b>${money(totals.discountTotal)}${totals.subtotal?` (${OrderFinance.round(totals.discountTotal*100/totals.subtotal)}%)`:""}</b></span><span>بعد الخصم <b>${money(totals.goods)}</b></span><span>الشحن <b>${totals.shipping?money(totals.shipping):"مجاني"}</b></span><span class="grand">إجمالي الطلب <b>${money(totals.total)}</b></span><span>طريقة الدفع <b>${paymentPlanLabel()}</b></span><span>المدفوع <b>${money(payment.paidAmount)}</b></span><span class="remaining">المتبقي ${helpIcon("المبلغ المطلوب تحصيله لاحقًا من العميل أو شركة الشحن.","شرح المتبقي")} <b>${money(payment.remainingAmount)}</b></span></div>
+    <div class="quick-finance-summary"><span>عدد الكتب <b data-quick-summary="books">${totals.lines.length}</b></span><span>إجمالي القطع <b data-quick-summary="units">${totals.lines.reduce((sum,line)=>sum+Number(line.qty||0),0)}</b></span><span>السعر قبل الخصم <b data-quick-summary="subtotal">${money(totals.subtotal)}</b></span><span>خصومات الكتب <b data-quick-summary="productDiscount">${money(totals.productDiscountTotal)}</b></span><span>خصم الطلب <b data-quick-summary="orderDiscount">${money(totals.orderDiscountAmount)}</b></span><span class="discount">إجمالي الخصم <b data-quick-summary="discountTotal">${money(totals.discountTotal)}${totals.subtotal?` (${OrderFinance.round(totals.discountTotal*100/totals.subtotal)}%)`:""}</b></span><span class="after-discount">السعر بعد الخصم <b data-quick-summary="goods">${money(totals.goods)}</b></span><span>شحن العميل <b data-quick-summary="shipping">${totals.shipping?money(totals.shipping):"مجاني"}</b></span><span class="grand">إجمالي الطلب <b data-quick-summary="total">${money(totals.total)}</b></span><span>طريقة الدفع <b data-quick-summary="paymentPlan">${paymentPlanLabel()}</b></span><span>المدفوع <b data-quick-summary="paid">${money(payment.paidAmount)}</b></span><span class="remaining">المتبقي ${helpIcon("المبلغ المطلوب تحصيله لاحقًا من العميل أو شركة الشحن.","شرح المتبقي")} <b data-quick-summary="remaining">${money(payment.remainingAmount)}</b></span><span class="cod">تحصيل شركة الشحن <b data-quick-summary="cod">${money(payment.remainingAmount)}</b></span></div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
     <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":"📋 نسخ ملخص الطلب"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-new">طلب جديد</button>`}</div>
   </aside></div>`;
@@ -2927,7 +2978,8 @@ async function orderWorkflowRequest(path,{method="POST",body}={}) {
 }
 
 function quickOrderPayload() {
-  return {...quickOrderDraft,phone:normalizePhone(quickOrderDraft.phone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent"}))};
+  const {shippingManual,...persistedDraft}=quickOrderDraft;
+  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent"}))};
 }
 
 async function saveQuickOrderDraft({silent=false}={}) {
@@ -2956,7 +3008,7 @@ function editQuickOrder(id) {
   const order=getOnlineOrder(id);if(!order)return;
   if(order.saleId)return toast("تم إنشاء فاتورة لهذا الطلب؛ استخدم إجراءات التصحيح الحالية.","error");
   if(["preparing","needs_review","awaiting_packing"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب بالفعل. أي تعديل سيؤثر على مسؤول التجهيز. هل تريد المتابعة؟"))return;
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent"})),shippingCost:Number(order.shippingCost||0),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent"})),shippingCost:Number(order.shippingCost||0),shippingManual:true,paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";onlineOrdersMode="quick";renderOnlineOrders();
 }
 
@@ -5635,9 +5687,10 @@ root.addEventListener("click", event => {
     if(existing){if(existing.qty>=available)return toast(`المتاح للبيع من ${book.name} هو ${available}.`,"error");existing.qty++;}
     else if(available<=0)return toast(`لا توجد كمية متاحة للبيع من ${book.name}.`,"error");
     else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:Number(book.discount??book.saleDiscount??0),discountType:book.discountType==="amount"?"amount":"percent"});
-    quickOrderSearch="";quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders();
+    quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders();
   }
   if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderOnlineOrders(); }
+  if (action === "quick-order-reset-shipping") { quickOrderDraft.shippingManual=false;quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderOnlineOrders(); }
   if (action === "quick-order-copy") copyQuickOrderMessage();
   if (action === "quick-order-save") saveQuickOrderDraft().then(renderOnlineOrders).catch(error=>toast(error.message,"error"));
   if (action === "quick-order-confirm") saveAndConfirmQuickOrder();
@@ -5990,13 +6043,14 @@ root.addEventListener("input", event => {
   if(event.target.matches("[data-quick-order-qty]")){
     const index=Number(event.target.dataset.quickOrderQty),line=quickOrderDraft.lines[index],book=getBook(line?.bookId);if(!line)return;
     const order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,ownReserved=order?.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0;
-    const parsed=OrderFinance.normalizeNumber(event.target.value);line.qty=Math.max(1,Math.min(bookAvailableStock(book)+ownReserved,Number.isFinite(parsed)?Math.trunc(parsed):1));renderOnlineOrders();return;
+    const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=1){line.qty=Math.max(1,Math.min(bookAvailableStock(book)+ownReserved,Math.trunc(parsed)));refreshQuickOrderComputedUi();}return;
   }
   if(event.target.matches("[data-quick-order-discount]")){
-    const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscount)],parsed=OrderFinance.normalizeNumber(event.target.value);if(line&&Number.isFinite(parsed)){line.discount=Math.max(0,parsed);try{quickOrderTotalsNow();}catch(error){line.discount=0;toast(error.message,"error");}renderOnlineOrders();}return;
+    const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscount)],parsed=OrderFinance.normalizeNumber(event.target.value);if(line&&Number.isFinite(parsed)&&parsed>=0){const previous=line.discount;line.discount=parsed;try{if(!refreshQuickOrderComputedUi())line.discount=previous;}catch(error){line.discount=previous;}}return;
   }
-  if(event.target.id==="quick-order-paid-amount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)){quickOrderDraft.paidAmount=Math.max(0,parsed);try{quickOrderPaymentNow();}catch(error){toast(error.message,"error");}renderOnlineOrders();}return;}
-  if(event.target.id==="quick-order-order-discount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)){quickOrderDraft.orderDiscount=Math.max(0,parsed);try{quickOrderTotalsNow();}catch(error){quickOrderDraft.orderDiscount=0;toast(error.message,"error");}renderOnlineOrders();}return;}
+  if(event.target.id==="quick-order-paid-amount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.paidAmount;quickOrderDraft.paidAmount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.paidAmount=previous;}return;}
+  if(event.target.id==="quick-order-order-discount"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.orderDiscount;quickOrderDraft.orderDiscount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.orderDiscount=previous;}return;}
+  if(event.target.id==="quick-order-shipping-cost"){const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){quickOrderDraft.shippingCost=parsed;quickOrderDraft.shippingManual=true;refreshQuickOrderComputedUi();}return;}
   if(event.target.id==="order-collection-history-search"){orderCollectionSearch=event.target.value;return renderAccounting();}
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
@@ -6067,7 +6121,7 @@ root.addEventListener("input", event => {
 
 root.addEventListener("change", event => {
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-governorate":"governorate","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
-  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;if(event.target.id==="quick-order-governorate")quickOrderDraft.shippingCost=quickOrderShipping(event.target.value,quickOrderDraft.lines);renderOnlineOrders();return;}
+  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;if(event.target.id==="quick-order-governorate"&&!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(event.target.value,quickOrderDraft.lines);renderOnlineOrders();return;}
   if(event.target.matches("[data-quick-order-discount-type]")){const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscountType)];if(line){line.discountType=event.target.value==="amount"?"amount":"percent";line.discount=0;renderOnlineOrders();}return;}
   if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderOnlineOrders();return;}
   if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderOnlineOrders();return;}
