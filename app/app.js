@@ -176,6 +176,7 @@ const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", 
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
 let quickOrderContextRender = false;
+let quickOrderAutofocusPending = true;
 let shippingQuickFilter = "";
 let recordFocusTimer = null;
 let shipmentRefreshTimer = null;
@@ -582,8 +583,9 @@ function updateNotificationBadge() {
   const badgeElement = document.getElementById("notification-count");
   const button=document.getElementById("notification-btn");
   if (badgeElement) {
-    badgeElement.textContent = count;
+    badgeElement.textContent = count > 0 ? String(count) : "";
     badgeElement.hidden = count === 0;
+    badgeElement.setAttribute("aria-hidden", count === 0 ? "true" : "false");
   }
   if(button)button.title=count?"تنبيهات النظام التي تحتاج متابعتك":"لا توجد تنبيهات جديدة";
 }
@@ -2269,7 +2271,7 @@ function renderDashboard() {
         </div>
       </article>
       <article class="card">
-        <div class="card-header"><div><h3>تنبيهات تحتاج قرارًا</h3><p>اضغط على التنبيه لفتح التفاصيل أو اختر إجراءً مباشرًا</p></div><button class="badge danger alert-count-button" data-action="open-notifications" aria-label="عرض كل التنبيهات">${dashboardAlerts.length}</button></div>
+        <div class="card-header"><div><h3>تنبيهات تحتاج قرارًا</h3><p>اضغط على التنبيه لفتح التفاصيل أو اختر إجراءً مباشرًا</p></div>${dashboardAlerts.length ? `<button class="badge danger alert-count-button" data-action="open-notifications" aria-label="عرض كل التنبيهات">${dashboardAlerts.length}</button>` : ""}</div>
         <div class="card-body alert-list">
           ${dashboardAlerts.slice(0, 3).map(dashboardAlertItem).join("") || `<div class="empty-state compact"><div class="empty-icon">✓</div><h3>لا توجد تنبيهات عاجلة</h3><p>كل المؤشرات في وضع مستقر.</p></div>`}
           ${dashboardAlerts.length > 3 ? `<button class="dashboard-alert-more" data-action="open-notifications">عرض كل التنبيهات (${dashboardAlerts.length})</button>` : ""}
@@ -3027,16 +3029,16 @@ function renderQuickOrderPreservingContext({focusSelector=""}={}) {
   quickOrderContextRender=true;
   renderOnlineOrders();
   quickOrderContextRender=false;
-  requestAnimationFrame(()=>{
-    window.scrollTo(scroll.x,scroll.y);
-    const next=selector?document.querySelector(selector):null;
-    if(next instanceof HTMLElement){
-      next.focus({preventScroll:true});
-      if(selection&&(next instanceof HTMLInputElement||next instanceof HTMLTextAreaElement)){
-        const length=next.value.length;
-        next.setSelectionRange(Math.min(selection.start??length,length),Math.min(selection.end??length,length),selection.direction||"none");
-      }
+  const next=selector?document.querySelector(selector):null;
+  if(next instanceof HTMLElement){
+    next.focus({preventScroll:true});
+    if(selection&&(next instanceof HTMLInputElement||next instanceof HTMLTextAreaElement)){
+      const length=next.value.length;
+      next.setSelectionRange(Math.min(selection.start??length,length),Math.min(selection.end??length,length),selection.direction||"none");
     }
+  }
+  window.scrollTo(scroll.x,scroll.y);
+  requestAnimationFrame(()=>{
     window.scrollTo(scroll.x,scroll.y);
   });
 }
@@ -3056,7 +3058,10 @@ function renderQuickOrderScreen() {
   let totals,payment;
   try{totals=quickOrderTotalsNow();payment=quickOrderPaymentNow(totals);}catch(error){totals=OrderFinance.calculateOrder([]);payment=OrderFinance.calculatePayment(0,0);setTimeout(()=>toast(error.message,"error"),0);}
   const confirmed=Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt),canOverride=canAction("order.discount.override"),canReceive=canAction("order.payment.receive"),customerInsight=quickOrderCustomerInsight(customer);
-  if(!quickOrderContextRender)setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
+  if(!quickOrderContextRender&&quickOrderAutofocusPending){
+    quickOrderAutofocusPending=false;
+    setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
+  }
   return `${workflowModeTabs("quick")}
   <div class="section-title"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>طلب واتساب سريع</h2><p>سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل.</p></div>${confirmed?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
   <div class="quick-order-layout"><div class="quick-order-main">
@@ -3155,7 +3160,7 @@ function editQuickOrder(id) {
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
   quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:Number(order.shippingCost||0),shippingManual:true,paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
-  quickOrderSearch="";onlineOrdersMode="quick";renderOnlineOrders();
+  quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
 }
 
 async function copyQuickOrderMessage() {
@@ -4669,11 +4674,16 @@ function seasonManagementMarkup() {
   const current = activeSeason || legacy;
   const open = seasonManagementState.openOperations || { total:0 };
   const backup = seasonManagementState.latestBackup;
+  const inventoryMarker = data.meta?.inventoryBatchMigration;
+  const markerCard = inventoryMarker
+    ? `<article class="card inventory-marker-card marker-present"><div class="card-body"><div class="season-card-icon success">✓</div><span>Inventory Marker</span><h4>موجود</h4><p>تم تثبيت مؤشر المخزون بعد التنظيف. لا توجد تسوية مخزون مطلوبة.</p><div class="marker-details"><span>openingBatchesCreated</span><strong>${Number(inventoryMarker.openingBatchesCreated || 0)}</strong></div><div class="season-card-meta">${badge("موجود بالفعل · Idempotent", "gray")}<span>لن يتم اقتراح إنشاء Batches.</span></div></div></article>`
+    : `<article class="card inventory-marker-card"><div class="card-body"><div class="season-card-icon blue">◇</div><span>Inventory Marker</span><h4>غير موجود</h4><p>تظهر المعاينة المعتادة فقط، ولا يتم تنفيذ أي Marker تلقائيًا.</p></div></article>`;
   return `<section class="season-management-section" aria-labelledby="season-management-title">
     <div class="season-section-heading"><div><span class="eyebrow">أدوات المالك</span><h3 id="season-management-title">إدارة الموسم والبيانات</h3><p>إغلاق موسمي دون حذف التاريخ، ومعاينة دقيقة للبيانات التجريبية قبل أي إجراء.</p></div><span class="safety-chip">الحذف المباشر غير متاح</span></div>
     <div class="season-management-grid">
       <article class="card season-current-card"><div class="card-body"><div class="season-card-icon blue">◷</div><span>الموسم الحالي</span><h4>${esc(current?.academicYear || "لم يبدأ موسم بعد")}</h4><p>${esc(current?.name || "البيانات الحالية تُقرأ كبيانات Legacy دون تعديلها")}</p><div class="season-card-meta">${badge(seasonStatusLabel(current?.status), current?.status === "active" ? "" : "gray")}<span>${open.total ? `${open.total} عملية مفتوحة` : "لا توجد عمليات مفتوحة"}</span></div><div class="season-card-actions"><button class="btn" data-action="start-season-wizard">بدء موسم جديد</button>${activeSeason ? `<button class="btn ghost" data-action="close-season" data-id="${esc(activeSeason.id)}">إغلاق الموسم</button>` : ""}<button class="row-action" data-action="view-seasons">عرض التفاصيل</button></div></div></article>
       <article class="card demo-cleanup-card"><div class="card-body"><div class="season-card-icon warning">⌁</div><span>تنظيف البيانات التجريبية</span><h4>معاينة مترابطة قبل الحذف</h4><p>يحدد الكتب المعتمدة وكل الطلبات والفواتير والشحنات والحركات التابعة، ويوقف العملية عند وجود سجل مختلط.</p><div class="season-card-actions"><button class="btn secondary" data-action="preview-demo-data">معاينة البيانات التجريبية</button><small>لا يتم الحذف من شاشة المعاينة.</small></div></div></article>
+      ${markerCard}
       <article class="card backup-status-card"><div class="card-body"><div class="season-card-icon success">▣</div><span>النسخ الاحتياطي</span><h4>${backup ? "آخر نسخة متاحة" : "لا توجد نسخة معروفة"}</h4><p>${backup ? `${dateTimeLabel(backup.date)} · ${Math.ceil(backup.size / 1024)} KB` : "Backup Guard إلزامي قبل أي Purge أو Reset."}</p><div class="season-card-actions"><button class="btn ghost" data-action="backup-db">إنشاء نسخة الآن</button>${backup ? `<span class="backup-ok">صالحة للعرض</span>` : ""}</div></div></article>
     </div>
   </section>`;
@@ -4696,6 +4706,14 @@ function demoPreviewRows(preview) {
   return Object.entries(preview.counts || {}).filter(([,count]) => count > 0).map(([key,count]) => `<div class="preview-count"><strong>${count}</strong><span>${esc(labels[key] || key)}</span></div>`).join("");
 }
 
+function demoPreviewIsClean(preview) {
+  const demoKeys = ["books","onlineOrders","sales","shipments","orderPayments","cash","stockMovements","inventoryBatches","reservations","complaints","notifications","trackingHistory","trackingRuns"];
+  const noScopedRecords = demoKeys.every(key => Number(preview.counts?.[key] || 0) === 0);
+  const b004Missing = preview.inventoryExceptions?.every(item => !item.fingerprint || item.fingerprint.stock === null) !== false;
+  const seedMissing = preview.explicitSeedRecords?.every(item => !item.fingerprint) !== false;
+  return noScopedRecords && (preview.detectedProductIds || []).length === 0 && b004Missing && seedMissing && !(preview.blockedRecords || []).length;
+}
+
 async function previewDemoData() {
   openModal("معاينة البيانات التجريبية", "Dry Run — بدون حذف", `<div class="loading-state">جارٍ تحليل العلاقات دون تغيير البيانات...</div>`);
   try {
@@ -4703,6 +4721,11 @@ async function previewDemoData() {
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.message || "تعذر إنشاء المعاينة.");
     const preview = result.preview;
+    const cleanState = demoPreviewIsClean(preview);
+    if (cleanState) {
+      modalBody.innerHTML = `<div class="preview-integrity ok"><strong>✓ لم تتغير قاعدة البيانات</strong><span>تم فحص قائمة IDs المعتمدة فقط: لا توجد</span></div><div class="notice success demo-clean-state"><strong>لا توجد بيانات تجريبية للحذف — تم تنظيف النظام</strong><span>لا توجد منتجات أو طلبات أو فواتير أو شحنات أو حركات Demo ضمن النطاق المعتمد.</span></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق المعاينة</button><button class="btn" disabled>لا توجد بيانات للحذف</button></div>`;
+      return;
+    }
     const inventoryExceptions = (preview.inventoryExceptions || []).map(item => item.accepted
       ? `<div class="notice warning"><strong>فرق مخزون محصور داخل Demo Scope</strong><span>يوجد فرق مخزون واحد داخل البيانات التجريبية المعتمدة: B004 — مخزون -1 دون Batch.<br>سيتم إزالة المنتج والحركة والطلب والفاتورة والشحنة المرتبطة ضمن عملية الحذف.<br>لن يتم إنشاء تسوية مخزون أو Batch لهذا الصنف.</span><small>${esc(item.code)} · ${esc(item.status)}</small></div>`
       : `<div class="notice danger"><strong>تم منع التنفيذ بسبب اختلاف Fingerprint</strong><span>${(item.reasons || []).map(esc).join(" — ")}</span></div>`).join("");
@@ -6064,7 +6087,7 @@ root.addEventListener("click", event => {
   if (action === "dashboard-stat") showDashboardStatDetails(target.dataset.stat);
   if (action === "sales-stat") showSalesStatDetails(target.dataset.stat);
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
-  if (action === "online-orders-mode") { onlineOrdersMode=target.dataset.mode;renderOnlineOrders(); }
+  if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
   if (action === "ship-ready-order") shipReadyOrderModal(target.dataset.id);
   if (action === "reopen-order-preparation") {
     if(confirm("تم تجهيز هذا الطلب بالفعل. إعادة فتحه ستعيده إلى مرحلة التجهيز لمراجعة محتويات الطرد."))orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/reopen`).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast("تمت إعادة فتح الطلب للتجهيز.");}).catch(error=>toast(error.message,"error"));
@@ -6100,7 +6123,7 @@ root.addEventListener("click", event => {
   if (action === "quick-order-copy") copyQuickOrderMessage();
   if (action === "quick-order-save") saveQuickOrderDraft().then(renderOnlineOrders).catch(error=>toast(error.message,"error"));
   if (action === "quick-order-confirm") saveAndConfirmQuickOrder();
-  if (action === "quick-order-new") { quickOrderDraft=emptyQuickOrderDraft();quickOrderSearch="";renderOnlineOrders(); }
+  if (action === "quick-order-new") { quickOrderDraft=emptyQuickOrderDraft();quickOrderSearch="";quickOrderAutofocusPending=true;renderOnlineOrders(); }
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
@@ -6374,6 +6397,16 @@ root.addEventListener("click", event => {
 });
 
 root.addEventListener("keydown", event => {
+  if(onlineOrdersMode==="quick"&&event.key==="Tab"&&event.target.closest(".quick-order-layout")){
+    const fields=[...root.querySelectorAll(".quick-order-layout input:not([disabled]), .quick-order-layout select:not([disabled]), .quick-order-layout textarea:not([disabled])")]
+      .filter(node=>!node.hidden&&node.getClientRects().length&&node.tabIndex!==-1);
+    const index=fields.indexOf(event.target),nextIndex=index+(event.shiftKey?-1:1);
+    if(index!==-1&&fields[nextIndex]){
+      event.preventDefault();
+      fields[nextIndex].focus({preventScroll:true});
+      return;
+    }
+  }
   if(event.target.id==="quick-shipping-order-code"&&event.key==="Enter"){
     event.preventDefault();const order=shippingLookupOrder(event.target.value);quickShippingOrderId=order?.id||String(event.target.value||"").trim().toUpperCase();renderOnlineOrders();setTimeout(()=>document.getElementById("quick-shipping-tracking")?.focus(),0);return;
   }

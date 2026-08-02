@@ -289,6 +289,12 @@ nav { display: grid; gap: 12px; overflow-y: auto; padding-inline: 0; }
   font-weight: 800;
   border: 2px solid #fff;
 }
+.notification-btn span[hidden] { display: none !important; }
+.inventory-marker-card.marker-present { border-color: #b9dfc8; background: linear-gradient(180deg,#fff 0%,#f5fcf7 100%); }
+.marker-details { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-top:12px;border:1px solid var(--line);border-radius:10px;background:#fff; }
+.marker-details span { color:var(--muted);font-size:12px; }
+.marker-details strong { color:var(--green-700); }
+.demo-clean-state { margin-top:16px; }
 .user-chip { display: flex; align-items: center; gap: 10px; padding-right: 4px; }
 .avatar {
   width: 40px;
