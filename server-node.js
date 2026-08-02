@@ -7,6 +7,7 @@ const net = require("net");
 const os = require("os");
 const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
+const SeasonDataManagement = require("./app/season-data-management.js");
 
 const ROOT = __dirname;
 const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
@@ -23,7 +24,8 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "styles.css"];
+const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 
 function contentHash(fileName) {
   return crypto.createHash("sha256").update(fs.readFileSync(path.join(APP_ROOT, fileName))).digest("hex").slice(0, 12);
@@ -101,9 +103,42 @@ function readDb() {
 }
 
 function writeDb(db) {
+  const current = fs.existsSync(DB_PATH) ? readDb() : {};
+  SeasonDataManagement.linkNewRecordsToActiveSeason(current, db);
   const body = JSON.stringify(db, null, 2);
   fs.writeFileSync(`${DB_PATH}.tmp`, body, "utf8");
   fs.renameSync(`${DB_PATH}.tmp`, DB_PATH);
+}
+
+function canManageSeasonData(db, user, action) {
+  const role = ({ owner:"مالك", superadmin:"Super Admin" }[user?.role] || user?.role || "");
+  if (user?.username === "owner" || ["مالك", "Super Admin"].includes(role)) return true;
+  const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
+  return Array.isArray(configured) && configured.includes(action) && ["مالك", "Super Admin"].includes(role);
+}
+
+function verifiedDatabaseBackup(prefix = "season-operation") {
+  ensureDirs();
+  if (!fs.existsSync(DB_PATH)) throw Object.assign(new Error("قاعدة البيانات غير موجودة."), { code:"DATABASE_NOT_FOUND" });
+  const source = fs.readFileSync(DB_PATH);
+  JSON.parse(source);
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "Z");
+  const directory = path.join(BACKUP_ROOT, `${prefix}-${stamp}`);
+  fs.mkdirSync(directory, { recursive:true });
+  const databaseFile = path.join(directory, "database.json");
+  fs.writeFileSync(databaseFile, source);
+  const backup = fs.readFileSync(databaseFile);
+  JSON.parse(backup);
+  const sourceSha256 = crypto.createHash("sha256").update(source).digest("hex");
+  const backupSha256 = crypto.createHash("sha256").update(backup).digest("hex");
+  const guard = { valid:source.length > 0 && source.length === backup.length && sourceSha256 === backupSha256, sourceSize:source.length, backupSize:backup.length, sourceSha256, backupSha256, reference:path.relative(DATA_ROOT, directory), rollbackReference:databaseFile };
+  const manifest = [
+    `createdAt=${new Date().toISOString()}`, `databaseFile=${databaseFile}`, `sourceSize=${guard.sourceSize}`,
+    `backupSize=${guard.backupSize}`, `sourceSha256=${sourceSha256}`, `backupSha256=${backupSha256}`, `valid=${guard.valid}`
+  ].join("\n") + "\n";
+  fs.writeFileSync(path.join(directory, "MANIFEST.txt"), manifest, "utf8");
+  if (!guard.valid) throw Object.assign(new Error("فشل التحقق من النسخة الاحتياطية."), { code:"BACKUP_GUARD_FAILED" });
+  return guard;
 }
 
 const DEFAULT_EXPENSE_TYPE_NAMES = ["تكلفة شحن البريد المصري","عمولة تحصيل البريد المصري","تكلفة مرتجع","تغليف وأكياس","إعلانات وتسويق","رواتب وأجور","إيجار","اتصالات وإنترنت","استضافة وبرامج","أدوات مكتبية","صيانة","نقل ومواصلات","مصروفات بنكية","مصروفات أخرى"];
@@ -2349,6 +2384,85 @@ const server = http.createServer(async (req, res) => {
       const token = req.headers["x-session-token"];
       if (token) sessions.delete(token);
       return send(res, 200, { ok:true });
+    }
+
+    if (route === "/api/admin/season-data" && req.method === "GET") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"هذه الشاشة متاحة لمالك النظام فقط." });
+      ensureDirs();
+      const backups = fs.readdirSync(BACKUP_ROOT, { withFileTypes:true }).flatMap(entry => {
+        const file = entry.isDirectory() ? path.join(BACKUP_ROOT, entry.name, "database.json") : path.join(BACKUP_ROOT, entry.name);
+        if (!fs.existsSync(file) || !/database.*\.json$/i.test(path.basename(file))) return [];
+        const stat = fs.statSync(file);
+        return [{ name:entry.name, date:stat.mtime.toISOString(), size:stat.size }];
+      }).sort((a,b) => new Date(b.date) - new Date(a.date));
+      const activeSeason = SeasonDataManagement.activeSeason(db);
+      return send(res, 200, { ok:true, seasons:SeasonDataManagement.runtimeSeasons(db), activeSeason, openOperations:SeasonDataManagement.openOperations(db, activeSeason?.id || ""), latestBackup:backups[0] || null, purgeEnabled:SEASON_PURGE_ENABLED });
+    }
+
+    if (route === "/api/admin/demo-data/preview" && req.method === "GET") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "purge_demo_data")) return send(res, 403, { ok:false, message:"معاينة البيانات التجريبية متاحة لمالك النظام فقط." });
+      const before = dbRevision();
+      const preview = SeasonDataManagement.buildDemoPreview(db);
+      const after = dbRevision();
+      return send(res, 200, { ok:true, preview, dataUnchanged:before === after, revision:after }, "application/json; charset=utf-8", { "X-DB-Revision":after });
+    }
+
+    if (route === "/api/admin/demo-data/purge" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "purge_demo_data")) return send(res, 403, { ok:false, message:"ليس لديك صلاحية حذف البيانات التجريبية." });
+      if (!SEASON_PURGE_ENABLED) return send(res, 403, { ok:false, code:"PURGE_DISABLED", message:"تنفيذ الحذف معطّل في بيئة التطوير. المعاينة فقط متاحة." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const credential = users().find(item => item.username === user.username);
+      if (!credential || passwordHash(credential.salt || "", payload.password) !== credential.passwordHash) return send(res, 401, { ok:false, code:"IDENTITY_CONFIRMATION_FAILED", message:"تعذر تأكيد هوية المالك." });
+      const preview = SeasonDataManagement.buildDemoPreview(db);
+      if (preview.blockedRecords.length) return send(res, 409, { ok:false, code:"MIXED_RECORDS_BLOCKED", message:"توجد سجلات مختلطة تمنع الحذف.", blockedRecords:preview.blockedRecords });
+      const backup = verifiedDatabaseBackup("pre-demo-purge");
+      try {
+        const result = SeasonDataManagement.purgeDemoDataset(db, { productIds:SeasonDataManagement.DEMO_PRODUCT_IDS, confirmation:payload.confirmation, operationKey:String(payload.operationKey || ""), performedBy:user.name || user.username, backup });
+        writeDb(result.db);
+        return send(res, 200, { ok:true, deleted:result.deleted, audit:result.audit, backupReference:backup.reference, revision:dbRevision() });
+      } catch (error) {
+        return send(res, error.code === "MIXED_RECORDS_BLOCKED" ? 409 : 400, { ok:false, code:error.code || "PURGE_FAILED", message:error.message, blockedRecords:error.blockedRecords || [], orphans:error.orphans || {} });
+      }
+    }
+
+    if (route === "/api/admin/seasons/start" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"بدء موسم جديد متاح لمالك النظام فقط." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const activeSeason = SeasonDataManagement.activeSeason(db);
+      const open = SeasonDataManagement.openOperations(db, activeSeason?.id || "");
+      if (open.total && !(payload.administrativeOverride && String(payload.reason || "").trim())) return send(res, 409, { ok:false, code:"OPEN_OPERATIONS", message:"توجد عمليات مفتوحة يجب معالجتها قبل بدء موسم جديد.", openOperations:open });
+      try {
+        let next = db;
+        if (activeSeason) next = SeasonDataManagement.closeSeason(next, activeSeason.id, { administrativeOverride:payload.administrativeOverride, reason:payload.reason }, user).db;
+        const created = SeasonDataManagement.createSeason(next, payload, user);
+        writeDb(created.db);
+        return send(res, 201, { ok:true, season:created.season, revision:dbRevision() });
+      } catch (error) { return send(res, 409, { ok:false, code:error.code || "SEASON_START_FAILED", message:error.message, openOperations:error.openOperations || open }); }
+    }
+
+    if (/^\/api\/admin\/seasons\/[^/]+\/close$/.test(route) && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"إغلاق الموسم متاح لمالك النظام فقط." });
+      const seasonId = route.split("/")[4], payload = JSON.parse(await readBody(req) || "{}");
+      try {
+        const closed = SeasonDataManagement.closeSeason(db, seasonId, payload, user);
+        writeDb(closed.db);
+        return send(res, 200, { ok:true, season:closed.season, openOperations:closed.openOperations, revision:dbRevision() });
+      } catch (error) { return send(res, 409, { ok:false, code:error.code || "SEASON_CLOSE_FAILED", message:error.message, openOperations:error.openOperations || {} }); }
     }
 
     if (route === "/api/orders/quick" && req.method === "POST") {

@@ -33,6 +33,7 @@ const ACTION_ROLES = {
   "view-sales-profit": ["مالك","مدير","محاسب"], "limited-edit-sale": ["مالك","مدير"],
   "delete-cash": ["مالك","مدير","محاسب"], "delete-employee": ["مالك","مدير"],
   "save-settings": ["مالك","مدير"], "restore-db": ["مالك","مدير"], "backup-db": ["مالك","مدير","محاسب"],
+  "manage_seasons": ["مالك"], "purge_demo_data": ["مالك"],
   "audit-log": ["مالك","مدير","محاسب"], "add-cash-in": ["مالك","مدير","محاسب"],
   "view-item-cost-profit": ["مالك","مدير","محاسب"], "allow-negative-stock": ["مالك"], "export-audit-log": ["مالك","مدير","محاسب"],
   "view-best-customers": ["مالك","مدير","محاسب"], "view-best-suppliers": ["مالك","مدير","محاسب"],
@@ -91,7 +92,7 @@ const PERMISSION_ACTIONS = [
   ["المالية", [["finance.collection.view","عرض تحصيل الأوردرات"],["finance.collection.create","تسجيل تحصيل لدى شركة الشحن"],["finance.collection.settle","استلام تحصيل في الخزنة"],["finance.collection.reverse","عكس تحصيل أوردر"],["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
-  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
+  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["manage_seasons","إدارة المواسم"],["purge_demo_data","تنظيف البيانات التجريبية"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
 ];
 
 const seed = {
@@ -4652,11 +4653,116 @@ function renderHr() {
     </tbody></table></div></article>`;
 }
 
+let seasonManagementState = { loading:true, error:"", seasons:[], activeSeason:null, openOperations:null, latestBackup:null, purgeEnabled:false };
+let seasonWizardState = { step:1, name:"", academicYear:"", startsAt:today(), notes:"", preserve:{ customers:true, suppliers:true, users:true, permissions:true, shipping:true, governorates:true, financeTypes:true, cashAccounts:true, settings:true, templates:true, integrations:true, categories:false, grades:false, subjects:false, bookTemplates:false, oldPrices:false } };
+
+function seasonStatusLabel(status) {
+  return ({ active:"نشط", closed:"مغلق", archived:"مؤرشف", legacy:"بيانات سابقة" })[status] || status || "—";
+}
+
+function seasonManagementMarkup() {
+  if (!canAction("manage_seasons")) return `<article class="card season-access-denied"><div class="card-body"><strong>إدارة الموسم والبيانات</strong><p>هذه الأدوات الحساسة متاحة لمالك النظام فقط.</p></div></article>`;
+  if (seasonManagementState.loading) return `<article class="card season-management-card"><div class="card-body"><div class="loading-state">جارٍ تحميل حالة الموسم والنسخ الاحتياطية...</div></div></article>`;
+  if (seasonManagementState.error) return `<article class="card season-management-card"><div class="card-body"><div class="notice danger">${esc(seasonManagementState.error)}</div><button class="btn ghost small" data-action="refresh-season-management">إعادة المحاولة</button></div></article>`;
+  const activeSeason = seasonManagementState.activeSeason;
+  const legacy = !activeSeason && seasonManagementState.seasons.find(item => item.runtimeOnly);
+  const current = activeSeason || legacy;
+  const open = seasonManagementState.openOperations || { total:0 };
+  const backup = seasonManagementState.latestBackup;
+  return `<section class="season-management-section" aria-labelledby="season-management-title">
+    <div class="season-section-heading"><div><span class="eyebrow">أدوات المالك</span><h3 id="season-management-title">إدارة الموسم والبيانات</h3><p>إغلاق موسمي دون حذف التاريخ، ومعاينة دقيقة للبيانات التجريبية قبل أي إجراء.</p></div><span class="safety-chip">الحذف المباشر غير متاح</span></div>
+    <div class="season-management-grid">
+      <article class="card season-current-card"><div class="card-body"><div class="season-card-icon blue">◷</div><span>الموسم الحالي</span><h4>${esc(current?.academicYear || "لم يبدأ موسم بعد")}</h4><p>${esc(current?.name || "البيانات الحالية تُقرأ كبيانات Legacy دون تعديلها")}</p><div class="season-card-meta">${badge(seasonStatusLabel(current?.status), current?.status === "active" ? "" : "gray")}<span>${open.total ? `${open.total} عملية مفتوحة` : "لا توجد عمليات مفتوحة"}</span></div><div class="season-card-actions"><button class="btn" data-action="start-season-wizard">بدء موسم جديد</button>${activeSeason ? `<button class="btn ghost" data-action="close-season" data-id="${esc(activeSeason.id)}">إغلاق الموسم</button>` : ""}<button class="row-action" data-action="view-seasons">عرض التفاصيل</button></div></div></article>
+      <article class="card demo-cleanup-card"><div class="card-body"><div class="season-card-icon warning">⌁</div><span>تنظيف البيانات التجريبية</span><h4>معاينة مترابطة قبل الحذف</h4><p>يحدد الكتب المعتمدة وكل الطلبات والفواتير والشحنات والحركات التابعة، ويوقف العملية عند وجود سجل مختلط.</p><div class="season-card-actions"><button class="btn secondary" data-action="preview-demo-data">معاينة البيانات التجريبية</button><small>لا يتم الحذف من شاشة المعاينة.</small></div></div></article>
+      <article class="card backup-status-card"><div class="card-body"><div class="season-card-icon success">▣</div><span>النسخ الاحتياطي</span><h4>${backup ? "آخر نسخة متاحة" : "لا توجد نسخة معروفة"}</h4><p>${backup ? `${dateTimeLabel(backup.date)} · ${Math.ceil(backup.size / 1024)} KB` : "Backup Guard إلزامي قبل أي Purge أو Reset."}</p><div class="season-card-actions"><button class="btn ghost" data-action="backup-db">إنشاء نسخة الآن</button>${backup ? `<span class="backup-ok">صالحة للعرض</span>` : ""}</div></div></article>
+    </div>
+  </section>`;
+}
+
+async function loadSeasonManagementStatus() {
+  if (!canAction("manage_seasons") || !serverConnected) return;
+  try {
+    const response = await fetch("/api/admin/season-data", { headers:authHeaders(), cache:"no-store" });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر تحميل إدارة الموسم.");
+    seasonManagementState = { loading:false, error:"", ...result };
+  } catch (error) { seasonManagementState = { ...seasonManagementState, loading:false, error:error.message }; }
+  const slot = document.getElementById("season-management-slot");
+  if (slot) slot.innerHTML = seasonManagementMarkup();
+}
+
+function demoPreviewRows(preview) {
+  const labels = { books:"كتب", onlineOrders:"طلبات", sales:"فواتير بيع", purchases:"فواتير شراء", shipments:"شحنات", orderPayments:"مدفوعات", orderCollections:"تحصيلات", cash:"حركات مالية", stockMovements:"حركات مخزون", inventoryBatches:"دفعات مخزون", reservations:"حجوزات", complaints:"شكاوى", notifications:"إشعارات", trackingHistory:"سجل تتبع", trackingRuns:"عمليات تتبع", audit:"سجل تدقيق", returns:"مرتجعات" };
+  return Object.entries(preview.counts || {}).filter(([,count]) => count > 0).map(([key,count]) => `<div class="preview-count"><strong>${count}</strong><span>${esc(labels[key] || key)}</span></div>`).join("");
+}
+
+async function previewDemoData() {
+  openModal("معاينة البيانات التجريبية", "Dry Run — بدون حذف", `<div class="loading-state">جارٍ تحليل العلاقات دون تغيير البيانات...</div>`);
+  try {
+    const response = await fetch("/api/admin/demo-data/preview", { headers:authHeaders(), cache:"no-store" });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر إنشاء المعاينة.");
+    const preview = result.preview;
+    modalBody.innerHTML = `<div class="preview-integrity ${result.dataUnchanged ? "ok" : "danger"}"><strong>${result.dataUnchanged ? "✓ لم تتغير قاعدة البيانات" : "! تغير غير متوقع"}</strong><span>تم فحص قائمة IDs المعتمدة فقط: ${preview.detectedProductIds.map(esc).join("، ") || "لا توجد"}</span></div><div class="preview-count-grid">${demoPreviewRows(preview)}</div>${preview.blockedRecords.length ? `<div class="blocked-records"><h3>سجلات مختلطة تمنع التنفيذ</h3>${preview.blockedRecords.map(item => `<div><strong>${esc(item.collection)} · ${esc(item.id)}</strong><span>${esc(item.reason)}</span></div>`).join("")}</div>` : `<div class="notice success">لا توجد سجلات مختلطة في المعاينة الحالية. التنفيذ يظل معطلًا حتى اعتماد المستخدم ونجاح Backup Guard.</div>`}<div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق المعاينة</button><button class="btn" disabled title="الحذف غير متاح في مرحلة التطوير">الحذف غير متاح محليًا</button></div>`;
+  } catch (error) { modalBody.innerHTML = `<div class="notice danger">${esc(error.message)}</div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`; }
+}
+
+function openSeasonWizard(step = 1) {
+  seasonWizardState.step = step;
+  const preserveLabels = { customers:"العملاء", suppliers:"الموردون", users:"المستخدمون", permissions:"الصلاحيات", shipping:"شركات الشحن", governorates:"المحافظات وأسعار الشحن", financeTypes:"أنواع المصروفات والإيرادات", cashAccounts:"الخزائن والحسابات", settings:"إعدادات النظام", templates:"قوالب الرسائل", integrations:"التكاملات", categories:"التصنيفات", grades:"الصفوف الدراسية", subjects:"المواد", bookTemplates:"بيانات الكتب كقوالب دون مخزون", oldPrices:"الأسعار القديمة كمرجع" };
+  let body = "";
+  if (step === 1) body = `<form id="season-step-one"><div class="form-grid"><div class="form-field"><label class="required">اسم الموسم</label><input name="name" required value="${esc(seasonWizardState.name)}" placeholder="موسم المدارس 2026/2027"></div><div class="form-field"><label class="required">السنة الدراسية</label><input name="academicYear" required value="${esc(seasonWizardState.academicYear)}" placeholder="2026/2027"></div><div class="form-field"><label class="required">تاريخ البداية</label><input name="startsAt" type="date" required value="${esc(seasonWizardState.startsAt)}"></div><div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(seasonWizardState.notes)}</textarea></div></div><div class="form-actions"><button class="btn" type="submit">التالي: ما نحتفظ به</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+  if (step === 2) body = `<form id="season-step-two"><div class="preserve-grid">${Object.entries(preserveLabels).map(([key,label],index) => `<label class="preserve-option ${index < 11 ? "recommended" : "optional"}"><input type="checkbox" name="${key}" ${seasonWizardState.preserve[key] ? "checked" : ""} ${index < 11 ? "disabled" : ""}><span><strong>${esc(label)}</strong><small>${index < 11 ? "سيتم الاحتفاظ به" : "اختياري"}</small></span></label>`).join("")}</div><div class="notice warning">لن ينتقل المخزون أو الحجوزات أو الطلبات أو الفواتير أو الشحنات أو حركات المخزون تلقائيًا.</div><div class="form-actions"><button class="btn" type="submit">التالي: المراجعة</button><button class="btn ghost" type="button" data-action="season-wizard-back" data-step="1">رجوع</button></div></form>`;
+  if (step === 3) {
+    const kept = Object.entries(seasonWizardState.preserve).filter(([,value]) => value).map(([key]) => preserveLabels[key]);
+    const open = seasonManagementState.openOperations || { total:0 };
+    body = `<div class="season-review"><div class="review-line"><span>الموسم</span><strong>${esc(seasonWizardState.name)}</strong></div><div class="review-line"><span>السنة</span><strong>${esc(seasonWizardState.academicYear)}</strong></div><div class="review-line"><span>البداية</span><strong>${esc(seasonWizardState.startsAt)}</strong></div><div class="review-block"><span>سيتم الاحتفاظ بـ</span><p>${kept.map(esc).join("، ")}</p></div><div class="review-block"><span>يبدأ من صفر</span><p>مخزون الكتب الجديدة، الحجوزات، والحركات الجديدة.</p></div>${open.total ? `<div class="notice danger">يوجد ${open.total} عمليات مفتوحة. لن يبدأ الموسم إلا بعد معالجتها أو إغلاق إداري بسبب إلزامي.</div><label class="preserve-option"><input id="season-admin-override" type="checkbox"><span><strong>إغلاق إداري بصلاحية المالك</strong><small>يتطلب سببًا واضحًا في سجل التدقيق</small></span></label><div class="form-field"><label>سبب الإغلاق الإداري</label><textarea id="season-override-reason"></textarea></div>` : `<div class="notice success">لا توجد عمليات مفتوحة تمنع البدء.</div>`}<div class="form-actions"><button class="btn" data-action="confirm-start-season">تأكيد وبدء الموسم</button><button class="btn ghost" data-action="season-wizard-back" data-step="2">رجوع</button></div></div>`;
+  }
+  openModal("بدء موسم دراسي جديد", `الخطوة ${step} من 3`, `<div class="wizard-progress"><span class="${step >= 1 ? "active" : ""}">1</span><i></i><span class="${step >= 2 ? "active" : ""}">2</span><i></i><span class="${step >= 3 ? "active" : ""}">3</span></div>${body}`);
+}
+
+async function confirmStartSeason(button) {
+  const administrativeOverride = Boolean(document.getElementById("season-admin-override")?.checked);
+  const reason = document.getElementById("season-override-reason")?.value.trim() || "";
+  if (administrativeOverride && !reason) return toast("اكتب سبب الإغلاق الإداري.", "error");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/admin/seasons/start", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ ...seasonWizardState, administrativeOverride, reason }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر بدء الموسم.");
+    closeModal(); seasonManagementState.loading = true; await reloadRemoteData(); renderSettings(); toast(`تم بدء الموسم ${result.season.academicYear}.`);
+  } catch (error) { button.disabled = false; toast(error.message, "error"); }
+}
+
+function closeSeasonModal(id) {
+  const open = seasonManagementState.openOperations || { total:0 };
+  openModal("إغلاق الموسم الحالي", "إجراء حساس قابل للتدقيق", `<form id="close-season-form" data-id="${esc(id)}">${open.total ? `<div class="notice danger">لا يمكن الإغلاق العادي: يوجد ${open.orders?.length || 0} طلبات، ${open.shipments?.length || 0} شحنات، ${open.collections?.length || 0} تحصيلات و${open.finance?.length || 0} تسويات مفتوحة.</div><label class="preserve-option"><input name="administrativeOverride" type="checkbox"><span><strong>إغلاق إداري بصلاحية المالك</strong><small>لا يحذف العمليات؛ يسجل السبب ويحفظ التاريخ.</small></span></label><div class="form-field"><label class="required">سبب الإغلاق الإداري</label><textarea name="reason"></textarea></div>` : `<div class="notice success">لا توجد عمليات مفتوحة تمنع إغلاق الموسم.</div><div class="form-field"><label>ملاحظة الإغلاق</label><textarea name="reason"></textarea></div>`}<label class="preserve-option"><input name="archive" type="checkbox"><span><strong>أرشفة الموسم بعد الإغلاق</strong><small>يبقى متاحًا للتقارير والقراءة.</small></span></label><div class="form-actions"><button class="btn danger" type="submit">تأكيد الإغلاق</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+}
+
+async function submitCloseSeason(form) {
+  const values = Object.fromEntries(new FormData(form));
+  const payload = { reason:String(values.reason || "").trim(), administrativeOverride:values.administrativeOverride === "on", archive:values.archive === "on" };
+  if (payload.administrativeOverride && !payload.reason) return toast("سبب الإغلاق الإداري إلزامي.", "error");
+  const button = form.querySelector('button[type="submit"]'); button.disabled = true;
+  try {
+    const response = await fetch(`/api/admin/seasons/${encodeURIComponent(form.dataset.id)}/close`, { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر إغلاق الموسم.");
+    closeModal(); seasonManagementState.loading = true; await reloadRemoteData(); renderSettings(); toast("تم إغلاق الموسم مع الاحتفاظ بكامل تاريخه.");
+  } catch (error) { button.disabled = false; toast(error.message, "error"); }
+}
+
+function showSeasons() {
+  const seasons = seasonManagementState.seasons || [];
+  openModal("المواسم", "السجل الموسمي", `<div class="season-timeline">${seasons.map(item => `<article><span></span><div><strong>${esc(item.name)}</strong><small>${esc(item.academicYear)} · ${seasonStatusLabel(item.status)}</small><p>${item.runtimeOnly ? "عرض Runtime فقط؛ لم تتم إضافة seasonId للسجلات القديمة." : `${fmtDate(item.startsAt)}${item.endsAt ? ` — ${fmtDate(item.endsAt)}` : ""}`}</p></div></article>`).join("")}</div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+}
+
 function renderSettings() {
   const permissions = permissionSettings();
   const users = (data.users || []).filter(user => user.active !== false);
   root.innerHTML = `
     <div class="section-title"><div><h2>الإعدادات والصلاحيات</h2><p>ضبط سياسات النظام والأدوار وحدود الموافقة.</p></div><div class="actions"><button class="btn ghost" data-action="backup-db">نسخة احتياطية</button><button class="btn ghost" data-action="restore-db">استعادة نسخة</button><button class="btn secondary" data-action="audit-log">سجل العمليات</button><button class="btn" data-action="save-settings">حفظ الإعدادات</button></div></div>
+    <div id="season-management-slot">${seasonManagementMarkup()}</div>
     <div class="split-grid">
       <article class="card"><div class="card-header"><div><h3>إعدادات النشاط</h3><p>البيانات الأساسية وسياسات التشغيل</p></div></div><div class="card-body">
         <div class="form-grid">
@@ -4711,6 +4817,7 @@ function renderSettings() {
       }).join("")}
     </tbody></table></div></article>`;
   updateSettingsTrackingStatus();
+  loadSeasonManagementStatus();
 }
 
 function omniHeaders(extra = {}) {
@@ -5768,6 +5875,8 @@ document.addEventListener("click", event => {
   const target=event.target.closest?.("#modal-backdrop [data-action]");
   if(!target)return;
   const action=target.dataset.action;
+  if(action === "season-wizard-back") openSeasonWizard(Number(target.dataset.step || 1));
+  if(action === "confirm-start-season") confirmStartSeason(target);
   if(action==="quick-add-finance-type"){
     const form=target.closest("form");
     pendingFinanceFormDraft={kind:target.dataset.kind,values:Object.fromEntries(new FormData(form).entries()),editId:form?.dataset.editId||""};
@@ -5795,6 +5904,24 @@ document.addEventListener("click", event => {
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
   if(action==="prepare-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/complete`);closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast("تم التجهيز — الطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
   if(action==="pack-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/pack/complete`);closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم التغليف والطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
+});
+document.addEventListener("submit", event => {
+  if (event.target.id === "season-step-one") {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.target));
+    seasonWizardState = { ...seasonWizardState, ...values };
+    openSeasonWizard(2);
+  }
+  if (event.target.id === "season-step-two") {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.target));
+    for (const key of Object.keys(seasonWizardState.preserve)) if (!["customers","suppliers","users","permissions","shipping","governorates","financeTypes","cashAccounts","settings","templates","integrations"].includes(key)) seasonWizardState.preserve[key] = values[key] === "on";
+    openSeasonWizard(3);
+  }
+  if (event.target.id === "close-season-form") {
+    event.preventDefault();
+    submitCloseSeason(event.target);
+  }
 });
 document.addEventListener("focusin", event => {
   configureNumericInput(event.target);
@@ -5988,6 +6115,11 @@ root.addEventListener("click", event => {
   if (action === "dashboard-view-shipment") navigateToRecord("shipment", target.dataset.id, "view");
   if (action === "test-local-rpa") testLocalRpaService();
   if (action === "retry-pending-tracking") retryPendingTracking();
+  if (action === "refresh-season-management") { seasonManagementState.loading = true; renderSettings(); }
+  if (action === "preview-demo-data") previewDemoData();
+  if (action === "start-season-wizard") { seasonWizardState = { ...seasonWizardState, step:1, name:"", academicYear:"", startsAt:today(), notes:"" }; openSeasonWizard(1); }
+  if (action === "view-seasons") showSeasons();
+  if (action === "close-season") closeSeasonModal(target.dataset.id);
   if (action === "add-book") addBookModal();
   if (action === "register-sale-customer") addPartyModal("customer", null, { returnToSale: true });
   if (action === "new-sale-invoice") {
