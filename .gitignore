@@ -7,6 +7,7 @@ __pycache__/
 # Dependencies
 node_modules/
 services/**/node_modules/
+app-dist/
 
 # Local runtime data and private business data
 data/database.json

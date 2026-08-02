@@ -4,7 +4,8 @@
 .codex
 debug
 docs
-scripts
+scripts/*
+!scripts/build-static-assets.js
 services
 tests
 data/backups

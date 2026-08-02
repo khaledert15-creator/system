@@ -9,7 +9,7 @@ const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
 
 const ROOT = __dirname;
-const APP_ROOT = path.join(ROOT, "app");
+const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
 const DATA_ROOT = path.join(ROOT, "data");
 const BACKUP_ROOT = path.join(DATA_ROOT, "backups");
 const DEBUG_ROOT = path.join(ROOT, "debug", "tracking");
@@ -23,6 +23,36 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
+const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "styles.css"];
+
+function contentHash(fileName) {
+  return crypto.createHash("sha256").update(fs.readFileSync(path.join(APP_ROOT, fileName))).digest("hex").slice(0, 12);
+}
+
+function safeBuildId(value) {
+  const cleaned = String(value || "").trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+  return cleaned && cleaned !== "development" && cleaned !== "local" ? cleaned.slice(0, 12) : `local-${contentHash("app.js")}`;
+}
+
+const APP_BUILD_ID = safeBuildId(process.env.APP_BUILD_SHA);
+const APP_ENVIRONMENT = process.env.NODE_ENV === "production" ? "production" : "development";
+const VERSIONED_ASSETS = new Map(VERSIONED_ASSET_SOURCES.map(fileName => {
+  const extension = path.extname(fileName);
+  const baseName = fileName.slice(0, -extension.length);
+  return [`${baseName}.${APP_BUILD_ID}.${contentHash(fileName)}${extension}`, fileName];
+}));
+
+function renderVersionedIndex() {
+  let html = fs.readFileSync(path.join(APP_ROOT, "index.html"), "utf8");
+  if (html.includes('<meta name="app-build"')) return html;
+  for (const [versionedName, sourceName] of VERSIONED_ASSETS) {
+    const escaped = sourceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(`(["'])${escaped}(?:\\?[^"']*)?\\1`, "g"), (_match, quote) => `${quote}${versionedName}${quote}`);
+  }
+  const marker = `<meta name="app-build" content="${APP_BUILD_ID}">`;
+  const runtime = `<script>window.__APP_BUILD__=${JSON.stringify(APP_BUILD_ID)};console.info("Maktabaa System Build:",window.__APP_BUILD__);</script>`;
+  return html.replace("<title>", `${marker}\n  <title>`).replace("</head>", `  ${runtime}\n</head>`);
+}
 const sessions = new Map();
 let trackingTimer = null;
 let trackingRunning = false;
@@ -2288,7 +2318,14 @@ const server = http.createServer(async (req, res) => {
     const route = decodeURIComponent(url.pathname);
 
     if (route === "/api/health" && req.method === "GET") {
-      return send(res, 200, { ok:true, database: fs.existsSync(DB_PATH), time: new Date().toISOString() });
+      return send(res, 200, { ok:true, database: fs.existsSync(DB_PATH), time: new Date().toISOString() }, "application/json; charset=utf-8", { "X-App-Build":APP_BUILD_ID });
+    }
+
+    if (route === "/api/version" && req.method === "GET") {
+      return send(res, 200, { build:APP_BUILD_ID, environment:APP_ENVIRONMENT }, "application/json; charset=utf-8", {
+        "Cache-Control":"no-store",
+        "X-App-Build":APP_BUILD_ID
+      });
     }
 
     if (route === "/api/login" && req.method === "POST") {
@@ -2909,16 +2946,27 @@ const server = http.createServer(async (req, res) => {
 
     if (route.startsWith("/api/")) return send(res, 404, { ok:false, message:"API route not found." });
 
-    const rel = route === "/" ? "index.html" : route.replace(/^\/+/, "");
+    const requestedRel = route === "/" ? "index.html" : route.replace(/^\/+/, "");
+    const rel = VERSIONED_ASSETS.get(requestedRel) || requestedRel;
     const file = path.resolve(APP_ROOT, rel);
     if (!file.startsWith(APP_ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       return send(res, 404, "Not found", "text/plain; charset=utf-8");
     }
-    const cacheHeaders = rel === "index.html"
-      ? { "Cache-Control":"no-cache, max-age=0, must-revalidate" }
-      : (url.searchParams.has("v") && [".js", ".css"].includes(path.extname(file).toLowerCase())
-        ? { "Cache-Control":"public, max-age=31536000, immutable" }
-        : { "Cache-Control":"public, max-age=300" });
+    if (rel === "index.html") {
+      return send(res, 200, renderVersionedIndex(), contentType(file), {
+        "Cache-Control":"no-cache, no-store, max-age=0, must-revalidate",
+        "Pragma":"no-cache",
+        "Expires":"0",
+        "X-App-Build":APP_BUILD_ID
+      });
+    }
+    const isVersionedAsset = VERSIONED_ASSETS.has(requestedRel);
+    const isLegacyMainAsset = VERSIONED_ASSET_SOURCES.includes(rel);
+    const cacheHeaders = isVersionedAsset
+      ? { "Cache-Control":"public, max-age=31536000, immutable", "X-App-Build":APP_BUILD_ID }
+      : isLegacyMainAsset || rel === "service-worker.js"
+        ? { "Cache-Control":"no-cache, max-age=0, must-revalidate", "X-App-Build":APP_BUILD_ID }
+        : { "Cache-Control":"public, max-age=300" };
     return send(res, 200, fs.readFileSync(file), contentType(file), cacheHeaders);
   } catch (error) {
     return send(res, 500, { ok:false, message: error.message || "Server error." });
