@@ -8,6 +8,7 @@ const os = require("os");
 const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
+const FactoryReset = require("./app/factory-reset.js");
 
 const ROOT = __dirname;
 const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
@@ -24,8 +25,9 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
+const FACTORY_RESET_ENABLED = String(process.env.FACTORY_RESET_ENABLED || "").toLowerCase() === "true";
 
 function contentHash(fileName) {
   return crypto.createHash("sha256").update(fs.readFileSync(path.join(APP_ROOT, fileName))).digest("hex").slice(0, 12);
@@ -56,6 +58,7 @@ function renderVersionedIndex() {
   return html.replace("<title>", `${marker}\n  <title>`).replace("</head>", `  ${runtime}\n</head>`);
 }
 const sessions = new Map();
+const resetPreparations = new Map();
 let trackingTimer = null;
 let trackingRunning = false;
 const trackingActiveShipmentIds = new Set();
@@ -117,7 +120,7 @@ function canManageSeasonData(db, user, action) {
   return Array.isArray(configured) && configured.includes(action) && ["مالك", "Super Admin"].includes(role);
 }
 
-function verifiedDatabaseBackup(prefix = "season-operation") {
+function verifiedDatabaseBackup(prefix = "season-operation", metadata = null) {
   ensureDirs();
   if (!fs.existsSync(DB_PATH)) throw Object.assign(new Error("قاعدة البيانات غير موجودة."), { code:"DATABASE_NOT_FOUND" });
   const source = fs.readFileSync(DB_PATH);
@@ -131,12 +134,18 @@ function verifiedDatabaseBackup(prefix = "season-operation") {
   JSON.parse(backup);
   const sourceSha256 = crypto.createHash("sha256").update(source).digest("hex");
   const backupSha256 = crypto.createHash("sha256").update(backup).digest("hex");
-  const guard = { valid:source.length > 0 && source.length === backup.length && sourceSha256 === backupSha256, sourceSize:source.length, backupSize:backup.length, sourceSha256, backupSha256, reference:path.relative(DATA_ROOT, directory), rollbackReference:databaseFile };
+  const guard = { valid:source.length > 0 && source.length === backup.length && sourceSha256 === backupSha256, sourceSize:source.length, backupSize:backup.length, sourceSha256, backupSha256, reference:path.relative(DATA_ROOT, directory), rollbackReference:databaseFile, manifestValid:true };
+  if (metadata) fs.writeFileSync(path.join(directory, "reset-preview.json"), JSON.stringify(metadata, null, 2), "utf8");
   const manifest = [
     `createdAt=${new Date().toISOString()}`, `databaseFile=${databaseFile}`, `sourceSize=${guard.sourceSize}`,
-    `backupSize=${guard.backupSize}`, `sourceSha256=${sourceSha256}`, `backupSha256=${backupSha256}`, `valid=${guard.valid}`
+    `backupSize=${guard.backupSize}`, `sourceSha256=${sourceSha256}`, `backupSha256=${backupSha256}`, `valid=${guard.valid}`,
+    `currentCommit=${APP_BUILD_ID}`, `currentImageId=${String(process.env.APP_IMAGE_ID || "unavailable").replace(/[^a-zA-Z0-9:._-]/g, "-")}`,
+    `resetType=${metadata?.resetType || ""}`, `performedBy=${metadata?.performedBy || ""}`, `timestamp=${metadata?.timestamp || ""}`
   ].join("\n") + "\n";
-  fs.writeFileSync(path.join(directory, "MANIFEST.txt"), manifest, "utf8");
+  const manifestFile = path.join(directory, "MANIFEST.txt");
+  fs.writeFileSync(manifestFile, manifest, "utf8");
+  guard.manifestValid = fs.statSync(manifestFile).size > 0 && fs.readFileSync(manifestFile, "utf8").includes(`backupSha256=${backupSha256}`);
+  guard.valid = guard.valid && guard.manifestValid;
   if (!guard.valid) throw Object.assign(new Error("فشل التحقق من النسخة الاحتياطية."), { code:"BACKUP_GUARD_FAILED" });
   return guard;
 }
@@ -2399,7 +2408,52 @@ const server = http.createServer(async (req, res) => {
         return [{ name:entry.name, date:stat.mtime.toISOString(), size:stat.size }];
       }).sort((a,b) => new Date(b.date) - new Date(a.date));
       const activeSeason = SeasonDataManagement.activeSeason(db);
-      return send(res, 200, { ok:true, seasons:SeasonDataManagement.runtimeSeasons(db), activeSeason, openOperations:SeasonDataManagement.openOperations(db, activeSeason?.id || ""), latestBackup:backups[0] || null, purgeEnabled:SEASON_PURGE_ENABLED });
+      return send(res, 200, { ok:true, seasons:SeasonDataManagement.runtimeSeasons(db), activeSeason, openOperations:SeasonDataManagement.openOperations(db, activeSeason?.id || ""), latestBackup:backups[0] || null, purgeEnabled:SEASON_PURGE_ENABLED, factoryResetEnabled:FACTORY_RESET_ENABLED });
+    }
+
+    if (route === "/api/admin/factory-reset/preview" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "factory_reset_system")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"إعادة ضبط النظام متاحة للمالك فقط." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const before = dbRevision();
+      try {
+        const preview = FactoryReset.preview(db, payload.resetType);
+        return send(res, 200, { ok:true, preview, dataUnchanged:before === dbRevision(), resetEnabled:FACTORY_RESET_ENABLED, revision:before }, "application/json; charset=utf-8", { "X-DB-Revision":before });
+      } catch (error) { return send(res, 400, { ok:false, code:error.code || "RESET_PREVIEW_FAILED", message:error.message }); }
+    }
+
+    if (route === "/api/admin/factory-reset/prepare" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "factory_reset_system")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"إعادة ضبط النظام متاحة للمالك فقط." });
+      const payload = JSON.parse(await readBody(req) || "{}"), preview = FactoryReset.preview(db, payload.resetType);
+      if (!preview.executable) return send(res, 409, { ok:false, code:"OWNER_REQUIRED", message:preview.blockedReason });
+      try {
+        const timestamp = new Date().toISOString();
+        const backup = verifiedDatabaseBackup("pre-factory-reset", { resetType:payload.resetType, performedBy:user.username, timestamp, preview });
+        const preparationId = crypto.randomUUID();
+        resetPreparations.set(preparationId, { backup, resetType:payload.resetType, username:user.username, revision:dbRevision(), expiresAt:Date.now() + 15 * 60 * 1000 });
+        return send(res, 201, { ok:true, preparationId, backup:{ valid:backup.valid, sourceSize:backup.sourceSize, backupSize:backup.backupSize, sourceSha256:backup.sourceSha256, backupSha256:backup.backupSha256, reference:backup.reference }, preview, resetEnabled:FACTORY_RESET_ENABLED });
+      } catch (error) { return send(res, 409, { ok:false, code:error.code || "BACKUP_GUARD_FAILED", message:error.message }); }
+    }
+
+    if (route === "/api/admin/factory-reset/execute" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const db = readDb();
+      if (!canManageSeasonData(db, user, "factory_reset_system")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"إعادة ضبط النظام متاحة للمالك فقط." });
+      if (!FACTORY_RESET_ENABLED) return send(res, 403, { ok:false, code:"FACTORY_RESET_DISABLED", message:"تنفيذ إعادة الضبط معطّل في هذه البيئة. المعاينة والنسخ الاحتياطي فقط متاحان." });
+      const payload = JSON.parse(await readBody(req) || "{}"), prepared = resetPreparations.get(String(payload.preparationId || ""));
+      if (!prepared || prepared.expiresAt < Date.now() || prepared.username !== user.username || prepared.resetType !== payload.resetType || prepared.revision !== dbRevision()) return send(res, 409, { ok:false, code:"RESET_PREPARATION_INVALID", message:"انتهت صلاحية المعاينة أو تغيرت البيانات؛ أنشئ Preview وBackup جديدين." });
+      try {
+        const result = FactoryReset.execute(db, { resetType:payload.resetType, confirmationPhrase:payload.confirmationPhrase, currentUsername:payload.currentUsername, performedByUsername:user.username, performedBy:user.name || user.username, operationKey:String(payload.operationKey || ""), authorized:true, backup:prepared.backup });
+        writeDb(result.db); resetPreparations.delete(String(payload.preparationId || ""));
+        sessions.clear();
+        return send(res, 200, { ok:true, deletedCounts:result.deletedCounts, postResetValidation:result.validation, backupReference:prepared.backup.reference, idempotent:result.idempotent, revision:dbRevision() });
+      } catch (error) { return send(res, 409, { ok:false, code:error.code || "FACTORY_RESET_FAILED", message:error.message, validation:error.validation || null }); }
     }
 
     if (route === "/api/admin/demo-data/preview" && req.method === "GET") {

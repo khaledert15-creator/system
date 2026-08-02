@@ -33,7 +33,8 @@ const ACTION_ROLES = {
   "view-sales-profit": ["مالك","مدير","محاسب"], "limited-edit-sale": ["مالك","مدير"],
   "delete-cash": ["مالك","مدير","محاسب"], "delete-employee": ["مالك","مدير"],
   "save-settings": ["مالك","مدير"], "restore-db": ["مالك","مدير"], "backup-db": ["مالك","مدير","محاسب"],
-  "manage_seasons": ["مالك"], "purge_demo_data": ["مالك"],
+  "manage_seasons": ["مالك"], "purge_demo_data": ["مالك"], "factory_reset_system": ["مالك"],
+  "open-factory-reset": ["مالك"], "factory-reset-preview": ["مالك"], "factory-reset-prepare": ["مالك"], "factory-reset-execute": ["مالك"],
   "audit-log": ["مالك","مدير","محاسب"], "add-cash-in": ["مالك","مدير","محاسب"],
   "view-item-cost-profit": ["مالك","مدير","محاسب"], "allow-negative-stock": ["مالك"], "export-audit-log": ["مالك","مدير","محاسب"],
   "view-best-customers": ["مالك","مدير","محاسب"], "view-best-suppliers": ["مالك","مدير","محاسب"],
@@ -92,7 +93,7 @@ const PERMISSION_ACTIONS = [
   ["المالية", [["finance.collection.view","عرض تحصيل الأوردرات"],["finance.collection.create","تسجيل تحصيل لدى شركة الشحن"],["finance.collection.settle","استلام تحصيل في الخزنة"],["finance.collection.reverse","عكس تحصيل أوردر"],["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
-  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["manage_seasons","إدارة المواسم"],["purge_demo_data","تنظيف البيانات التجريبية"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
+  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["manage_seasons","إدارة المواسم"],["purge_demo_data","تنظيف البيانات التجريبية"],["factory_reset_system","إعادة ضبط النظام بالكامل"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
 ];
 
 const seed = {
@@ -4658,7 +4659,8 @@ function renderHr() {
     </tbody></table></div></article>`;
 }
 
-let seasonManagementState = { loading:true, error:"", seasons:[], activeSeason:null, openOperations:null, latestBackup:null, purgeEnabled:false };
+let seasonManagementState = { loading:true, error:"", seasons:[], activeSeason:null, openOperations:null, latestBackup:null, purgeEnabled:false, factoryResetEnabled:false };
+let factoryResetState = { resetType:"business", preview:null, preparationId:"", backup:null, operationKey:"", countdown:10, timer:null };
 let seasonWizardState = { step:1, name:"", academicYear:"", startsAt:today(), notes:"", preserve:{ customers:true, suppliers:true, users:true, permissions:true, shipping:true, governorates:true, financeTypes:true, cashAccounts:true, settings:true, templates:true, integrations:true, categories:false, grades:false, subjects:false, bookTemplates:false, oldPrices:false } };
 
 function seasonStatusLabel(status) {
@@ -4686,6 +4688,7 @@ function seasonManagementMarkup() {
       ${markerCard}
       <article class="card backup-status-card"><div class="card-body"><div class="season-card-icon success">▣</div><span>النسخ الاحتياطي</span><h4>${backup ? "آخر نسخة متاحة" : "لا توجد نسخة معروفة"}</h4><p>${backup ? `${dateTimeLabel(backup.date)} · ${Math.ceil(backup.size / 1024)} KB` : "Backup Guard إلزامي قبل أي Purge أو Reset."}</p><div class="season-card-actions"><button class="btn ghost" data-action="backup-db">إنشاء نسخة الآن</button>${backup ? `<span class="backup-ok">صالحة للعرض</span>` : ""}</div></div></article>
     </div>
+    ${canAction("factory_reset_system") ? `<section class="factory-reset-zone" aria-labelledby="factory-reset-title"><div class="factory-reset-warning"><div><span class="danger-badge">خطر جدًا</span><h4 id="factory-reset-title">إعادة ضبط النظام بالكامل</h4><p>هذا الإجراء يحذف جميع بيانات التشغيل نهائيًا ويجعل النظام يبدأ من جديد. لا يمكن التراجع إلا من خلال نسخة احتياطية.</p></div><button class="btn danger" data-action="open-factory-reset">فتح أداة إعادة الضبط</button></div></section>` : ""}
   </section>`;
 }
 
@@ -4734,6 +4737,89 @@ async function previewDemoData() {
       : `<div class="notice danger"><strong>SH-207 غير مطابقة للـFingerprint المعتمد</strong><span>${(item.reasons || []).map(esc).join(" — ")}</span></div>`).join("");
     modalBody.innerHTML = `<div class="preview-integrity ${result.dataUnchanged ? "ok" : "danger"}"><strong>${result.dataUnchanged ? "✓ لم تتغير قاعدة البيانات" : "! تغير غير متوقع"}</strong><span>تم فحص قائمة IDs المعتمدة فقط: ${preview.detectedProductIds.map(esc).join("، ") || "لا توجد"}</span></div><div class="preview-count-grid">${demoPreviewRows(preview)}</div>${inventoryExceptions}${seedRecords}${preview.blockedRecords.length ? `<div class="blocked-records"><h3>سجلات مختلطة تمنع التنفيذ</h3>${preview.blockedRecords.map(item => `<div><strong>${esc(item.collection)} · ${esc(item.id)}</strong><span>${esc(item.reason)}</span></div>`).join("")}</div>` : `<div class="notice success">لا توجد سجلات مختلطة في المعاينة الحالية. التنفيذ يظل معطلًا حتى اعتماد المستخدم ونجاح Backup Guard.</div>`}<div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق المعاينة</button><button class="btn" disabled title="الحذف غير متاح في مرحلة التطوير">الحذف غير متاح محليًا</button></div>`;
   } catch (error) { modalBody.innerHTML = `<div class="notice danger">${esc(error.message)}</div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`; }
+}
+
+const factoryResetLabels = {
+  books:"الأصناف", customers:"العملاء", suppliers:"الموردون", onlineOrders:"طلبات الأونلاين", orders:"الطلبات",
+  sales:"فواتير البيع", purchases:"فواتير الشراء", shipments:"الشحنات", orderPayments:"المدفوعات", cash:"حركات الخزنة",
+  stockMovements:"حركات المخزون", inventoryBatches:"دفعات المخزون", notifications:"الإشعارات", trackingHistory:"سجل التتبع",
+  trackingRuns:"عمليات التتبع", expenses:"المصروفات", otherIncome:"الإيرادات الأخرى", audit:"سجل التدقيق",
+  users:"المستخدمون", settings:"الإعدادات", shippingCompanies:"شركات الشحن", governorates:"المحافظات وأسعار الشحن",
+  cashAccounts:"الخزائن", expenseTypes:"أنواع المصروفات", incomeTypes:"أنواع الإيرادات", integrations:"التكاملات"
+};
+
+function resetTypeComparison(selected = "business") {
+  return `<div class="reset-type-grid">
+    <label class="reset-type-card recommended ${selected === "business" ? "selected" : ""}"><input type="radio" name="resetType" value="business" ${selected === "business" ? "checked" : ""}><span class="reset-type-title"><strong>بيانات التشغيل فقط</strong><em>موصى به</em></span><p>يمسح المبيعات والمشتريات والمخزون والشحن والمالية، ويحافظ على المستخدمين والعملاء والموردين وإعدادات التشغيل.</p></label>
+    <label class="reset-type-card dangerous ${selected === "factory" ? "selected" : ""}"><input type="radio" name="resetType" value="factory" ${selected === "factory" ? "checked" : ""}><span class="reset-type-title"><strong>Factory Reset كامل</strong><em>متقدم وخطير</em></span><p>يمسح كل بيانات العمل تقريبًا، مع الحفاظ على مالك واحد وإعدادات وصلاحيات الدخول الأساسية فقط.</p></label>
+  </div>`;
+}
+
+function openFactoryReset() {
+  if (!canAction("factory_reset_system")) return toast("هذه الأداة متاحة للمالك فقط.", "danger");
+  factoryResetState = { resetType:"business", preview:null, preparationId:"", backup:null, operationKey:`RESET-${Date.now()}-${cryptoRandomToken()}`, countdown:10, timer:null };
+  openModal("إعادة ضبط النظام بالكامل", "إجراء إداري غير قابل للتراجع", `<div class="factory-reset-dialog"><div class="notice danger"><strong>تحذير نهائي قبل البدء</strong><span>لن يُسمح بالتنفيذ قبل Preview كامل وBackup مطابق وتأكيد الهوية والعبارة المطلوبة.</span></div>${resetTypeComparison()}<div class="form-actions"><button class="btn danger" data-action="factory-reset-preview">إنشاء Preview آمن</button><button class="btn ghost" data-action="close-modal">إلغاء</button></div></div>`);
+}
+
+function cryptoRandomToken() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().slice(0, 8);
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function resetCountsMarkup(counts = {}) {
+  const rows = Object.entries(counts).filter(([,value]) => Number(value) > 0);
+  return rows.length ? `<div class="preview-count-grid">${rows.map(([key,value]) => `<div class="preview-count"><strong>${Number(value)}</strong><span>${esc(factoryResetLabels[key] || key)}</span></div>`).join("")}</div>` : `<div class="empty-state compact">لا توجد سجلات ضمن هذا البند.</div>`;
+}
+
+async function factoryResetPreview() {
+  const selected = document.querySelector('input[name="resetType"]:checked')?.value || "business";
+  factoryResetState.resetType = selected;
+  modalBody.innerHTML = `<div class="loading-state">جارٍ إنشاء Preview دون أي تعديل للبيانات...</div>`;
+  try {
+    const response = await fetch("/api/admin/factory-reset/preview", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:selected }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر إنشاء Preview.");
+    factoryResetState.preview = result.preview;
+    const p = result.preview;
+    modalBody.innerHTML = `<div class="factory-reset-dialog"><div class="preview-integrity ${result.dataUnchanged ? "ok" : "danger"}"><strong>${result.dataUnchanged ? "✓ Preview فقط — البيانات لم تتغير" : "تم رصد تغير غير متوقع"}</strong><span>${p.type === "business" ? "بيانات التشغيل فقط" : "Factory Reset كامل"}</span></div><h3>سيتم حذف</h3>${resetCountsMarkup(p.deletedCounts)}<details class="reset-details"><summary>القائمة الكاملة للحذف</summary><p>${p.deleteKeys.map(key => esc(factoryResetLabels[key] || key)).join("، ")}</p></details><h3>سيتم الاحتفاظ بـ</h3>${resetCountsMarkup(p.preservedCounts)}${p.executable ? `<div class="notice warning">الخطوة التالية تنشئ Backup إلزاميًا وتتحقق من SHA قبل إتاحة التأكيد.</div>` : `<div class="notice danger">${esc(p.blockedReason)}</div>`}<div class="form-actions"><button class="btn danger" data-action="factory-reset-prepare" ${p.executable ? "" : "disabled"}>إنشاء Backup والمتابعة</button><button class="btn ghost" data-action="open-factory-reset">رجوع</button></div></div>`;
+  } catch (error) { modalBody.innerHTML = `<div class="notice danger">${esc(error.message)}</div><div class="form-actions"><button class="btn ghost" data-action="open-factory-reset">رجوع</button></div>`; }
+}
+
+async function factoryResetPrepare() {
+  modalBody.innerHTML = `<div class="loading-state">جارٍ إنشاء Backup والتحقق من الحجم وSHA...</div>`;
+  try {
+    const response = await fetch("/api/admin/factory-reset/prepare", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:factoryResetState.resetType }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "فشل Backup Guard.");
+    factoryResetState.preparationId = result.preparationId; factoryResetState.backup = result.backup;
+    const enabled = Boolean(result.resetEnabled);
+    modalBody.innerHTML = `<form id="factory-reset-confirm-form" class="factory-reset-dialog"><div class="notice success"><strong>✓ Backup جاهز ومطابق للمصدر</strong><span>${Math.ceil(Number(result.backup.backupSize || 0) / 1024)} KB · المرجع: ${esc(result.backup.reference)}</span></div><div class="form-grid"><div class="form-field full"><label class="required">اكتب عبارة التأكيد حرفيًا</label><input name="confirmationPhrase" autocomplete="off" placeholder="إعادة ضبط النظام بالكامل" required></div><div class="form-field full"><label class="required">اكتب اسم المستخدم الحالي للتأكيد</label><input name="currentUsername" autocomplete="off" placeholder="${esc(currentUser?.username || "")}" required></div></div><div class="notice warning"><strong>التأكيد الأول</strong><span>بعد المتابعة ستظهر نافذة تأكيد ثانية مع انتظار 10 ثوانٍ.</span></div>${enabled ? "" : `<div class="notice info">التنفيذ مغلق في هذه البيئة؛ تم اختبار Preview وBackup فقط.</div>`}<div class="form-actions"><button class="btn danger" type="submit" ${enabled ? "" : "disabled"}>المتابعة للتأكيد النهائي</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+  } catch (error) { modalBody.innerHTML = `<div class="notice danger"><strong>BLOCKED</strong><span>${esc(error.message)}</span></div><div class="form-actions"><button class="btn ghost" data-action="open-factory-reset">العودة</button></div>`; }
+}
+
+function openFactoryResetFinalConfirmation(values) {
+  clearInterval(factoryResetState.timer);
+  factoryResetState.countdown = 10;
+  openModal("التأكيد الثاني والأخير", "سيتم تسجيل العملية في Audit Log", `<div class="factory-reset-final"><span class="danger-badge">خطر جدًا</span><h3>هل أنت متأكد تمامًا؟</h3><p>سيبدأ ${factoryResetState.resetType === "business" ? "Reset بيانات التشغيل" : "Factory Reset الكامل"} بعد التأكيد. الاستعادة لا تتم إلا من النسخة الاحتياطية.</p><div class="reset-countdown"><strong id="factory-reset-countdown">10</strong><span>ثوانٍ قبل تفعيل التنفيذ</span></div><div class="form-actions"><button id="factory-reset-execute" class="btn danger" data-action="factory-reset-execute" disabled>تنفيذ إعادة الضبط</button><button class="btn ghost" data-action="close-modal">تراجع آمن</button></div></div>`);
+  factoryResetState.confirmationPhrase = values.confirmationPhrase;
+  factoryResetState.currentUsername = values.currentUsername;
+  factoryResetState.timer = setInterval(() => {
+    factoryResetState.countdown -= 1;
+    const label = document.getElementById("factory-reset-countdown"), button = document.getElementById("factory-reset-execute");
+    if (label) label.textContent = String(Math.max(0, factoryResetState.countdown));
+    if (factoryResetState.countdown <= 0) { clearInterval(factoryResetState.timer); if (button) button.disabled = false; }
+  }, 1000);
+}
+
+async function executeFactoryReset(button) {
+  button.disabled = true; button.textContent = "جارٍ التنفيذ والتحقق...";
+  try {
+    const response = await fetch("/api/admin/factory-reset/execute", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:factoryResetState.resetType, preparationId:factoryResetState.preparationId, confirmationPhrase:factoryResetState.confirmationPhrase, currentUsername:factoryResetState.currentUsername, operationKey:factoryResetState.operationKey }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر تنفيذ إعادة الضبط.");
+    localStorage.removeItem("sessionToken");
+    location.replace("/");
+  } catch (error) { button.disabled = false; button.textContent = "إعادة المحاولة"; toast(error.message, "danger"); }
 }
 
 function openSeasonWizard(step = 1) {
@@ -5904,6 +5990,11 @@ document.addEventListener("click", event => {
   const target=event.target.closest?.("#modal-backdrop [data-action]");
   if(!target)return;
   const action=target.dataset.action;
+  if (["open-factory-reset","factory-reset-preview","factory-reset-prepare","factory-reset-execute"].includes(action) && !requireAction(action)) return;
+  if (action === "open-factory-reset") openFactoryReset();
+  if (action === "factory-reset-preview") factoryResetPreview();
+  if (action === "factory-reset-prepare") factoryResetPrepare();
+  if (action === "factory-reset-execute") executeFactoryReset(target);
   if(action === "season-wizard-back") openSeasonWizard(Number(target.dataset.step || 1));
   if(action === "confirm-start-season") confirmStartSeason(target);
   if(action==="quick-add-finance-type"){
@@ -6146,6 +6237,10 @@ root.addEventListener("click", event => {
   if (action === "retry-pending-tracking") retryPendingTracking();
   if (action === "refresh-season-management") { seasonManagementState.loading = true; renderSettings(); }
   if (action === "preview-demo-data") previewDemoData();
+  if (action === "open-factory-reset") openFactoryReset();
+  if (action === "factory-reset-preview") factoryResetPreview();
+  if (action === "factory-reset-prepare") factoryResetPrepare();
+  if (action === "factory-reset-execute") executeFactoryReset(target);
   if (action === "start-season-wizard") { seasonWizardState = { ...seasonWizardState, step:1, name:"", academicYear:"", startsAt:today(), notes:"" }; openSeasonWizard(1); }
   if (action === "view-seasons") showSeasons();
   if (action === "close-season") closeSeasonModal(target.dataset.id);
@@ -7151,6 +7246,12 @@ modalBody.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
   const formData = Object.fromEntries(new FormData(form).entries());
+  if (form.id === "factory-reset-confirm-form") {
+    if (formData.confirmationPhrase !== "إعادة ضبط النظام بالكامل") return toast("عبارة التأكيد غير مطابقة.", "danger");
+    if (formData.currentUsername !== currentUser?.username) return toast("اسم المستخدم الحالي غير مطابق.", "danger");
+    openFactoryResetFinalConfirmation(formData);
+    return;
+  }
   if(form.id==="preparation-issue-form"){
     try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/prepare/issue`,{body:formData});closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم إيقاف الطلب وإرساله لخدمة العملاء للمراجعة.");}catch(error){toast(error.message,"error");}
     return;

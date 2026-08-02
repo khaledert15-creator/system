@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const root = path.resolve(__dirname, "..");
 const sourceRoot = path.resolve(process.env.APP_STATIC_SOURCE || path.join(root, "app"));
 const outputRoot = path.resolve(process.env.APP_STATIC_OUTPUT || path.join(root, "app-dist"));
-const assetSources = ["app.js", "order-finance.js", "season-data-management.js", "styles.css"];
+const assetSources = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "styles.css"];
 
 function hash(fileName) {
   return crypto.createHash("sha256").update(fs.readFileSync(path.join(sourceRoot, fileName))).digest("hex").slice(0, 12);
