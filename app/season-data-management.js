@@ -12,6 +12,7 @@
   ]);
   const OPEN_ORDER_STATUSES = new Set(["جديد", "قيد التأكيد", "تم التأكيد", "قيد التجهيز", "تم التجهيز", "جاهز للشحن", "تم إنشاء الفاتورة"]);
   const CLOSED_SHIPMENT_STATUSES = new Set(["تم التسليم", "مرتجع", "ملغي", "ملغاة", "delivered", "returned", "cancelled"]);
+  const KNOWN_B004_EXCEPTION = Object.freeze({ productId:"B004", stock:-1, reservedStock:0, batchCount:0, batchRemaining:0, movementId:"MOV-003", movementQuantity:-1, movementBefore:0, movementAfter:-1, orderId:"ORD-002", invoiceId:"INV-1050", shipmentId:"SH-210" });
 
   const list = (db, key) => Array.isArray(db?.[key]) ? db[key] : [];
   const idOf = item => String(item?.id || item?.returnNo || item?.shipmentNo || "");
@@ -22,6 +23,59 @@
   const deepClone = value => JSON.parse(JSON.stringify(value));
   const intersects = (values, set) => values.some(value => set.has(String(value || "")));
   const fieldRefs = item => [item?.orderId, item?.onlineOrderId, item?.invoiceId, item?.saleId, item?.shipmentId, item?.paymentId, item?.collectionId, item?.documentId, item?.entityId, item?.sourceId].filter(Boolean).map(String);
+
+  function inventoryReconciliation(db) {
+    const batches = list(db, "inventoryBatches").filter(active), products = list(db, "books").filter(active);
+    const productIds = new Set(products.map(idOf)), seen = new Set(), duplicateBatches = [], orphanBatches = [], totals = new Map();
+    for (const batch of batches) {
+      const batchId = String(batch.id || batch.batchId || ""), productId = String(batch.productId || batch.bookId || "");
+      if (seen.has(batchId)) duplicateBatches.push(batchId); else seen.add(batchId);
+      if (!productIds.has(productId)) orphanBatches.push(batchId);
+      totals.set(productId, Number(((totals.get(productId) || 0) + Number(batch.remainingQty ?? batch.remaining ?? 0)).toFixed(6)));
+    }
+    const productsReconciliation = products.map(product => { const stock=Number(product.stock || 0), batchRemaining=Number(totals.get(idOf(product)) || 0); return { productId:idOf(product), stock, batchRemaining, difference:Number((batchRemaining-stock).toFixed(6)), batchCount:batches.filter(batch => String(batch.productId || batch.bookId || "") === idOf(product)).length }; });
+    const mismatches = productsReconciliation.filter(row => row.difference !== 0);
+    const negativeProducts = productsReconciliation.filter(row => row.stock < 0).map(row => row.productId);
+    const negativeReservations = products.filter(product => Number(product.reservedStock || 0) < 0).map(idOf);
+    const movementProducts = new Set(products.map(idOf));
+    const unexplainedStockMovements = list(db, "stockMovements").filter(active).filter(row => !movementProducts.has(String(row.bookId || row.productId || ""))).map(idOf);
+    return { productsReconciliation, mismatches, negativeProducts, duplicateBatches, orphanBatches, negativeReservations, unexplainedStockMovements, valid:mismatches.length===0 && negativeProducts.length===0 && duplicateBatches.length===0 && orphanBatches.length===0 && negativeReservations.length===0 && unexplainedStockMovements.length===0 };
+  }
+
+  function demoContainedInventoryGuard(db, preview) {
+    const expected = KNOWN_B004_EXCEPTION, reasons = [], product = list(db,"books").find(x => idOf(x) === expected.productId);
+    const batches = list(db,"inventoryBatches").filter(active).filter(x => String(x.productId || x.bookId || "") === expected.productId);
+    const movements = list(db,"stockMovements").filter(active).filter(x => String(x.productId || x.bookId || "") === expected.productId);
+    const movement = movements[0], batchRemaining = batches.reduce((sum,x) => sum + Number(x.remainingQty ?? x.remaining ?? 0), 0);
+    const exact = (actual, wanted, label) => { if (actual !== wanted) reasons.push(`${label}: expected ${wanted}, got ${actual}`); };
+    if (!product) reasons.push("B004 product missing");
+    else { exact(Number(product.stock || 0), expected.stock, "B004 stock"); exact(Number(product.reservedStock || 0), expected.reservedStock, "B004 reservedStock"); }
+    exact(batches.length, expected.batchCount, "B004 batchCount"); exact(Number(batchRemaining), expected.batchRemaining, "B004 batchRemaining");
+    exact(movements.length, 1, "B004 movementCount");
+    if (movement) { exact(idOf(movement), expected.movementId, "movementId"); exact(Number(movement.quantity), expected.movementQuantity, "movement quantity"); exact(Number(movement.before), expected.movementBefore, "movement before"); exact(Number(movement.after), expected.movementAfter, "movement after"); }
+    for (const [key,id] of [["onlineOrders",expected.orderId],["sales",expected.invoiceId],["shipments",expected.shipmentId],["stockMovements",expected.movementId]]) if (!preview.scope[key].some(value => String(value).split("@@")[0] === id)) reasons.push(`${key}:${id} خارج Demo Scope`);
+    const linkedPurchases = list(db,"purchases").filter(active).filter(item => linesOf(item).some(line => lineProductId(line) === expected.productId));
+    const linkedReturns = list(db,"returns").filter(active).filter(item => linesOf(item).some(line => lineProductId(line) === expected.productId));
+    if (linkedPurchases.length) reasons.push("B004 مرتبط بمشتريات؛ Marker الاستثناء ممنوع");
+    if (linkedReturns.length) reasons.push("B004 مرتبط بمرتجعات؛ Marker الاستثناء ممنوع");
+    const reconciliation = inventoryReconciliation(db), unexpected = reconciliation.mismatches.filter(row => row.productId !== expected.productId);
+    if (unexpected.length) reasons.push(`inventory mismatches خارج B004: ${unexpected.map(x=>x.productId).join(",")}`);
+    const negativeOutsideDemo = reconciliation.negativeProducts.filter(id => !preview.detectedProductIds.includes(id));
+    if (negativeOutsideDemo.length) reasons.push(`negative products خارج Demo Scope: ${negativeOutsideDemo.join(",")}`);
+    const realSettlement = [...list(db,"carrierSettlements"), ...list(db,"orderCollections")].filter(active).some(item => fieldRefs(item).some(ref => [expected.orderId,expected.invoiceId,expected.shipmentId].includes(ref)));
+    if (realSettlement) reasons.push("B004 مرتبط بتسوية مالية");
+    if (preview.blockedRecords.length) reasons.push("يوجد سجل Demo/Real مختلط");
+    const accepted = reasons.length === 0;
+    return { code:"DEMO_CONTAINED_INVENTORY_EXCEPTION", productId:expected.productId, status:accepted ? "CONTAINED AND REMOVED BY PURGE" : "BLOCKED", accepted, fingerprint:{ productId:expected.productId, stock:product ? Number(product.stock||0) : null, reservedStock:product ? Number(product.reservedStock||0) : null, batchCount:batches.length, batchRemaining:Number(batchRemaining), movementId:movement ? idOf(movement) : "", movementQuantity:movement ? Number(movement.quantity) : null, movementBefore:movement ? Number(movement.before) : null, movementAfter:movement ? Number(movement.after) : null, orderId:expected.orderId, invoiceId:expected.invoiceId, shipmentId:expected.shipmentId }, reasons };
+  }
+
+  function deploymentReadiness(db, preview = buildDemoPreview(db)) {
+    const reconciliation = inventoryReconciliation(db), known = preview.inventoryExceptions?.[0];
+    const otherMismatches = reconciliation.mismatches.filter(row => row.productId !== KNOWN_B004_EXCEPTION.productId);
+    const otherNegatives = reconciliation.negativeProducts.filter(id => id !== KNOWN_B004_EXCEPTION.productId);
+    const generalPass = otherMismatches.length === 0 && otherNegatives.length === 0 && reconciliation.duplicateBatches.length === 0 && reconciliation.orphanBatches.length === 0 && reconciliation.negativeReservations.length === 0 && reconciliation.unexplainedStockMovements.length === 0;
+    return { inventoryGeneralGuard:generalPass ? "PASS" : "FAIL", knownDemoExceptionB004:known?.accepted ? "PRESENT AND UNCHANGED" : "CHANGED OR MISSING", codeDeploymentAllowed:Boolean(generalPass && known?.accepted), dataCleanupRequired:Boolean(known?.accepted), otherMismatches, otherNegatives };
+  }
 
   function classifyProductLines(item, demoProducts) {
     const ids = linesOf(item).map(lineProductId).filter(Boolean);
@@ -99,16 +153,19 @@
     const counts = Object.fromEntries(Object.entries(scope).map(([key, ids]) => [key, ids.size]));
     counts.reservations = reservationOrders.length;
     const uniqueBlocks = [...new Map(blockedRecords.map(item => [`${item.collection}:${item.id}:${item.reason}`, item])).values()];
-    return {
+    const basePreview = {
       dryRun:true,
       approvedProductIds:[...approvedProductIds],
       detectedProductIds:[...demoProducts],
       counts,
       scope:Object.fromEntries(Object.entries(scope).map(([key, ids]) => [key, [...ids]])),
       reservationOrderIds:reservationOrders,
-      blockedRecords:uniqueBlocks,
-      executable:demoProducts.size > 0 && uniqueBlocks.length === 0
+      blockedRecords:uniqueBlocks
     };
+    const inventoryException = demoContainedInventoryGuard(db, basePreview);
+    const result = { ...basePreview, inventoryExceptions:[inventoryException], inventoryGuard:{ general:inventoryReconciliation(db), knownDemoException:inventoryException }, executable:demoProducts.size > 0 && uniqueBlocks.length === 0 && inventoryException.accepted };
+    result.deploymentReadiness = deploymentReadiness(db, result);
+    return result;
   }
 
   function orphanReport(db) {
@@ -136,28 +193,31 @@
     if (!request.performedBy) throw Object.assign(new Error("هوية المنفذ مطلوبة."), { code:"IDENTITY_REQUIRED" });
     const operationKey = String(request.operationKey || "");
     if (!operationKey) throw Object.assign(new Error("Operation Key مطلوب لمنع تكرار التنفيذ."), { code:"IDEMPOTENCY_KEY_REQUIRED" });
-    const previousAudit = list(db, "audit").find(item => item.operationKey === operationKey && item.operationType === "حذف البيانات التجريبية");
+    const previousAudit = list(db, "audit").find(item => item.operationKey === operationKey && ["PURGE_DEMO_DATASET", "حذف البيانات التجريبية"].includes(item.operationType));
     if (previousAudit) return { db:deepClone(db), idempotent:true, audit:previousAudit, deleted:previousAudit.recordsDeleted || {} };
     const preview = buildDemoPreview(db, request);
     if (preview.blockedRecords.length) throw Object.assign(new Error("توجد سجلات مختلطة؛ تم منع الحذف."), { code:"MIXED_RECORDS_BLOCKED", blockedRecords:preview.blockedRecords });
-    const next = deepClone(db);
+    if (!preview.executable) throw Object.assign(new Error("Demo Scope Fingerprint غير مطابق؛ تم منع الحذف."), { code:"DEMO_FINGERPRINT_BLOCKED", inventoryExceptions:preview.inventoryExceptions });
+    const preExistingOrphans = orphanReport(db), next = deepClone(db);
     for (const [key, ids] of Object.entries(preview.scope)) {
       if (!Array.isArray(next[key]) || !ids.length) continue;
       const remove = new Set(ids.map(String));
       next[key] = next[key].filter((item, index) => !remove.has(idOf(item)) && !remove.has(rowKey(item, index)));
     }
-    const orphans = orphanReport(next);
-    if (Object.values(orphans).some(rows => rows.length)) throw Object.assign(new Error("Orphan Guard منع اعتماد العملية."), { code:"ORPHAN_GUARD_FAILED", orphans });
+    const orphans = orphanReport(next), newOrphans = Object.fromEntries(Object.entries(orphans).map(([key,rows]) => [key, rows.filter(id => !(preExistingOrphans[key] || []).includes(id))])), postPurgeInventoryResult = inventoryReconciliation(next);
+    if (Object.values(newOrphans).some(rows => rows.length)) throw Object.assign(new Error("Orphan Guard منع اعتماد العملية."), { code:"ORPHAN_GUARD_FAILED", orphans, preExistingOrphans, newOrphans });
+    if (!postPurgeInventoryResult.valid) throw Object.assign(new Error("Post-Purge Inventory Guard منع اعتماد العملية."), { code:"POST_PURGE_INVENTORY_BLOCKED", postPurgeInventoryResult });
     const now = request.performedAt || new Date().toISOString();
     next.audit = Array.isArray(next.audit) ? next.audit : [];
     const audit = {
-      id:`AUD-DEMO-PURGE-${operationKey}`, operationKey, operationType:"حذف البيانات التجريبية", action:"حذف مجموعة بيانات تجريبية مترابطة",
-      previewCounts:preview.counts, selectedScope:preview.detectedProductIds, seasonId:request.seasonId || "", performedBy:request.performedBy,
+      id:`AUD-DEMO-PURGE-${operationKey}`, operationKey, operationType:"PURGE_DEMO_DATASET", action:"حذف مجموعة بيانات تجريبية مترابطة",
+      approvedScope:preview.detectedProductIds, previewCounts:preview.counts, containedInventoryExceptions:preview.inventoryExceptions, selectedScope:preview.detectedProductIds, seasonId:request.seasonId || "", performedBy:request.performedBy,
       performedAt:now, createdAt:now, backupReference:request.backup.reference, recordsDeleted:preview.counts,
+      deletedCounts:preview.counts, preservedCounts:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, shippingCompanies:list(next,"shippingCompanies").length, cashAccounts:list(next,"cashAccounts").length }, postPurgeInventoryResult, preExistingOrphans, newOrphans,
       recordsArchived:{}, recordsPreserved:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, settings:1 }, result:"success", failureReason:""
     };
     next.audit.push(audit);
-    return { db:next, idempotent:false, preview, deleted:preview.counts, audit, orphans };
+    return { db:next, idempotent:false, preview, deleted:preview.counts, audit, orphans, preExistingOrphans, newOrphans, postPurgeInventoryResult };
   }
 
   function runtimeSeasons(db, now = new Date().toISOString()) {
@@ -221,5 +281,5 @@
     return nextDb;
   }
 
-  return { DEMO_PRODUCT_IDS, SEASON_LINKED_COLLECTIONS, buildDemoPreview, purgeDemoDataset, orphanReport, runtimeSeasons, activeSeason, openOperations, createSeason, closeSeason, linkNewRecordsToActiveSeason, assertBackupGuard };
+  return { DEMO_PRODUCT_IDS, SEASON_LINKED_COLLECTIONS, KNOWN_B004_EXCEPTION, buildDemoPreview, demoContainedInventoryGuard, deploymentReadiness, inventoryReconciliation, purgeDemoDataset, orphanReport, runtimeSeasons, activeSeason, openOperations, createSeason, closeSeason, linkNewRecordsToActiveSeason, assertBackupGuard };
 });

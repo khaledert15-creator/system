@@ -15,18 +15,21 @@ const fixture = () => ({
   ],
   customers:[{ id:"C1", name:"Preserved Customer" }], suppliers:[{ id:"S1" }], users:[{ id:"U1", username:"owner" }],
   shippingCompanies:[{ id:"SC1" }], governorates:[{ id:"G1" }], expenseTypes:[{ id:"E1" }], incomeTypes:[{ id:"I1" }], cashAccounts:[{ id:"CA1" }],
-  onlineOrders:[{ id:"ORD-DEMO", status:"تم التسليم", lines:[{ bookId:"B004", qty:1 }], saleId:"INV-DEMO", shipmentId:"SH-DEMO" }],
-  sales:[{ id:"INV-DEMO", onlineOrderId:"ORD-DEMO", lines:[{ bookId:"B004", qty:1 }], total:150 }],
+  onlineOrders:[{ id:"ORD-002", status:"تم التسليم", lines:[{ bookId:"B004", qty:1 }], saleId:"INV-1050", shipmentId:"SH-210" }],
+  sales:[{ id:"INV-1050", onlineOrderId:"ORD-002", lines:[{ bookId:"B004", qty:1 }], total:150 }],
   purchases:[], returns:[],
-  shipments:[{ id:"SH-DEMO", onlineOrderId:"ORD-DEMO", invoiceId:"INV-DEMO", trackingNumber:"TR-DEMO", status:"تم التسليم" }],
-  orderPayments:[{ id:"PAY-DEMO", orderId:"ORD-DEMO", invoiceId:"INV-DEMO", amount:50, status:"confirmed" }],
-  orderCollections:[{ id:"COL-DEMO", orderId:"ORD-DEMO", shipmentId:"SH-DEMO", amount:100, status:"settled" }],
-  cash:[{ id:"CASH-DEMO", orderId:"ORD-DEMO", paymentId:"PAY-DEMO", amount:50, type:"قبض" }],
-  stockMovements:[{ id:"MOV-DEMO", bookId:"B004", documentId:"INV-DEMO", quantity:-1, before:0, after:-1 }],
-  inventoryBatches:[], complaints:[{ id:"CMP-DEMO", shipmentId:"SH-DEMO" }],
-  notifications:[{ id:"NOT-DEMO", shipmentId:"SH-DEMO" }], trackingHistory:[{ id:"TH-DEMO", shipmentId:"SH-DEMO", trackingNumber:"TR-DEMO" }],
-  trackingRuns:[{ id:"TRUN-DEMO", shipmentId:"SH-DEMO", trackingNumber:"TR-DEMO" }],
-  audit:[{ id:"AUD-SAME", entityId:"ORD-DEMO" }, { id:"AUD-SAME", entityId:"REAL-1" }]
+  shipments:[{ id:"SH-210", onlineOrderId:"ORD-002", invoiceId:"INV-1050", trackingNumber:"TR-DEMO", status:"تم التسليم" }],
+  orderPayments:[{ id:"PAY-DEMO", orderId:"ORD-002", invoiceId:"INV-1050", amount:50, status:"confirmed" }],
+  orderCollections:[],
+  cash:[{ id:"CASH-DEMO", orderId:"ORD-002", paymentId:"PAY-DEMO", amount:50, type:"قبض" }],
+  stockMovements:[{ id:"MOV-003", bookId:"B004", documentId:"INV-1050", quantity:-1, before:0, after:-1 }],
+  inventoryBatches:[
+    { id:"OB-B001", productId:"B001", remainingQty:3 }, { id:"OB-B003", productId:"B003", remainingQty:1 },
+    { id:"OB-B005", productId:"B005", remainingQty:2 }, { id:"REAL-BATCH", productId:"REAL-1", remainingQty:7 }
+  ], complaints:[{ id:"CMP-DEMO", shipmentId:"SH-210" }],
+  notifications:[{ id:"NOT-DEMO", shipmentId:"SH-210" }], trackingHistory:[{ id:"TH-DEMO", shipmentId:"SH-210", trackingNumber:"TR-DEMO" }],
+  trackingRuns:[{ id:"TRUN-DEMO", shipmentId:"SH-210", trackingNumber:"TR-DEMO" }],
+  audit:[{ id:"AUD-SAME", entityId:"ORD-002" }, { id:"AUD-SAME", entityId:"REAL-1" }]
 });
 
 const tests = [];
@@ -40,6 +43,8 @@ test("Dry Run يعرض العلاقات دون تغيير SHA", () => {
   assert.strictEqual(preview.counts.shipments, 1);
   assert.strictEqual(preview.counts.stockMovements, 1);
   assert.strictEqual(preview.counts.audit, 1);
+  assert.strictEqual(preview.inventoryExceptions[0].status, "CONTAINED AND REMOVED BY PURGE");
+  assert.strictEqual(preview.deploymentReadiness.codeDeploymentAllowed, true);
   assert.strictEqual(preview.blockedRecords.length, 0);
   assert.strictEqual(sha(db), before);
 });
@@ -76,6 +81,25 @@ test("Real Record Protection يمنع السجل المختلط", () => {
 
 test("Backup Guard إلزامي", () => {
   assert.throws(() => SeasonData.purgeDemoDataset(fixture(), { confirmation:"حذف البيانات التجريبية", operationKey:"QA-3", performedBy:"QA" }), error => error.code === "BACKUP_GUARD_FAILED");
+});
+
+test("B004 fingerprint changes are blocked", () => {
+  const changedStock = fixture(); changedStock.books.find(x=>x.id==="B004").stock = -2;
+  assert.strictEqual(SeasonData.buildDemoPreview(changedStock).executable, false);
+  assert.strictEqual(SeasonData.buildDemoPreview(changedStock).deploymentReadiness.codeDeploymentAllowed, false);
+  const secondMovement = fixture(); secondMovement.stockMovements.push({ id:"MOV-OTHER", bookId:"B004", quantity:-1, before:-1, after:-2 });
+  assert.strictEqual(SeasonData.buildDemoPreview(secondMovement).executable, false);
+  const realPurchase = fixture(); realPurchase.purchases.push({ id:"PUR-REAL", lines:[{ bookId:"B004", qty:1 }] });
+  assert.strictEqual(SeasonData.buildDemoPreview(realPurchase).executable, false);
+  const negativeReal = fixture(); negativeReal.books.find(x=>x.id==="REAL-1").stock = -1;
+  assert.strictEqual(SeasonData.buildDemoPreview(negativeReal).executable, false);
+});
+
+test("Post-purge inventory and administrative audit pass", () => {
+  const result = SeasonData.purgeDemoDataset(fixture(), { confirmation:"حذف البيانات التجريبية", operationKey:"QA-POST", performedBy:"QA", backup:{ valid:true, sourceSize:1, backupSize:1, sourceSha256:"x", backupSha256:"x", reference:"qa" } });
+  assert.strictEqual(result.postPurgeInventoryResult.valid, true);
+  assert.strictEqual(result.audit.operationType, "PURGE_DEMO_DATASET");
+  assert.strictEqual(result.audit.containedInventoryExceptions[0].productId, "B004");
 });
 
 test("Season Creation يسمح بموسم Active واحد", () => {
