@@ -13,6 +13,7 @@
   const OPEN_ORDER_STATUSES = new Set(["جديد", "قيد التأكيد", "تم التأكيد", "قيد التجهيز", "تم التجهيز", "جاهز للشحن", "تم إنشاء الفاتورة"]);
   const CLOSED_SHIPMENT_STATUSES = new Set(["تم التسليم", "مرتجع", "ملغي", "ملغاة", "delivered", "returned", "cancelled"]);
   const KNOWN_B004_EXCEPTION = Object.freeze({ productId:"B004", stock:-1, reservedStock:0, batchCount:0, batchRemaining:0, movementId:"MOV-003", movementQuantity:-1, movementBefore:0, movementAfter:-1, orderId:"ORD-002", invoiceId:"INV-1050", shipmentId:"SH-210" });
+  const APPROVED_SEED_SHIPMENT = Object.freeze({ id:"SH-207", orderId:"INV-1043", invoiceId:"INV-1043", customerName:"محمد علي", carrier:"Mylerz", trackingCode:"MY-551209", status:"delivered", shippingCost:65, trackingEnabled:false });
 
   const list = (db, key) => Array.isArray(db?.[key]) ? db[key] : [];
   const idOf = item => String(item?.id || item?.returnNo || item?.shipmentNo || "");
@@ -67,6 +68,23 @@
     if (preview.blockedRecords.length) reasons.push("يوجد سجل Demo/Real مختلط");
     const accepted = reasons.length === 0;
     return { code:"DEMO_CONTAINED_INVENTORY_EXCEPTION", productId:expected.productId, status:accepted ? "CONTAINED AND REMOVED BY PURGE" : "BLOCKED", accepted, fingerprint:{ productId:expected.productId, stock:product ? Number(product.stock||0) : null, reservedStock:product ? Number(product.reservedStock||0) : null, batchCount:batches.length, batchRemaining:Number(batchRemaining), movementId:movement ? idOf(movement) : "", movementQuantity:movement ? Number(movement.quantity) : null, movementBefore:movement ? Number(movement.before) : null, movementAfter:movement ? Number(movement.after) : null, orderId:expected.orderId, invoiceId:expected.invoiceId, shipmentId:expected.shipmentId }, reasons };
+  }
+
+  function explicitSeedShipmentGuard(db) {
+    const expected = APPROVED_SEED_SHIPMENT, shipment = list(db,"shipments").find(x => idOf(x) === expected.id), reasons = [];
+    const exact = (actual,wanted,label) => { if (actual !== wanted) reasons.push(`${label}: expected ${wanted}, got ${actual}`); };
+    if (!shipment) reasons.push("SH-207 shipment missing");
+    else {
+      exact(String(shipment.orderId||""),expected.orderId,"orderId"); exact(String(shipment.invoiceId||""),expected.invoiceId,"invoiceId"); exact(String(shipment.onlineOrderId||""),"","onlineOrderId");
+      exact(String(shipment.customerId||""),"","customerId"); exact(String(shipment.customerName||shipment.customer||""),expected.customerName,"customerName"); exact(String(shipment.customerPhone||shipment.phone||""),"","phone");
+      exact(String(shipment.carrier||shipment.company||""),expected.carrier,"carrier"); exact(String(shipment.trackingNumber||shipment.tracking||""),expected.trackingCode,"trackingCode");
+      const status=String(shipment.normalizedStatus||shipment.shippingStatus||shipment.currentStatus||shipment.status||""); if(!["delivered","تم التسليم"].includes(status)) reasons.push(`status: expected delivered, got ${status}`);
+      exact(Number(shipment.cost??shipment.shippingCost??0),expected.shippingCost,"shippingCost"); exact(Boolean(shipment.trackingEnabled),expected.trackingEnabled,"trackingEnabled");
+    }
+    const tokens=[expected.id,expected.invoiceId,expected.trackingCode], related={};
+    for(const key of ["orderPayments","cash","orderCollections","carrierSettlements","expenses","complaints","trackingHistory","trackingRuns","stockMovements"]){ related[key]=list(db,key).filter(row=>tokens.some(token=>JSON.stringify(row).includes(token))); if(related[key].length) reasons.push(`${key}: ${related[key].length} linked record(s)`); }
+    const accepted=reasons.length===0;
+    return { code:"EXPLICIT_APPROVED_SEED_RECORD", recordType:"shipment", id:expected.id, status:accepted?"APPROVED SEED RECORD — REMOVED BY PURGE":"BLOCKED", accepted, classification:"Seed Referential Integrity Defect", fingerprint:shipment?{ id:idOf(shipment), orderId:String(shipment.orderId||""), invoiceId:String(shipment.invoiceId||""), onlineOrderId:String(shipment.onlineOrderId||""), customerId:String(shipment.customerId||""), customerName:String(shipment.customerName||shipment.customer||""), phone:String(shipment.customerPhone||shipment.phone||""), carrier:String(shipment.carrier||shipment.company||""), trackingCode:String(shipment.trackingNumber||shipment.tracking||""), status:String(shipment.normalizedStatus||shipment.shippingStatus||shipment.currentStatus||shipment.status||""), shippingCost:Number(shipment.cost??shipment.shippingCost??0), trackingEnabled:Boolean(shipment.trackingEnabled), linkedCounts:Object.fromEntries(Object.entries(related).map(([key,rows])=>[key,rows.length])) }:null, reasons };
   }
 
   function deploymentReadiness(db, preview = buildDemoPreview(db)) {
@@ -150,6 +168,8 @@
     list(db, "inventoryBatches").forEach((batch, index) => { if (demoProducts.has(String(batch.bookId || batch.productId || ""))) scope.inventoryBatches.add(rowKey(batch, index)); });
 
     const reservationOrders = list(db, "onlineOrders").filter(order => scope.onlineOrders.has(idOf(order)) && order.inventoryReservation).map(order => idOf(order));
+    const seedShipment = explicitSeedShipmentGuard(db);
+    if (seedShipment.accepted) scope.shipments.add(seedShipment.id);
     const counts = Object.fromEntries(Object.entries(scope).map(([key, ids]) => [key, ids.size]));
     counts.reservations = reservationOrders.length;
     const uniqueBlocks = [...new Map(blockedRecords.map(item => [`${item.collection}:${item.id}:${item.reason}`, item])).values()];
@@ -163,7 +183,7 @@
       blockedRecords:uniqueBlocks
     };
     const inventoryException = demoContainedInventoryGuard(db, basePreview);
-    const result = { ...basePreview, inventoryExceptions:[inventoryException], inventoryGuard:{ general:inventoryReconciliation(db), knownDemoException:inventoryException }, executable:demoProducts.size > 0 && uniqueBlocks.length === 0 && inventoryException.accepted };
+    const result = { ...basePreview, inventoryExceptions:[inventoryException], explicitSeedRecords:[seedShipment], inventoryGuard:{ general:inventoryReconciliation(db), knownDemoException:inventoryException }, executable:demoProducts.size > 0 && uniqueBlocks.length === 0 && inventoryException.accepted && seedShipment.accepted };
     result.deploymentReadiness = deploymentReadiness(db, result);
     return result;
   }
@@ -205,19 +225,25 @@
       next[key] = next[key].filter((item, index) => !remove.has(idOf(item)) && !remove.has(rowKey(item, index)));
     }
     const orphans = orphanReport(next), newOrphans = Object.fromEntries(Object.entries(orphans).map(([key,rows]) => [key, rows.filter(id => !(preExistingOrphans[key] || []).includes(id))])), postPurgeInventoryResult = inventoryReconciliation(next);
-    if (Object.values(newOrphans).some(rows => rows.length)) throw Object.assign(new Error("Orphan Guard منع اعتماد العملية."), { code:"ORPHAN_GUARD_FAILED", orphans, preExistingOrphans, newOrphans });
+    if (Object.values(orphans).some(rows => rows.length)) throw Object.assign(new Error("Orphan Guard منع اعتماد العملية."), { code:"ORPHAN_GUARD_FAILED", orphans, preExistingOrphans, newOrphans });
     if (!postPurgeInventoryResult.valid) throw Object.assign(new Error("Post-Purge Inventory Guard منع اعتماد العملية."), { code:"POST_PURGE_INVENTORY_BLOCKED", postPurgeInventoryResult });
+    const scopedIds = key => new Set((preview.scope[key] || []).map(value=>String(value).split("@@")[0]));
+    const remainingScoped = key => list(next,key).filter(row=>scopedIds(key).has(idOf(row))).length;
+    const financeKeys=["orderPayments","cash","orderCollections","carrierSettlements","expenses"];
+    const realFinanceRecordsChanged=financeKeys.reduce((total,key)=>{ const scoped=scopedIds(key), before=list(db,key).filter(row=>!scoped.has(idOf(row))), after=list(next,key); return total + (JSON.stringify(before)===JSON.stringify(after)?0:1); },0);
+    const postPurgeFinanceResult={ demoPaymentsRemaining:remainingScoped("orderPayments"), demoCashMovementsRemaining:remainingScoped("cash"), realFinanceRecordsChanged, valid:remainingScoped("orderPayments")===0&&remainingScoped("cash")===0&&realFinanceRecordsChanged===0 };
+    if(!postPurgeFinanceResult.valid) throw Object.assign(new Error("Post-Purge Finance Guard منع اعتماد العملية."),{code:"POST_PURGE_FINANCE_BLOCKED",postPurgeFinanceResult});
     const now = request.performedAt || new Date().toISOString();
     next.audit = Array.isArray(next.audit) ? next.audit : [];
     const audit = {
       id:`AUD-DEMO-PURGE-${operationKey}`, operationKey, operationType:"PURGE_DEMO_DATASET", action:"حذف مجموعة بيانات تجريبية مترابطة",
-      approvedScope:preview.detectedProductIds, previewCounts:preview.counts, containedInventoryExceptions:preview.inventoryExceptions, selectedScope:preview.detectedProductIds, seasonId:request.seasonId || "", performedBy:request.performedBy,
+      approvedScope:preview.detectedProductIds, approvedProductIds:preview.detectedProductIds, approvedOrderIds:preview.scope.onlineOrders.map(x=>String(x).split("@@")[0]), approvedInvoiceIds:preview.scope.sales.map(x=>String(x).split("@@")[0]), approvedShipmentIds:preview.scope.shipments.map(x=>String(x).split("@@")[0]), seedClassifications:preview.explicitSeedRecords, previewCounts:preview.counts, containedInventoryExceptions:preview.inventoryExceptions, selectedScope:preview.detectedProductIds, seasonId:request.seasonId || "", performedBy:request.performedBy,
       performedAt:now, createdAt:now, backupReference:request.backup.reference, recordsDeleted:preview.counts,
-      deletedCounts:preview.counts, preservedCounts:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, shippingCompanies:list(next,"shippingCompanies").length, cashAccounts:list(next,"cashAccounts").length }, postPurgeInventoryResult, preExistingOrphans, newOrphans,
+      deletedCounts:preview.counts, preservedCounts:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, shippingCompanies:list(next,"shippingCompanies").length, cashAccounts:list(next,"cashAccounts").length }, postPurgeOrphanResult:{preExistingOrphans,remainingOrphans:orphans,newOrphans}, postPurgeInventoryResult, postPurgeFinanceResult,
       recordsArchived:{}, recordsPreserved:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, settings:1 }, result:"success", failureReason:""
     };
     next.audit.push(audit);
-    return { db:next, idempotent:false, preview, deleted:preview.counts, audit, orphans, preExistingOrphans, newOrphans, postPurgeInventoryResult };
+    return { db:next, idempotent:false, preview, deleted:preview.counts, audit, orphans, preExistingOrphans, newOrphans, postPurgeInventoryResult, postPurgeFinanceResult };
   }
 
   function runtimeSeasons(db, now = new Date().toISOString()) {
@@ -281,5 +307,5 @@
     return nextDb;
   }
 
-  return { DEMO_PRODUCT_IDS, SEASON_LINKED_COLLECTIONS, KNOWN_B004_EXCEPTION, buildDemoPreview, demoContainedInventoryGuard, deploymentReadiness, inventoryReconciliation, purgeDemoDataset, orphanReport, runtimeSeasons, activeSeason, openOperations, createSeason, closeSeason, linkNewRecordsToActiveSeason, assertBackupGuard };
+  return { DEMO_PRODUCT_IDS, SEASON_LINKED_COLLECTIONS, KNOWN_B004_EXCEPTION, APPROVED_SEED_SHIPMENT, buildDemoPreview, demoContainedInventoryGuard, explicitSeedShipmentGuard, deploymentReadiness, inventoryReconciliation, purgeDemoDataset, orphanReport, runtimeSeasons, activeSeason, openOperations, createSeason, closeSeason, linkNewRecordsToActiveSeason, assertBackupGuard };
 });

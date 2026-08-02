@@ -17,6 +17,8 @@ const preserveKeys = ["customers","suppliers","users","shippingCompanies","cashA
 const preservedBefore = Object.fromEntries(preserveKeys.map(key => [key, JSON.stringify(db[key])]).concat([["settings",JSON.stringify(db.settings)]]));
 const preview = Season.buildDemoPreview(db);
 assert.strictEqual(preview.inventoryExceptions[0].accepted, true, JSON.stringify(preview.inventoryExceptions[0].reasons));
+assert.strictEqual(preview.explicitSeedRecords[0].accepted, true, JSON.stringify(preview.explicitSeedRecords[0].reasons));
+assert.strictEqual(preview.counts.shipments, 5);
 assert.strictEqual(sha(fs.readFileSync(input)), sha(source), "Dry Run changed source SHA");
 
 const request = { confirmation:"حذف البيانات التجريبية", operationKey:"REMOTE-QA-DEMO-PURGE-20260802", performedBy:"Remote Docker QA", performedAt:"2026-08-02T13:00:00.000Z", backup:{ valid:true, sourceSize:source.length, backupSize:source.length, sourceSha256:sha(source), backupSha256:sha(source), reference:"isolated-qa/snapshot/database.json" } };
@@ -25,7 +27,9 @@ const repeatedPurge = Season.purgeDemoDataset(purged.db, request);
 const preserved = Object.fromEntries(Object.entries(preservedBefore).map(([key,value]) => [key, JSON.stringify(purged.db[key]) === value]));
 assert.ok(Object.values(preserved).every(Boolean), `Preservation failed: ${JSON.stringify(preserved)}`);
 assert.strictEqual(purged.postPurgeInventoryResult.valid, true);
-assert.ok(Object.values(purged.newOrphans).every(rows => rows.length === 0));
+assert.ok(Object.values(purged.orphans).every(rows => rows.length === 0));
+assert.strictEqual((purged.db.shipments||[]).some(x=>(x.id||x.shipmentNo)==="SH-207"),false);
+assert.strictEqual(purged.postPurgeFinanceResult.valid,true);
 assert.strictEqual(repeatedPurge.idempotent, true);
 assert.strictEqual(repeatedPurge.db.audit.filter(x => x.operationKey === request.operationKey).length, 1);
 
@@ -40,10 +44,10 @@ fs.writeFileSync(path.join(outputDir, "purged-database.json"), JSON.stringify(pu
 fs.writeFileSync(path.join(outputDir, "marker-only-database.json"), JSON.stringify(marked.db, null, 2));
 const financeIds = new Set(["TX-0004","TX-0005","TX-0006"]);
 const report = {
-  source:{ size:source.length, sha256:sha(source) }, preview:{ counts:preview.counts, inventoryExceptions:preview.inventoryExceptions, blockedRecords:preview.blockedRecords },
+  source:{ size:source.length, sha256:sha(source) }, preview:{ counts:preview.counts, inventoryExceptions:preview.inventoryExceptions, explicitSeedRecords:preview.explicitSeedRecords, blockedRecords:preview.blockedRecords },
   deletedCounts:purged.deleted, preserved, postPurgeInventoryResult:purged.postPurgeInventoryResult, orphans:purged.orphans, preExistingOrphans:purged.preExistingOrphans, newOrphans:purged.newOrphans,
-  finance:{ demoCashRemaining:(purged.db.cash||[]).filter(x=>financeIds.has(x.id)).length, demoPaymentsRemaining:(purged.db.orderPayments||[]).length, carrierSettlements:(purged.db.carrierSettlements||[]).length, orderCollections:(purged.db.orderCollections||[]).length },
-  audit:{ count:purged.db.audit.filter(x=>x.operationKey===request.operationKey).length, operationType:purged.audit.operationType, hasException:purged.audit.containedInventoryExceptions?.[0]?.accepted===true },
+  finance:{ demoCashRemaining:(purged.db.cash||[]).filter(x=>financeIds.has(x.id)).length, demoPaymentsRemaining:(purged.db.orderPayments||[]).length, carrierSettlements:(purged.db.carrierSettlements||[]).length, orderCollections:(purged.db.orderCollections||[]).length, guard:purged.postPurgeFinanceResult },
+  audit:{ count:purged.db.audit.filter(x=>x.operationKey===request.operationKey).length, operationType:purged.audit.operationType, hasException:purged.audit.containedInventoryExceptions?.[0]?.accepted===true, approvedShipmentIds:purged.audit.approvedShipmentIds, seedClassification:purged.audit.seedClassifications?.[0]?.classification },
   purgeIdempotent:repeatedPurge.idempotent, markerPreview:markerPreview.status,
   markerDiff:{ onlyPath:"meta.inventoryBatchMigration", openingBatchesCreated:marked.db.meta.inventoryBatchMigration.openingBatchesCreated, purgedSha256:sha(JSON.stringify(purged.db)), markedSha256:sha(JSON.stringify(marked.db)), secondSha256:sha(JSON.stringify(repeatedMarker.db)), idempotent:repeatedMarker.idempotent, batchCountBefore:(purged.db.inventoryBatches||[]).length, batchCountAfter:(marked.db.inventoryBatches||[]).length }
 };

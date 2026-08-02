@@ -18,7 +18,10 @@ const fixture = () => ({
   onlineOrders:[{ id:"ORD-002", status:"تم التسليم", lines:[{ bookId:"B004", qty:1 }], saleId:"INV-1050", shipmentId:"SH-210" }],
   sales:[{ id:"INV-1050", onlineOrderId:"ORD-002", lines:[{ bookId:"B004", qty:1 }], total:150 }],
   purchases:[], returns:[],
-  shipments:[{ id:"SH-210", onlineOrderId:"ORD-002", invoiceId:"INV-1050", trackingNumber:"TR-DEMO", status:"تم التسليم" }],
+  shipments:[
+    { id:"SH-210", onlineOrderId:"ORD-002", invoiceId:"INV-1050", trackingNumber:"TR-DEMO", status:"تم التسليم" },
+    { id:"SH-207", orderId:"INV-1043", invoiceId:"INV-1043", onlineOrderId:"", customerId:"", customerName:"محمد علي", phone:"", carrier:"Mylerz", trackingCode:"MY-551209", tracking:"MY-551209", status:"تم التسليم", cost:65, trackingEnabled:false }
+  ],
   orderPayments:[{ id:"PAY-DEMO", orderId:"ORD-002", invoiceId:"INV-1050", amount:50, status:"confirmed" }],
   orderCollections:[],
   cash:[{ id:"CASH-DEMO", orderId:"ORD-002", paymentId:"PAY-DEMO", amount:50, type:"قبض" }],
@@ -40,10 +43,12 @@ test("Dry Run يعرض العلاقات دون تغيير SHA", () => {
   assert.strictEqual(preview.counts.books, 5);
   assert.strictEqual(preview.counts.onlineOrders, 1);
   assert.strictEqual(preview.counts.sales, 1);
-  assert.strictEqual(preview.counts.shipments, 1);
+  assert.strictEqual(preview.counts.shipments, 2);
   assert.strictEqual(preview.counts.stockMovements, 1);
   assert.strictEqual(preview.counts.audit, 1);
   assert.strictEqual(preview.inventoryExceptions[0].status, "CONTAINED AND REMOVED BY PURGE");
+  assert.strictEqual(preview.explicitSeedRecords[0].accepted, true);
+  assert.strictEqual(preview.scope.shipments.includes("SH-207"), true);
   assert.strictEqual(preview.deploymentReadiness.codeDeploymentAllowed, true);
   assert.strictEqual(preview.blockedRecords.length, 0);
   assert.strictEqual(sha(db), before);
@@ -95,11 +100,28 @@ test("B004 fingerprint changes are blocked", () => {
   assert.strictEqual(SeasonData.buildDemoPreview(negativeReal).executable, false);
 });
 
+test("SH-207 fingerprint and relationship changes are blocked", () => {
+  const trackingChanged=fixture(); trackingChanged.shipments.find(x=>x.id==="SH-207").tracking="OTHER";
+  assert.strictEqual(SeasonData.buildDemoPreview(trackingChanged).executable,false);
+  const paymentLinked=fixture(); paymentLinked.orderPayments.push({id:"PAY-SH207",shipmentId:"SH-207",amount:1});
+  assert.strictEqual(SeasonData.buildDemoPreview(paymentLinked).executable,false);
+  const customerLinked=fixture(); customerLinked.shipments.find(x=>x.id==="SH-207").customerId="C1";
+  assert.strictEqual(SeasonData.buildDemoPreview(customerLinked).executable,false);
+  const trackingLinked=fixture(); trackingLinked.trackingHistory.push({id:"TH-SH207",shipmentId:"SH-207",trackingNumber:"MY-551209"});
+  assert.strictEqual(SeasonData.buildDemoPreview(trackingLinked).executable,false);
+  const anotherOrphan=fixture(); anotherOrphan.shipments.push({id:"SH-OTHER",invoiceId:"INV-MISSING"});
+  const preview=SeasonData.buildDemoPreview(anotherOrphan);
+  assert.strictEqual(preview.scope.shipments.includes("SH-OTHER"),false);
+});
+
 test("Post-purge inventory and administrative audit pass", () => {
   const result = SeasonData.purgeDemoDataset(fixture(), { confirmation:"حذف البيانات التجريبية", operationKey:"QA-POST", performedBy:"QA", backup:{ valid:true, sourceSize:1, backupSize:1, sourceSha256:"x", backupSha256:"x", reference:"qa" } });
   assert.strictEqual(result.postPurgeInventoryResult.valid, true);
+  assert.strictEqual(result.orphans.shipments.length,0);
+  assert.strictEqual(result.postPurgeFinanceResult.valid,true);
   assert.strictEqual(result.audit.operationType, "PURGE_DEMO_DATASET");
   assert.strictEqual(result.audit.containedInventoryExceptions[0].productId, "B004");
+  assert.strictEqual(result.audit.approvedShipmentIds.includes("SH-207"),true);
 });
 
 test("Season Creation يسمح بموسم Active واحد", () => {
