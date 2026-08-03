@@ -9,6 +9,7 @@ const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
+const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
 const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
@@ -28,6 +29,7 @@ const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 12
 const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
+const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
 
 function contentHash(fileName) {
   return crypto.createHash("sha256").update(fs.readFileSync(path.join(APP_ROOT, fileName))).digest("hex").slice(0, 12);
@@ -105,12 +107,10 @@ function readDb() {
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
 }
 
-function writeDb(db) {
+function writeDb(db, options = {}) {
   const current = fs.existsSync(DB_PATH) ? readDb() : {};
   SeasonDataManagement.linkNewRecordsToActiveSeason(current, db);
-  const body = JSON.stringify(db, null, 2);
-  fs.writeFileSync(`${DB_PATH}.tmp`, body, "utf8");
-  fs.renameSync(`${DB_PATH}.tmp`, DB_PATH);
+  return databasePersistence.write(db, options);
 }
 
 function canManageSeasonData(db, user, action) {
@@ -118,6 +118,13 @@ function canManageSeasonData(db, user, action) {
   if (user?.username === "owner" || ["مالك", "Super Admin"].includes(role)) return true;
   const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
   return Array.isArray(configured) && configured.includes(action) && ["مالك", "Super Admin"].includes(role);
+}
+
+function canPartyAction(db, user, action) {
+  const role = ({ owner:"مالك", manager:"مدير" }[user?.role] || user?.role || "");
+  const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
+  if (Array.isArray(configured)) return configured.includes(action);
+  return user?.username === "owner" || ["مالك", "مدير"].includes(role);
 }
 
 function verifiedDatabaseBackup(prefix = "season-operation", metadata = null) {
@@ -2163,6 +2170,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
   const summary = { ok: true, requestId, batchId, checked: 0, successful: 0, failed: 0, manualIntervention: 0, changed: 0, unchanged: 0, startedAt, finishedAt: null, errors: [] };
   try {
     if (!fs.existsSync(DB_PATH)) return { ...summary, ok: false, message: "Database not initialized." };
+    const startingRevision = databasePersistence.revision();
     const db = ensureTrackingDb(readDb());
     const settings = defaultTrackingSettings(db.settings || {});
     trackingRuntime.provider = settings.providerName;
@@ -2204,7 +2212,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
     db.trackingRunBatches = db.trackingRunBatches || [];
     db.trackingRunBatches.push({ id: summary.batchId, ...summary, manual, provider: settings.providerName });
     db.trackingRunBatches = db.trackingRunBatches.slice(-100);
-    writeDb(db);
+    writeDb(db, { expectedRevision:startingRevision, operationType:"TRACKING_CYCLE", performedBy:"tracking-worker" });
     const persisted = ensureTrackingDb(readDb());
     for (const expected of persistenceExpectations) {
       const savedShipment = persisted.shipments.find(item => item.id === expected.shipmentId);
@@ -2258,12 +2266,7 @@ function users() {
 }
 
 function dbRevision() {
-  try {
-    const stat = fs.statSync(DB_PATH);
-    return `${stat.mtimeMs}-${stat.size}`;
-  } catch {
-    return "0";
-  }
+  return String(databasePersistence.revision());
 }
 
 function safeUser(user) {
@@ -2451,6 +2454,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const confirmed = FactoryReset.confirmExecution(db, prepared, { resetType:payload.resetType, confirmationPhrase:payload.confirmationPhrase, currentUsername:payload.currentUsername, performedByUsername:user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true }, Date.now());
         resetPreparations.set(preparationId, confirmed);
+        console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"FACTORY_RESET_REQUESTED", resetType:payload.resetType, performedBy:user.username, operationKey:String(payload.operationKey || ""), preparationId }));
         return send(res, 200, { ok:true, confirmed:true, executeAfter:confirmed.executeAfter, countdownSeconds:Math.ceil(FactoryReset.CONFIRMATION_DELAY_MS / 1000) });
       } catch (error) { return send(res, 409, { ok:false, code:error.code || "FACTORY_RESET_CONFIRMATION_FAILED", message:error.message }); }
     }
@@ -2466,7 +2470,7 @@ const server = http.createServer(async (req, res) => {
       try {
         FactoryReset.assertConfirmedExecution(prepared, payload, Date.now());
         const result = FactoryReset.execute(db, { resetType:payload.resetType, confirmationPhrase:payload.confirmationPhrase, currentUsername:payload.currentUsername, performedByUsername:user.username, performedBy:user.name || user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true, backup:prepared.backup });
-        writeDb(result.db); resetPreparations.delete(String(payload.preparationId || ""));
+        writeDb(result.db, { expectedRevision:Number(prepared.revision), operationType:payload.resetType === "factory" ? "FACTORY_RESET_EXECUTED" : "BUSINESS_RESET_EXECUTED", performedBy:user.username }); resetPreparations.delete(String(payload.preparationId || ""));
         sessions.clear();
         return send(res, 200, { ok:true, deletedCounts:result.deletedCounts, postResetValidation:result.validation, backupReference:prepared.backup.reference, idempotent:result.idempotent, revision:dbRevision() });
       } catch (error) { return send(res, error.code === "CONFIRMATION_DELAY_ACTIVE" ? 429 : 409, { ok:false, code:error.code || "FACTORY_RESET_FAILED", message:error.message, validation:error.validation || null, executeAfter:error.executeAfter || null }); }
@@ -2964,12 +2968,43 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, fs.readFileSync(DB_PATH), "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
+    const supplierDeleteMatch = route.match(/^\/api\/suppliers\/([^/]+)$/);
+    if (supplierDeleteMatch && req.method === "DELETE") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const source = readDb();
+      if (!canPartyAction(source, user, "delete-party")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"ليس لديك صلاحية حذف المورد." });
+      const expected = req.headers["if-match"];
+      const current = dbRevision();
+      if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision:current });
+      const supplierId = decodeURIComponent(supplierDeleteMatch[1]);
+      const supplier = (source.suppliers || []).find(item => item.id === supplierId && !item.deletedAt);
+      if (!supplier) return send(res, 404, { ok:false, code:"SUPPLIER_NOT_FOUND", message:"المورد غير موجود." });
+      const referenced = (source.receipts || []).some(row => row.partyKind === "supplier" && row.partyId === supplierId)
+        || (source.purchases || []).some(row => row.supplierId === supplierId)
+        || (source.books || []).some(row => row.supplierId === supplierId);
+      if (referenced) return send(res, 409, { ok:false, code:"SUPPLIER_IN_USE", message:"لا يمكن حذف مورد مرتبط بحركات أو أصناف." });
+      const next = JSON.parse(JSON.stringify(source));
+      const deleted = next.suppliers.find(item => item.id === supplierId);
+      const now = new Date().toISOString();
+      deleted.deletedAt = now;
+      next.audit = Array.isArray(next.audit) ? next.audit : [];
+      next.audit.push({ id:`AUD-SUP-${crypto.randomUUID()}`, date:now, createdAt:now, action:"SUPPLIER_DELETED", operationType:"SUPPLIER_DELETED", entity:"الموردون", entityId:supplierId, user:user.name || user.username, username:user.username, role:user.role });
+      try {
+        const saved = writeDb(next, { expectedRevision:expected === undefined ? undefined : Number(expected), operationType:"SUPPLIER_DELETED", performedBy:user.username });
+        return send(res, 200, { ok:true, supplierId, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
+      } catch (error) {
+        if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision) });
+        throw error;
+      }
+    }
+
     if (route === "/api/db" && req.method === "PUT") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
       const expected = req.headers["if-match"];
       const current = dbRevision();
-      if (expected && expected !== current) return send(res, 409, { ok:false, message:"Data was modified in another window. Reload before saving.", revision: current });
+      if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
       const body = await readBody(req);
       const parsedSource=JSON.parse(body);
       const parsed = ensureTrackingDb(parsedSource);
@@ -2990,8 +3025,13 @@ const server = http.createServer(async (req, res) => {
       }
       appendNegativeStockAudit(parsed, user, stockValidation.violations);
       pruneLazyFinanceFields(currentSource,parsed);
-      writeDb(parsed);
-      return send(res, 200, { ok:true, revision: dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
+      try {
+        const saved = writeDb(parsed, { expectedRevision:expected === undefined ? undefined : Number(expected), operationType:"CLIENT_SAVE", performedBy:user.username });
+        return send(res, 200, { ok:true, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
+      } catch (error) {
+        if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision) });
+        throw error;
+      }
     }
 
     if (route.startsWith("/api/tracking/debug/") && req.method === "GET") {

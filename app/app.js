@@ -1,5 +1,6 @@
 ﻿const STORAGE_KEY = "dotcom-books-erp-v2-fallback";
 const SESSION_KEY = "dotcom-books-session";
+const PURCHASE_DRAFT_KEY = "dotcom-purchase-draft-v1";
 const EGYPT_GOVERNORATES = [
   "القاهرة", "الجيزة", "الإسكندرية", "الدقهلية", "البحر الأحمر", "البحيرة", "الفيوم",
   "الغربية", "الإسماعيلية", "المنوفية", "المنيا", "القليوبية", "الوادي الجديد", "السويس",
@@ -18,6 +19,7 @@ let sessionToken = sessionStorage.getItem(SESSION_KEY) || "";
 let currentUser = null;
 let dbRevision = "";
 let saveConflict = false;
+let lastSuccessfulSaveAt = "";
 
 const ROLE_VIEWS = {
   "مالك": ["dashboard","books","sales","onlineOrders","purchases","returns","parties","shipping","accounting","reports","hr","omnichannel","settings"],
@@ -166,7 +168,12 @@ let salesDateFilter = "today";
 let salesFilterFrom = today();
 let salesFilterTo = today();
 let draftSale = { customerId: "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
-let draftPurchase = { supplierId: "S001", supplierInvoiceNumber: "", type: "شراء", payment: "آجل", returnDeadline: "", status: "تم الفحص والاستلام", paid: 0, shipping: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" }] };
+const emptyPurchaseDraft = () => ({ supplierId: "S001", supplierInvoiceNumber: "", type: "شراء", payment: "آجل", returnDeadline: "", status: "تم الفحص والاستلام", paid: 0, shipping: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" }] });
+function loadPurchaseDraft() { try { const value=JSON.parse(localStorage.getItem(PURCHASE_DRAFT_KEY)||"null"); return value?.lines?.length ? value : emptyPurchaseDraft(); } catch { return emptyPurchaseDraft(); } }
+function persistPurchaseDraft() { localStorage.setItem(PURCHASE_DRAFT_KEY, JSON.stringify(draftPurchase)); }
+function clearPurchaseDraft() { localStorage.removeItem(PURCHASE_DRAFT_KEY); }
+function hasUnsavedPurchaseDraft() { return Boolean(draftPurchase?.supplierInvoiceNumber || draftPurchase?.lines?.some(line => line.bookId)); }
+let draftPurchase = loadPurchaseDraft();
 let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
@@ -478,7 +485,7 @@ function setStorageStatus(message, connected) {
   const status = document.getElementById("storage-status");
   const mode = document.getElementById("storage-mode");
   const dot = document.querySelector(".sync-dot");
-  if (status) status.textContent = message;
+  if (status) status.textContent = lastSuccessfulSaveAt && message === "البيانات محفوظة" ? `${message} · آخر حفظ ${new Date(lastSuccessfulSaveAt).toLocaleTimeString("ar-EG")}` : message;
   if (mode) mode.textContent = connected ? "قاعدة بيانات محلية دائمة" : "حفظ احتياطي داخل المتصفح";
   if (dot) dot.style.background = connected ? "#8bb9f3" : "#4a82d0";
 }
@@ -1541,6 +1548,7 @@ async function persistToServer() {
   }
   const result = await response.json().catch(() => ({}));
   dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
+  lastSuccessfulSaveAt = new Date().toISOString();
   saveConflict = false;
 }
 
@@ -1575,6 +1583,12 @@ function saveData(action = "", entity = "", entityId = "") {
     });
   return saveQueue;
 }
+
+window.addEventListener("beforeunload", event => {
+  if (!hasUnsavedPurchaseDraft()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 function esc(value = "") {
   return String(value)
@@ -3634,7 +3648,7 @@ function renderPurchases() {
         <small>عرض كل مستندات الشراء والأمانة في نافذة منفصلة.</small>
       </button>
     </div>
-    <div class="invoice-layout">
+    <div class="invoice-layout purchase-workspace">
       <article class="card">
         <div class="invoice-meta">
           <div class="form-grid three">
@@ -6163,7 +6177,7 @@ async function reverseOrderCollection(id) {
   }catch(error){toast(error.message,"error");}
 }
 
-root.addEventListener("click", event => {
+root.addEventListener("click", async event => {
   const target = event.target.closest("[data-action], [data-view-jump], [data-party-tab]");
   if (!target) return;
   if(target instanceof HTMLButtonElement&&target.type!=="submit")event.preventDefault();
@@ -6278,7 +6292,7 @@ root.addEventListener("click", event => {
     const item = target.dataset.kind === "customer" ? getCustomer(target.dataset.id) : getSupplier(target.dataset.id);
     addPartyModal(target.dataset.kind, item);
   }
-  if (action === "delete-party") deleteParty(target.dataset.id, target.dataset.kind);
+  if (action === "delete-party") await deleteParty(target.dataset.id, target.dataset.kind);
   if (action === "add-shipment") return toast("تم إلغاء إنشاء الشحنة اليدوي. أنشئ الشحنة من أمر بيع أو طلب أونلاين مؤكد حتى تكون مرتبطة بمستند حقيقي.", "error");
   if (action === "view-shipment") viewShipment(target.dataset.id);
   if (action === "delete-shipment") deleteShipment(target.dataset.id);
@@ -6365,7 +6379,7 @@ root.addEventListener("click", event => {
   if (action === "close-sales-day") closeSalesDay();
   if (action === "print-sales-day") printSalesDay();
   if (action === "limited-edit-sale") limitedEditSale(target.dataset.id);
-  if (action === "save-purchase") savePurchase();
+  if (action === "save-purchase") await savePurchase();
   if (action === "show-sales-list") showSalesList();
   if (action === "resume-sale-invoice") { salesScreenMode = "invoice"; renderSales(); }
   if (action === "clear-sales-search") {
@@ -6662,6 +6676,7 @@ root.addEventListener("input", event => {
     const costInput = document.querySelector(`.purchase-cost[data-index="${index}"]`);
     if (costInput) costInput.value = draftPurchase.lines[index].cost;
     updatePurchaseSummary();
+    persistPurchaseDraft();
     return;
   }
   if (event.target.classList.contains("purchase-supplier-discount")) {
@@ -6670,12 +6685,14 @@ root.addEventListener("input", event => {
     const costInput = document.querySelector(`.purchase-cost[data-index="${index}"]`);
     if (costInput) costInput.value = draftPurchase.lines[index].cost;
     updatePurchaseSummary();
+    persistPurchaseDraft();
     return;
   }
   if (event.target.classList.contains("purchase-cost")) {
     draftPurchase.lines[index].cost = Number(event.target.value);
     syncPurchaseLineCost(index, "cost");
     updatePurchaseSummary();
+    persistPurchaseDraft();
     return;
   }
   if (event.target.id === "purchase-paid") draftPurchase.paid = Math.max(0, Number(event.target.value || 0));
@@ -6683,6 +6700,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "purchase-invoice-discount") draftPurchase.invoiceDiscount = Math.max(0, Number(event.target.value || 0));
   if (event.target.id === "supplier-invoice-number") draftPurchase.supplierInvoiceNumber = event.target.value;
   if (event.target.classList.contains("purchase-qty") || event.target.classList.contains("purchase-cost") || event.target.classList.contains("purchase-cover") || event.target.classList.contains("purchase-supplier-discount") || event.target.id === "purchase-paid" || event.target.id === "purchase-shipping" || event.target.id === "purchase-invoice-discount") updatePurchaseSummary();
+  if (event.target.closest(".purchase-workspace")) persistPurchaseDraft();
 });
 
 root.addEventListener("change", event => {
@@ -6805,6 +6823,7 @@ root.addEventListener("change", event => {
     draftPurchase.lines[index].discountType = draftPurchase.lines[index].discountType || "percent";
     renderPurchases();
   }
+  if (event.target.closest(".purchase-workspace")) persistPurchaseDraft();
   if (event.target.classList.contains("purchase-book-picker")) selectPurchaseLineBook(index, event.target.value);
   if (event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
@@ -7465,6 +7484,7 @@ modalBody.addEventListener("submit", async event => {
     toast(index >= 0 ? "تم تحديث بيانات الصنف." : "تمت إضافة الصنف وتوليد ملف المخزون.");
   }
   if (form.id === "party-form") {
+    const dataBeforePartySave = structuredClone(data);
     const now = new Date().toISOString();
     const isCustomer = form.dataset.kind === "customer";
     const list = isCustomer ? data.customers : data.suppliers;
@@ -7496,7 +7516,13 @@ modalBody.addEventListener("submit", async event => {
     if (index >= 0) item.points = list[index].points || 0;
     if (index >= 0) list[index] = { ...list[index], ...item };
     else list.push(item);
-    saveData(index >= 0 ? "تعديل طرف" : "إضافة طرف", isCustomer ? "العملاء" : "الموردون", item.id);
+    const partyOperation = isCustomer ? (index >= 0 ? "CUSTOMER_UPDATED" : "CUSTOMER_CREATED") : (index >= 0 ? "SUPPLIER_UPDATED" : "SUPPLIER_CREATED");
+    const saved = await saveData(partyOperation, isCustomer ? "العملاء" : "الموردون", item.id);
+    if (!saved) {
+      data = dataBeforePartySave;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      return toast(`فشل حفظ ${isCustomer ? "العميل" : "المورد"} على الخادم. لم تُعتمد التغييرات.`, "error");
+    }
     closeModal();
     if (isCustomer && form.dataset.returnToSale === "true") {
       draftSale.customerId = item.id;
@@ -8342,7 +8368,8 @@ function saveSale({ printAfter = false } = {}) {
   return sale;
 }
 
-function savePurchase() {
+async function savePurchase() {
+  const dataBeforePurchase = structuredClone(data);
   const totals = purchaseTotals();
   const lineEntries = draftPurchase.lines
     .map((line, index) => ({ line, computed: totals.lines[index] || {} }))
@@ -8433,10 +8460,19 @@ function savePurchase() {
   if (paid > 0) {
     data.cash.push({ id: nextId("TX-", data.cash), date: today(), type: "صرف", locked: true, account: "الخزينة الرئيسية", party: getSupplier(supplierId).name, amount: paid, category: type === "أمانة" ? "دفعة توريد أمانة" : "مشتريات", note: `فاتورة ${purchase.id}` });
   }
-  saveData("إنشاء فاتورة شراء", "المشتريات", purchase.id);
-  draftPurchase = { supplierId: "S001", supplierInvoiceNumber: "", type: "شراء", payment: "آجل", returnDeadline: "", status: "تم الفحص والاستلام", paid: 0, shipping: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" }] };
+  const saved = await saveData("PURCHASE_CREATED", "المشتريات", purchase.id);
+  if (!saved) {
+    data = dataBeforePurchase;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    renderPurchases();
+    toast("فشل حفظ فاتورة الشراء على الخادم. بقيت المسودة محفوظة ولم تُعتمد الفاتورة.", "error");
+    return false;
+  }
+  draftPurchase = emptyPurchaseDraft();
+  clearPurchaseDraft();
   renderPurchases();
-  toast(`تم اعتماد ${type === "أمانة" ? "توريد الأمانة" : "فاتورة الشراء"} وتحديث المخزون.`);
+  toast(`تم الحفظ: ${type === "أمانة" ? "توريد الأمانة" : "فاتورة الشراء"} ${purchase.id}.`);
+  return true;
 }
 
 function showSalesList() {
@@ -9080,7 +9116,7 @@ function deleteBook(id) {
   toast("تم حذف الصنف.");
 }
 
-function deleteParty(id, kind) {
+async function deleteParty(id, kind) {
   const isCustomer = kind === "customer";
   const list = isCustomer ? data.customers : data.suppliers;
   const item = list.find(row => row.id === id);
@@ -9089,8 +9125,32 @@ function deleteParty(id, kind) {
   const used = usedByReceipt || (isCustomer ? data.sales.some(row => row.customerId === id) : data.purchases.some(row => row.supplierId === id) || data.books.some(row => row.supplierId === id));
   if (used) return toast(`لا يمكن حذف ${isCustomer ? "عميل" : "مورد"} مرتبط بحركات أو أصناف.`, "error");
   if (!confirm(`هل تريد حذف «${item.name}»؟`)) return;
+  if (!isCustomer) {
+    if (!serverConnected) return toast("حذف المورد يتطلب اتصالًا بالخادم.", "error");
+    try {
+      const response = await fetch(`/api/suppliers/${encodeURIComponent(id)}`, {
+        method:"DELETE",
+        headers:authHeaders(dbRevision ? { "If-Match":dbRevision } : {})
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "تعذر حذف المورد.");
+      dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
+      item.deletedAt = new Date().toISOString();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      lastSuccessfulSaveAt = new Date().toISOString();
+      renderParties();
+      return toast("تم حذف المورد.");
+    } catch (error) {
+      return toast(error.message || "فشل الحذف على الخادم. لم يُحذف السجل.", "error");
+    }
+  }
   item.deletedAt = new Date().toISOString();
-  saveData("حذف طرف", isCustomer ? "العملاء" : "الموردون", id);
+  const saved = await saveData("CUSTOMER_DELETED", "العملاء", id);
+  if (!saved) {
+    item.deletedAt = null;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return toast("فشل الحذف على الخادم. لم يُحذف السجل.", "error");
+  }
   renderParties();
   toast("تم حذف السجل.");
 }
