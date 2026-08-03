@@ -1,8 +1,8 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof require === "function" ? require("./audit-id.js") : root.AuditIds);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.FactoryReset = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (AuditIds) {
   "use strict";
 
   const CONFIRMATION_PHRASE = "إعادة ضبط النظام بالكامل";
@@ -125,7 +125,7 @@
     const validation = postResetValidation(next, request.resetType, originalOwner.username);
     if (!validation.valid) throw Object.assign(new Error("Post-Reset Guard منع اعتماد العملية."), { code:"POST_RESET_VALIDATION_FAILED", validation });
     const audit = {
-      id:`AUD-RESET-${operationKey}`, operationKey,
+      operationKey,
       operationType:request.resetType === RESET_TYPES.FACTORY ? "SYSTEM_FACTORY_RESET" : "BUSINESS_DATA_RESET",
       resetType:request.resetType, previewCounts:resetPreview.summary, deletedCounts:resetPreview.deletedCounts,
       preservedCounts:resetPreview.preservedCounts, backupReference:request.backup.reference,
@@ -133,8 +133,8 @@
       performedByUsername:request.performedByUsername, performedAt, createdAt:performedAt,
       result:"success", postResetValidation:validation
     };
-    next.audit.push(audit);
-    return { db:next, idempotent:false, preview:resetPreview, deletedCounts:resetPreview.deletedCounts, audit, validation };
+    const storedAudit = AuditIds.appendAuditRecord(next.audit, audit);
+    return { db:next, idempotent:false, preview:resetPreview, deletedCounts:resetPreview.deletedCounts, audit:storedAudit, validation };
   }
 
   return { CONFIRMATION_PHRASE, CONFIRMATION_DELAY_MS, RESET_TYPES, BUSINESS_DELETE, BUSINESS_PRESERVE, FACTORY_PRESERVE, owners, isOperationalAudit, preview, assertBackup, validateRequest, confirmExecution, assertConfirmedExecution, postResetValidation, execute };

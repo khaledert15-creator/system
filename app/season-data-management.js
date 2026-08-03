@@ -1,8 +1,8 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof require === "function" ? require("./audit-id.js") : root.AuditIds);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.SeasonDataManagement = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (AuditIds) {
   "use strict";
 
   const DEMO_PRODUCT_IDS = Object.freeze(["B001", "B002", "B003", "B004", "B005"]);
@@ -236,14 +236,14 @@
     const now = request.performedAt || new Date().toISOString();
     next.audit = Array.isArray(next.audit) ? next.audit : [];
     const audit = {
-      id:`AUD-DEMO-PURGE-${operationKey}`, operationKey, operationType:"PURGE_DEMO_DATASET", action:"حذف مجموعة بيانات تجريبية مترابطة",
+      operationKey, operationType:"PURGE_DEMO_DATASET", action:"حذف مجموعة بيانات تجريبية مترابطة",
       approvedScope:preview.detectedProductIds, approvedProductIds:preview.detectedProductIds, approvedOrderIds:preview.scope.onlineOrders.map(x=>String(x).split("@@")[0]), approvedInvoiceIds:preview.scope.sales.map(x=>String(x).split("@@")[0]), approvedShipmentIds:preview.scope.shipments.map(x=>String(x).split("@@")[0]), seedClassifications:preview.explicitSeedRecords, previewCounts:preview.counts, containedInventoryExceptions:preview.inventoryExceptions, selectedScope:preview.detectedProductIds, seasonId:request.seasonId || "", performedBy:request.performedBy,
       performedAt:now, createdAt:now, backupReference:request.backup.reference, recordsDeleted:preview.counts,
       deletedCounts:preview.counts, preservedCounts:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, shippingCompanies:list(next,"shippingCompanies").length, cashAccounts:list(next,"cashAccounts").length }, postPurgeOrphanResult:{preExistingOrphans,remainingOrphans:orphans,newOrphans}, postPurgeInventoryResult, postPurgeFinanceResult,
       recordsArchived:{}, recordsPreserved:{ customers:list(next,"customers").length, suppliers:list(next,"suppliers").length, users:list(next,"users").length, settings:1 }, result:"success", failureReason:""
     };
-    next.audit.push(audit);
-    return { db:next, idempotent:false, preview, deleted:preview.counts, audit, orphans, preExistingOrphans, newOrphans, postPurgeInventoryResult, postPurgeFinanceResult };
+    const storedAudit = AuditIds.appendAuditRecord(next.audit, audit);
+    return { db:next, idempotent:false, preview, deleted:preview.counts, audit:storedAudit, orphans, preExistingOrphans, newOrphans, postPurgeInventoryResult, postPurgeFinanceResult };
   }
 
   function runtimeSeasons(db, now = new Date().toISOString()) {
@@ -278,7 +278,7 @@
     next.seasons.push(season);
     next.settings = { ...(next.settings || {}), activeSeasonId:season.id };
     next.audit = Array.isArray(next.audit) ? next.audit : [];
-    next.audit.push({ id:`AUD-SEASON-${season.id}`, operationType:"بدء موسم جديد", action:"إنشاء موسم نشط", entity:"المواسم", entityId:season.id, seasonId:season.id, selectedScope:input.preserve || {}, performedBy:season.createdBy, performedAt:now, createdAt:now, recordsPreserved:input.preserve || {}, result:"success" });
+    AuditIds.appendAuditRecord(next.audit, { operationType:"بدء موسم جديد", action:"إنشاء موسم نشط", entity:"المواسم", entityId:season.id, seasonId:season.id, selectedScope:input.preserve || {}, performedBy:season.createdBy, performedAt:now, createdAt:now, recordsPreserved:input.preserve || {}, result:"success" });
     return { db:next, season };
   }
 
@@ -292,7 +292,7 @@
     Object.assign(season, { status:input.archive ? "archived" : "closed", endsAt:input.endsAt || now.slice(0, 10), closedAt:now, closedBy:actor.name || actor.username || "", closeReason:String(input.reason || "") });
     if (next.settings?.activeSeasonId === season.id) next.settings.activeSeasonId = "";
     next.audit = Array.isArray(next.audit) ? next.audit : [];
-    next.audit.push({ id:`AUD-SEASON-CLOSE-${season.id}-${Date.now()}`, operationType:"إغلاق موسم", action:input.administrativeOverride ? "إغلاق إداري لموسم" : "إغلاق موسم", entity:"المواسم", entityId:season.id, seasonId:season.id, performedBy:season.closedBy, performedAt:now, createdAt:now, openOperations:open, reason:String(input.reason || ""), result:"success" });
+    AuditIds.appendAuditRecord(next.audit, { operationType:"إغلاق موسم", action:input.administrativeOverride ? "إغلاق إداري لموسم" : "إغلاق موسم", entity:"المواسم", entityId:season.id, seasonId:season.id, performedBy:season.closedBy, performedAt:now, createdAt:now, openOperations:open, reason:String(input.reason || ""), result:"success" });
     return { db:next, season, openOperations:open };
   }
 

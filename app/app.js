@@ -1707,8 +1707,7 @@ function auditEntry(payload = {}) {
   const actor = actorSnapshot();
   const now = payload.createdAt || new Date().toISOString();
   const parts = operationDateParts(now);
-  return {
-    id: payload.id || nextId("AUD-", data.audit || []),
+  const entry = {
     operationId: payload.operationId || payload.id || `OP-${Date.now()}`,
     operationType: payload.operationType || payload.action || "عملية",
     moduleName: payload.moduleName || payload.entity || "",
@@ -1732,6 +1731,7 @@ function auditEntry(payload = {}) {
     entity: payload.entity || payload.moduleName || "",
     entityId: payload.entityId || ""
   };
+  return AuditIds.assignUniqueAuditId(data.audit || [], entry);
 }
 
 function today() {
@@ -7469,8 +7469,8 @@ modalBody.addEventListener("submit", async event => {
     });
     const auditUser = currentUser?.name || currentUser?.username || "النظام";
     const auditStamp = new Date().toISOString();
-    data.audit.push({ id: nextId("AUD-", data.audit), date: auditStamp, action: `اعتماد جرد ${form.dataset.countType} (${changes.length} فروق)`, entity: "المخزون", entityId: countId, user: auditUser });
-    data.audit.push({ id: nextId("AUD-", data.audit), date: auditStamp, action: `تفاصيل الجرد: ${changes.map(item => `${item.name} ${item.before}→${item.after}`).join("، ") || "بدون فروقات"}`, entity: "المخزون", entityId: countId, user: auditUser });
+    AuditIds.appendAuditRecord(data.audit, { date: auditStamp, action: `اعتماد جرد ${form.dataset.countType} (${changes.length} فروق)`, entity: "المخزون", entityId: countId, user: auditUser });
+    AuditIds.appendAuditRecord(data.audit, { date: auditStamp, action: `تفاصيل الجرد: ${changes.map(item => `${item.name} ${item.before}→${item.after}`).join("، ") || "بدون فروقات"}`, entity: "المخزون", entityId: countId, user: auditUser });
     saveData();
     closeModal();
     renderBooks();

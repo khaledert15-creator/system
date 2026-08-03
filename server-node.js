@@ -9,6 +9,7 @@ const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
+const AuditIds = require("./app/audit-id.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
@@ -26,7 +27,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -425,7 +426,7 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
 function appendOrderAudit(db,user,order,action,details="") {
   const now=new Date().toISOString();
   db.audit=db.audit||[];
-  db.audit.push({id:`AUD-ORD-${crypto.randomUUID()}`,date:now,createdAt:now,action,entity:"طلبات الأونلاين",entityId:order.id,user:user.name||user.username,username:user.username,role:orderRole(user),details});
+  AuditIds.appendAuditRecord(db.audit,{date:now,createdAt:now,action,entity:"طلبات الأونلاين",entityId:order.id,user:user.name||user.username,username:user.username,role:orderRole(user),details});
 }
 
 function shippingOrderInvoice(db, order) {
@@ -562,7 +563,7 @@ function createOrderCollectionAtomic(db,payload,user) {
     addExpense(values.expectedCommission,`عمولة تحصيل ${values.company}`,"commission");
     addExpense(values.shippingCost,`تكلفة شحن ${values.company}`,"shipping-cost");
   }
-  next.audit.push({id:`AUD-COL-${crypto.randomUUID()}`,date:now,createdAt:now,action:"تسجيل تحصيل أوردر",entity:"المالية",entityId:collection.id,user:actor.name,username:actor.username,role:actor.role,reference:trackingNumber,details:`${collection.orderId} · ${collection.amount}`});
+  AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"تسجيل تحصيل أوردر",entity:"المالية",entityId:collection.id,user:actor.name,username:actor.username,role:actor.role,reference:trackingNumber,details:`${collection.orderId} · ${collection.amount}`});
   return {next,collection};
 }
 
@@ -643,7 +644,7 @@ function approveSettlementAtomic(db, settlementId, user) {
     if(order)Object.assign(order,{collectionId:collection?.id||order.collectionId||"",settlementId,financialCollectionStatus:"settled",updatedAt:now});
   }
   Object.assign(settlement,{expectedNetSettlement:expected,settlementDifference:difference,status:Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية",approvedAt:now,approvedBy:actor.name});
-  next.audit.push({id:`AUD-FIN-${crypto.randomUUID()}`,date:now,createdAt:now,action:"اعتماد تسوية شركة شحن",entity:"المالية",entityId:settlementId,user:actor.name,username:actor.username,role:actor.role,reference:settlement.transferReference||"",details:`${lines.length} شحنة`});
+  AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"اعتماد تسوية شركة شحن",entity:"المالية",entityId:settlementId,user:actor.name,username:actor.username,role:actor.role,reference:settlement.transferReference||"",details:`${lines.length} شحنة`});
   return next;
 }
 
@@ -685,7 +686,7 @@ function appendNegativeStockAudit(db, user, violations) {
   const now = new Date().toISOString();
   for (const row of violations) {
     const sourceKey = `negative-stock:${now}:${user.username}:${row.bookId}`;
-    db.audit.push({ id:`AUD-NEG-${crypto.randomUUID()}`, date:now, createdAt:now, action:"تجاوز المخزون السالب بصلاحية", operationType:"تجاوز المخزون السالب", entity:"المخزون", entityId:row.bookId, documentNo:"", user:user.name || user.username, username:user.username, role:user.role, sourceKey, details:`${row.name}: المتاح ${row.available}، المطلوب ${row.requested}` });
+    AuditIds.appendAuditRecord(db.audit,{ date:now, createdAt:now, action:"تجاوز المخزون السالب بصلاحية", operationType:"تجاوز المخزون السالب", entity:"المخزون", entityId:row.bookId, documentNo:"", user:user.name || user.username, username:user.username, role:user.role, sourceKey, details:`${row.name}: المتاح ${row.available}، المطلوب ${row.requested}` });
   }
 }
 
@@ -2287,8 +2288,7 @@ function sessionUser(req) {
 function appendShipmentComplaintAudit(db, user, complaint, action, notes = "") {
   db.audit = Array.isArray(db.audit) ? db.audit : [];
   const now = new Date().toISOString();
-  db.audit.push({
-    id:`AUD-CMP-${crypto.randomUUID()}`,
+  AuditIds.appendAuditRecord(db.audit,{
     operationId:`OP-CMP-${crypto.randomUUID()}`,
     operationType:action,
     moduleName:"الشحن",
@@ -2313,8 +2313,7 @@ function appendShipmentComplaintAudit(db, user, complaint, action, notes = "") {
 function appendManualShipmentStatusAudit(db, user, shipment, statusCode, notes = "") {
   db.audit = Array.isArray(db.audit) ? db.audit : [];
   const now = new Date().toISOString();
-  db.audit.push({
-    id:`AUD-SHIP-${crypto.randomUUID()}`,
+  AuditIds.appendAuditRecord(db.audit,{
     operationId:`OP-SHIP-${crypto.randomUUID()}`,
     operationType:"manual_shipping_status",
     moduleName:"الشحن",
@@ -2940,7 +2939,7 @@ const server = http.createServer(async (req, res) => {
       if(shipment?.collectionId===collection.id)Object.assign(shipment,{financialCollectionStatus:"",collectionId:"",collectedAmount:0,collectedAt:"",collectedBy:""});
       (next.cash||[]).filter(item=>item.collectionId===collection.id&&!item.deletedAt).forEach(item=>{item.deletedAt=now;item.reversedBy=actor.name;});
       (next.expenses||[]).filter(item=>item.collectionId===collection.id&&item.status!=="ملغي").forEach(item=>{item.status="ملغي";item.reversedAt=now;item.reversedBy=actor.name;});
-      next.audit.push({id:`AUD-COL-${crypto.randomUUID()}`,date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(JSON.parse(await readBody(req)||"{}").reason||"")});
+      AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(JSON.parse(await readBody(req)||"{}").reason||"")});
       pruneLazyFinanceFields(source,next);
       writeDb(next);
       return send(res,200,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
@@ -2989,7 +2988,7 @@ const server = http.createServer(async (req, res) => {
       const now = new Date().toISOString();
       deleted.deletedAt = now;
       next.audit = Array.isArray(next.audit) ? next.audit : [];
-      next.audit.push({ id:`AUD-SUP-${crypto.randomUUID()}`, date:now, createdAt:now, action:"SUPPLIER_DELETED", operationType:"SUPPLIER_DELETED", entity:"الموردون", entityId:supplierId, user:user.name || user.username, username:user.username, role:user.role });
+      AuditIds.appendAuditRecord(next.audit,{ date:now, createdAt:now, action:"SUPPLIER_DELETED", operationType:"SUPPLIER_DELETED", entity:"الموردون", entityId:supplierId, user:user.name || user.username, username:user.username, role:user.role });
       try {
         const saved = writeDb(next, { expectedRevision:expected === undefined ? undefined : Number(expected), operationType:"SUPPLIER_DELETED", performedBy:user.username });
         return send(res, 200, { ok:true, supplierId, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
