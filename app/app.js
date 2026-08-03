@@ -20,6 +20,11 @@ let currentUser = null;
 let dbRevision = "";
 let saveConflict = false;
 let lastSuccessfulSaveAt = "";
+let lastSaveError = null;
+let purchaseRetryState = null;
+let purchaseOtherTabDetected = false;
+let systemTabChannel = null;
+const SYSTEM_TAB_ID = globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random()}`;
 
 const ROLE_VIEWS = {
   "مالك": ["dashboard","books","sales","onlineOrders","purchases","returns","parties","shipping","accounting","reports","hr","omnichannel","settings"],
@@ -174,6 +179,21 @@ function persistPurchaseDraft() { localStorage.setItem(PURCHASE_DRAFT_KEY, JSON.
 function clearPurchaseDraft() { localStorage.removeItem(PURCHASE_DRAFT_KEY); }
 function hasUnsavedPurchaseDraft() { return Boolean(draftPurchase?.supplierInvoiceNumber || draftPurchase?.lines?.some(line => line.bookId)); }
 let draftPurchase = loadPurchaseDraft();
+
+function announceSystemTab() {
+  try {
+    systemTabChannel = new BroadcastChannel("dotcom-system-tabs-v1");
+    systemTabChannel.addEventListener("message", event => {
+      if (event.data?.tabId && event.data.tabId !== SYSTEM_TAB_ID) {
+        purchaseOtherTabDetected = true;
+        if (currentView === "purchases") toast("يوجد تبويب آخر مفتوح للنظام. استخدم تبويبًا واحدًا أثناء إدخال الفواتير.", "error");
+      }
+      if (event.data?.type === "hello") systemTabChannel.postMessage({ type:"present", tabId:SYSTEM_TAB_ID });
+    });
+    systemTabChannel.postMessage({ type:"hello", tabId:SYSTEM_TAB_ID });
+  } catch {}
+}
+announceSystemTab();
 let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
@@ -1544,15 +1564,20 @@ async function persistToServer() {
     const result = await response.json().catch(() => ({}));
     if (response.status === 409) saveConflict = true;
     if (response.status === 401) showLogin("انتهت جلسة الدخول. سجّل الدخول مرة أخرى.");
-    throw new Error(result.message || "تعذر حفظ قاعدة البيانات.");
+    const error = new Error(result.message || "تعذر حفظ قاعدة البيانات.");
+    error.code = result.code || (response.status === 409 ? "DATABASE_WRITE_BLOCKED_STALE_REVISION" : "DATABASE_WRITE_FAILED");
+    error.revision = result.revision || "";
+    throw error;
   }
   const result = await response.json().catch(() => ({}));
   dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
   lastSuccessfulSaveAt = new Date().toISOString();
   saveConflict = false;
+  lastSaveError = null;
 }
 
 function saveData(action = "", entity = "", entityId = "") {
+  lastSaveError = null;
   stampCashMovements();
   if (action) {
     data.audit.push(auditEntry({
@@ -1577,6 +1602,7 @@ function saveData(action = "", entity = "", entityId = "") {
       return true;
     })
     .catch(error => {
+      lastSaveError = error;
       setStorageStatus("فشل الحفظ على القرص", false);
       toast(error.message || "حدث خطأ أثناء حفظ البيانات.", "error");
       return false;
@@ -3626,6 +3652,8 @@ function renderPurchases() {
       <div><h2>المشتريات والاستلام</h2><p>تسجيل الشراء المملوك أو الأمانة مع تكلفة الشحن والفحص.</p></div>
       <div class="actions"><button class="btn" data-action="new-purchase-document">＋ تسجيل مشتريات جديدة</button><button class="btn secondary" data-action="new-purchase-return-supplier">مرتجع مشتريات مستقل</button><button class="btn ghost" data-action="open-purchase-return-list">مرتجع من مستند شراء</button><button class="btn ghost" data-action="show-purchases-list">السجل الكامل</button></div>
     </div>
+    ${purchaseOtherTabDetected ? `<div class="notice warning"><strong>يوجد تبويب آخر مفتوح للنظام</strong><span>لتجنب تعارض الحفظ، استخدم تبويبًا واحدًا أثناء إدخال الفواتير.</span></div>` : ""}
+    ${purchaseRetryState ? `<div class="notice danger purchase-stale-notice"><strong>تم تحديث بيانات النظام أثناء إدخال الفاتورة</strong><span>${purchaseRetryState.conflicts?.length ? "توجد تغييرات في المورد أو الأصناف وتحتاج مراجعة قبل الاعتماد." : "اضغط تحديث وإعادة المحاولة للاحتفاظ بالمسودة وإعادة الحفظ."}</span><div class="form-actions"><button class="btn" data-action="retry-stale-purchase" ${purchaseRetryState.conflicts?.length ? "disabled" : ""}>تحديث وإعادة المحاولة</button></div></div>` : `<div class="notice success purchase-revision-status"><strong>البيانات محدثة</strong><span>سيتم فحص أحدث نسخة من الخادم قبل اعتماد الفاتورة.</span></div>`}
     <div class="purchase-command-grid">
       <button class="purchase-command-card" type="button" data-action="new-purchase-document">
         <span class="stat-icon blue">＋</span>
@@ -3711,6 +3739,7 @@ function updatePurchaseSummary() {
 }
 
 function resetPurchaseDraft() {
+  purchaseRetryState = null;
   draftPurchase = {
     supplierId: data.suppliers[0]?.id || "",
     supplierInvoiceNumber: "",
@@ -3724,6 +3753,7 @@ function resetPurchaseDraft() {
     invoiceDiscountType: "percent",
     lines: [{ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" }]
   };
+  persistPurchaseDraft();
   renderPurchases();
   toast("تم تجهيز نموذج تسجيل مشتريات جديد.");
 }
@@ -6380,6 +6410,7 @@ root.addEventListener("click", async event => {
   if (action === "print-sales-day") printSalesDay();
   if (action === "limited-edit-sale") limitedEditSale(target.dataset.id);
   if (action === "save-purchase") await savePurchase();
+  if (action === "retry-stale-purchase") await retryStalePurchaseSave();
   if (action === "show-sales-list") showSalesList();
   if (action === "resume-sale-invoice") { salesScreenMode = "invoice"; renderSales(); }
   if (action === "clear-sales-search") {
@@ -8368,7 +8399,73 @@ function saveSale({ printAfter = false } = {}) {
   return sale;
 }
 
-async function savePurchase() {
+async function fetchLatestDatabaseForPurchase() {
+  const response = await fetch(`/api/db?purchase-preflight=${Date.now()}`, { headers:authHeaders(), cache:"no-store" });
+  if (!response.ok) throw new Error("تعذر جلب أحدث بيانات النظام قبل اعتماد الفاتورة.");
+  return { data:normalizeData(await response.json()), revision:response.headers.get("X-DB-Revision") || "" };
+}
+
+function rememberPurchaseRetry(baseData, conflicts = []) {
+  persistPurchaseDraft();
+  purchaseRetryState = { baseData:structuredClone(baseData), draft:structuredClone(draftPurchase), conflicts, detectedAt:new Date().toISOString() };
+}
+
+async function preparePurchaseRevision({ baseData = data } = {}) {
+  const latest = await fetchLatestDatabaseForPurchase();
+  if (!latest.revision || latest.revision === dbRevision) return { ok:true };
+  const analysis = PurchaseStaleRetry.analyze({ base:baseData, latest:latest.data, draft:draftPurchase });
+  if (analysis.existingOperation) {
+    data = latest.data;
+    dbRevision = latest.revision;
+    draftPurchase = emptyPurchaseDraft();
+    clearPurchaseDraft();
+    purchaseRetryState = null;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    renderPurchases();
+    toast(`الفاتورة ${analysis.existingOperation.id} محفوظة بالفعل؛ لم يتم إنشاء نسخة مكررة.`);
+    return { ok:false, alreadySaved:true };
+  }
+  if (!analysis.safe) {
+    rememberPurchaseRetry(baseData, analysis.conflicts);
+    renderPurchases();
+    toast("تغير المورد أو أحد الأصناف. راجع التغييرات قبل إعادة الاعتماد.", "error");
+    return { ok:false, conflicts:analysis.conflicts };
+  }
+  const merged = PurchaseStaleRetry.mergeLatestWithDraft(latest.data, draftPurchase);
+  data = merged.data;
+  draftPurchase = merged.draft;
+  dbRevision = latest.revision;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  setStorageStatus("البيانات محدثة", true);
+  return { ok:true, refreshed:true };
+}
+
+async function retryStalePurchaseSave() {
+  if (!purchaseRetryState || purchaseRetryState.conflicts?.length) return false;
+  draftPurchase = structuredClone(purchaseRetryState.draft);
+  persistPurchaseDraft();
+  const baseData = purchaseRetryState.baseData;
+  purchaseRetryState = null;
+  const prepared = await preparePurchaseRevision({ baseData });
+  if (!prepared.ok) return false;
+  return savePurchase({ skipRevisionPreflight:true });
+}
+
+async function savePurchase({ skipRevisionPreflight = false } = {}) {
+  draftPurchase.operationKey = draftPurchase.operationKey || (globalThis.crypto?.randomUUID?.() || `purchase-${Date.now()}-${Math.random()}`);
+  persistPurchaseDraft();
+  const initialBaseData = structuredClone(data);
+  if (!skipRevisionPreflight) {
+    try {
+      const prepared = await preparePurchaseRevision({ baseData:initialBaseData });
+      if (!prepared.ok) return false;
+    } catch (error) {
+      rememberPurchaseRetry(initialBaseData, []);
+      renderPurchases();
+      toast(error.message || "تعذر تحديث البيانات. بقيت المسودة محفوظة.", "error");
+      return false;
+    }
+  }
   const dataBeforePurchase = structuredClone(data);
   const totals = purchaseTotals();
   const lineEntries = draftPurchase.lines
@@ -8387,6 +8484,7 @@ async function savePurchase() {
   const supplierInvoiceNumber = String(document.getElementById("supplier-invoice-number")?.value || "").trim();
   const purchase = {
     id: nextId("PUR-", data.purchases),
+    operationKey:draftPurchase.operationKey,
     date: today(),
     supplierInvoiceNumber,
     supplierId,
@@ -8464,10 +8562,12 @@ async function savePurchase() {
   if (!saved) {
     data = dataBeforePurchase;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    if (lastSaveError?.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") rememberPurchaseRetry(dataBeforePurchase, []);
     renderPurchases();
-    toast("فشل حفظ فاتورة الشراء على الخادم. بقيت المسودة محفوظة ولم تُعتمد الفاتورة.", "error");
+    toast(lastSaveError?.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION" ? "تم تحديث بيانات النظام أثناء إدخال الفاتورة. اضغط تحديث وإعادة المحاولة للاحتفاظ بالمسودة وإعادة الحفظ." : "فشل حفظ فاتورة الشراء على الخادم. بقيت المسودة محفوظة ولم تُعتمد الفاتورة.", "error");
     return false;
   }
+  purchaseRetryState = null;
   draftPurchase = emptyPurchaseDraft();
   clearPurchaseDraft();
   renderPurchases();

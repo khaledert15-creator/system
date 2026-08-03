@@ -26,7 +26,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });

@@ -41,4 +41,9 @@ test("حذف المورد عبر endpoint صريح مع صلاحية",()=>{
   assert.ok(server.includes('canPartyAction(source, user, "delete-party")') && server.includes('operationType:"SUPPLIER_DELETED"'));
 });
 
-console.log(`${passed}/13 database persistence tests passed`);
+test("Purchase stale retry module is versioned",()=>{
+  assert.ok(server.includes('"purchase-stale-retry.js"'));
+  assert.ok(fs.readFileSync(path.join(__dirname,"..","app","index.html"),"utf8").includes('src="purchase-stale-retry.js"'));
+});
+
+console.log(`${passed}/14 database persistence tests passed`);
