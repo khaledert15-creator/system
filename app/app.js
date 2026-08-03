@@ -4793,18 +4793,18 @@ async function factoryResetPrepare() {
     if (!response.ok) throw new Error(result.message || "فشل Backup Guard.");
     factoryResetState.preparationId = result.preparationId; factoryResetState.backup = result.backup;
     const enabled = Boolean(result.resetEnabled);
-    modalBody.innerHTML = `<form id="factory-reset-confirm-form" class="factory-reset-dialog"><div class="notice success"><strong>✓ Backup جاهز ومطابق للمصدر</strong><span>${Math.ceil(Number(result.backup.backupSize || 0) / 1024)} KB · المرجع: ${esc(result.backup.reference)}</span></div><div class="form-grid"><div class="form-field full"><label class="required">اكتب عبارة التأكيد حرفيًا</label><input name="confirmationPhrase" autocomplete="off" placeholder="إعادة ضبط النظام بالكامل" required></div><div class="form-field full"><label class="required">اكتب اسم المستخدم الحالي للتأكيد</label><input name="currentUsername" autocomplete="off" placeholder="${esc(currentUser?.username || "")}" required></div></div><div class="notice warning"><strong>التأكيد الأول</strong><span>بعد المتابعة ستظهر نافذة تأكيد ثانية مع انتظار 10 ثوانٍ.</span></div>${enabled ? "" : `<div class="notice info">التنفيذ مغلق في هذه البيئة؛ تم اختبار Preview وBackup فقط.</div>`}<div class="form-actions"><button class="btn danger" type="submit" ${enabled ? "" : "disabled"}>المتابعة للتأكيد النهائي</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+    modalBody.innerHTML = `<form id="factory-reset-confirm-form" class="factory-reset-dialog"><div class="notice success"><strong>✓ Backup جاهز ومطابق للمصدر</strong><span>${Math.ceil(Number(result.backup.backupSize || 0) / 1024)} KB · المرجع: ${esc(result.backup.reference)}</span></div><div class="form-grid"><div class="form-field full"><label class="required">اكتب عبارة التأكيد حرفيًا</label><input name="confirmationPhrase" autocomplete="off" placeholder="إعادة ضبط النظام بالكامل" required></div><div class="form-field full"><label class="required">اكتب اسم المستخدم الحالي للتأكيد</label><input name="currentUsername" autocomplete="off" placeholder="${esc(currentUser?.username || "")}" required></div></div><div class="notice warning"><strong>التأكيد الأول</strong><span>بعد المتابعة ستظهر نافذة تأكيد ثانية مع انتظار 10 ثوانٍ.</span></div>${enabled ? "" : `<div class="notice info">التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط.</div>`}<div class="form-actions"><button class="btn danger" type="submit" ${enabled ? "" : "disabled"}>المتابعة للتأكيد النهائي</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
   } catch (error) { modalBody.innerHTML = `<div class="notice danger"><strong>BLOCKED</strong><span>${esc(error.message)}</span></div><div class="form-actions"><button class="btn ghost" data-action="open-factory-reset">العودة</button></div>`; }
 }
 
-function openFactoryResetFinalConfirmation(values) {
+function openFactoryResetFinalConfirmation(values, executeAfter) {
   clearInterval(factoryResetState.timer);
-  factoryResetState.countdown = 10;
-  openModal("التأكيد الثاني والأخير", "سيتم تسجيل العملية في Audit Log", `<div class="factory-reset-final"><span class="danger-badge">خطر جدًا</span><h3>هل أنت متأكد تمامًا؟</h3><p>سيبدأ ${factoryResetState.resetType === "business" ? "Reset بيانات التشغيل" : "Factory Reset الكامل"} بعد التأكيد. الاستعادة لا تتم إلا من النسخة الاحتياطية.</p><div class="reset-countdown"><strong id="factory-reset-countdown">10</strong><span>ثوانٍ قبل تفعيل التنفيذ</span></div><div class="form-actions"><button id="factory-reset-execute" class="btn danger" data-action="factory-reset-execute" disabled>تنفيذ إعادة الضبط</button><button class="btn ghost" data-action="close-modal">تراجع آمن</button></div></div>`);
+  factoryResetState.countdown = Math.max(0, Math.ceil((Number(executeAfter) - Date.now()) / 1000));
+  openModal("التأكيد الثاني والأخير", "سيتم تسجيل العملية في Audit Log", `<div class="factory-reset-final"><span class="danger-badge">خطر جدًا</span><h3>هل أنت متأكد تمامًا؟</h3><p>سيبدأ ${factoryResetState.resetType === "business" ? "Reset بيانات التشغيل" : "Factory Reset الكامل"} بعد التأكيد. الاستعادة لا تتم إلا من النسخة الاحتياطية.</p><div class="reset-countdown"><strong id="factory-reset-countdown">${factoryResetState.countdown}</strong><span>ثوانٍ قبل تفعيل التنفيذ</span></div><div class="form-actions"><button id="factory-reset-execute" class="btn danger" data-action="factory-reset-execute" disabled>تنفيذ إعادة الضبط</button><button class="btn ghost" data-action="close-modal">تراجع آمن</button></div></div>`);
   factoryResetState.confirmationPhrase = values.confirmationPhrase;
   factoryResetState.currentUsername = values.currentUsername;
   factoryResetState.timer = setInterval(() => {
-    factoryResetState.countdown -= 1;
+    factoryResetState.countdown = Math.max(0, Math.ceil((Number(executeAfter) - Date.now()) / 1000));
     const label = document.getElementById("factory-reset-countdown"), button = document.getElementById("factory-reset-execute");
     if (label) label.textContent = String(Math.max(0, factoryResetState.countdown));
     if (factoryResetState.countdown <= 0) { clearInterval(factoryResetState.timer); if (button) button.disabled = false; }
@@ -7249,7 +7249,12 @@ modalBody.addEventListener("submit", async event => {
   if (form.id === "factory-reset-confirm-form") {
     if (formData.confirmationPhrase !== "إعادة ضبط النظام بالكامل") return toast("عبارة التأكيد غير مطابقة.", "danger");
     if (formData.currentUsername !== currentUser?.username) return toast("اسم المستخدم الحالي غير مطابق.", "danger");
-    openFactoryResetFinalConfirmation(formData);
+    try {
+      const response = await fetch("/api/admin/factory-reset/confirm", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:factoryResetState.resetType, preparationId:factoryResetState.preparationId, confirmationPhrase:formData.confirmationPhrase, currentUsername:formData.currentUsername, operationKey:factoryResetState.operationKey }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "فشل التأكيد الأول.");
+      openFactoryResetFinalConfirmation(formData, result.executeAfter);
+    } catch (error) { toast(error.message, "danger"); }
     return;
   }
   if(form.id==="preparation-issue-form"){

@@ -6,6 +6,7 @@
   "use strict";
 
   const CONFIRMATION_PHRASE = "إعادة ضبط النظام بالكامل";
+  const CONFIRMATION_DELAY_MS = 10_000;
   const RESET_TYPES = Object.freeze({ BUSINESS:"business", FACTORY:"factory" });
   const BUSINESS_DELETE = Object.freeze([
     "books", "inventoryBatches", "stockMovements", "reservations", "purchases", "purchaseReturns",
@@ -68,6 +69,7 @@
 
   function validateRequest(db, request = {}) {
     const resetPreview = preview(db, request.resetType);
+    if (request.executionEnabled !== true) throw Object.assign(new Error("التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط."), { code:"FACTORY_RESET_DISABLED" });
     if (!resetPreview.executable) throw Object.assign(new Error(resetPreview.blockedReason), { code:"OWNER_REQUIRED" });
     if (!request.authorized) throw Object.assign(new Error("صلاحية factory_reset_system مطلوبة."), { code:"PERMISSION_DENIED" });
     if (request.confirmationPhrase !== CONFIRMATION_PHRASE) throw Object.assign(new Error("عبارة التأكيد غير مطابقة."), { code:"CONFIRMATION_REQUIRED" });
@@ -75,6 +77,18 @@
     if (!String(request.operationKey || "").trim()) throw Object.assign(new Error("Operation Key مطلوب."), { code:"OPERATION_KEY_REQUIRED" });
     assertBackup(request.backup);
     return resetPreview;
+  }
+
+  function confirmExecution(db, prepared = {}, request = {}, now = Date.now()) {
+    validateRequest(db, { ...request, backup:prepared.backup });
+    const confirmedAt = Number(now), executeAfter = confirmedAt + CONFIRMATION_DELAY_MS;
+    return { ...prepared, confirmationPhrase:request.confirmationPhrase, currentUsername:request.currentUsername, operationKey:String(request.operationKey || ""), confirmedAt, executeAfter };
+  }
+
+  function assertConfirmedExecution(prepared = {}, request = {}, now = Date.now()) {
+    if (!prepared.confirmedAt || !prepared.executeAfter || prepared.confirmationPhrase !== request.confirmationPhrase || prepared.currentUsername !== request.currentUsername || prepared.operationKey !== String(request.operationKey || "")) throw Object.assign(new Error("التأكيد الثاني مطلوب قبل التنفيذ."), { code:"SECOND_CONFIRMATION_REQUIRED" });
+    if (Number(now) < prepared.executeAfter) throw Object.assign(new Error("انتظر اكتمال مهلة التأكيد قبل التنفيذ."), { code:"CONFIRMATION_DELAY_ACTIVE", executeAfter:prepared.executeAfter });
+    return true;
   }
 
   function postResetValidation(db, type, ownerUsername) {
@@ -87,6 +101,7 @@
   }
 
   function execute(db, request = {}) {
+    if (request.executionEnabled !== true) throw Object.assign(new Error("التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط."), { code:"FACTORY_RESET_DISABLED" });
     const operationKey = String(request.operationKey || "").trim();
     const prior = list(db,"audit").find(row => row.operationKey === operationKey && ["SYSTEM_FACTORY_RESET", "BUSINESS_DATA_RESET"].includes(row.operationType));
     if (prior) return { db:clone(db), idempotent:true, audit:clone(prior), deletedCounts:prior.deletedCounts || {} };
@@ -122,5 +137,5 @@
     return { db:next, idempotent:false, preview:resetPreview, deletedCounts:resetPreview.deletedCounts, audit, validation };
   }
 
-  return { CONFIRMATION_PHRASE, RESET_TYPES, BUSINESS_DELETE, BUSINESS_PRESERVE, FACTORY_PRESERVE, owners, isOperationalAudit, preview, assertBackup, validateRequest, postResetValidation, execute };
+  return { CONFIRMATION_PHRASE, CONFIRMATION_DELAY_MS, RESET_TYPES, BUSINESS_DELETE, BUSINESS_PRESERVE, FACTORY_PRESERVE, owners, isOperationalAudit, preview, assertBackup, validateRequest, confirmExecution, assertConfirmedExecution, postResetValidation, execute };
 });
