@@ -1998,26 +1998,17 @@ function createInventoryBatch({ productId, purchaseInvoiceId, supplierId, qty, u
 }
 
 function allocateInventoryFIFO(productId, quantity) {
-  const allocations = [];
-  let remaining = Number(quantity || 0);
-  let costOfGoodsSold = 0;
-  let costIncomplete = false;
-  activeInventoryBatches(productId).forEach(batch => {
-    if (remaining <= 0) return;
-    const take = Math.min(remaining, Number(batch.remainingQty || 0));
-    if (take <= 0) return;
-    batch.remainingQty = Number((Number(batch.remainingQty || 0) - take).toFixed(6));
-    batch.updatedAt = new Date().toISOString();
-    if (!Number(batch.unitCost || 0)) costIncomplete = true;
-    costOfGoodsSold += take * Number(batch.unitCost || 0);
-    allocations.push({ batchId: batch.batchId || batch.id, qty: take, unitCost: Number(batch.unitCost || 0) });
-    remaining -= take;
-  });
-  if (remaining > 0) {
-    costIncomplete = true;
-    allocations.push({ batchId: "UNALLOCATED", qty: remaining, unitCost: null });
-  }
-  return { allocations, costOfGoodsSold: Number(costOfGoodsSold.toFixed(2)), costIncomplete, unallocatedQty: Number(Math.max(0, remaining).toFixed(6)) };
+  return PurchaseInventoryIntegrity.consumeBatchesFIFO(data, productId, quantity);
+}
+
+function synchronizeStockAdjustment(book, afterStock, reference, reason = "تسوية مخزون") {
+  const before=Number(book.stock||0),after=Number(afterStock||0),difference=Number((after-before).toFixed(6));
+  PurchaseInventoryIntegrity.assertInventoryConsistency(data,[book.id]);
+  if(difference<0)PurchaseInventoryIntegrity.consumeBatchesFIFO(data,book.id,Math.abs(difference));
+  if(difference>0)createInventoryBatch({productId:book.id,purchaseInvoiceId:reference,supplierId:book.supplierId||"",qty:difference,unitCost:productInventorySummary(book.id).averageInventoryCost||latestApprovedPurchaseCost(book.id)||Number(book.cost||0),coverPrice:productCoverPrice(book),purchaseDate:today(),source:"stock_adjustment"});
+  book.stock=after;
+  PurchaseInventoryIntegrity.assertInventoryConsistency(data,[book.id]);
+  return {before,after,difference,reason};
 }
 
 function saleLineRevenue(line) {
@@ -7537,6 +7528,7 @@ modalBody.addEventListener("submit", async event => {
     const rows = [...form.querySelectorAll("[data-count-row]")];
     const changes = [];
     const countId = `COUNT-${Date.now()}`;
+    try{rows.forEach(row=>{const book=getBook(row.dataset.bookId),after=Number(row.querySelector(".count-actual-stock").value||0);if(book&&Number(book.stock||0)!==after){PurchaseInventoryIntegrity.assertInventoryConsistency(data,[book.id]);if(after<Number(book.stock||0)&&productInventorySummary(book.id).currentStockQty<Number(book.stock||0)-after)throw Object.assign(new Error("Insufficient batch stock"),{code:"INSUFFICIENT_BATCH_STOCK"});}});}catch(error){return toast("تم منع اعتماد الجرد لأن أحد الأصناف لا يملك دفعات متطابقة مع رصيده.","error");}
     rows.forEach(row => {
       const book = getBook(row.dataset.bookId);
       if (!book) return;
@@ -7544,7 +7536,7 @@ modalBody.addEventListener("submit", async event => {
       const after = Number(row.querySelector(".count-actual-stock").value || 0);
       if (before !== after) {
         changes.push({ id: book.id, name: book.name, before, after, difference: after - before });
-        book.stock = after;
+        synchronizeStockAdjustment(book,after,countId,`جرد ${form.dataset.countType}`);
         recordStockMovement(book, `جرد ${form.dataset.countType}`, after - before, before, after, countId, formData.note || "");
       }
     });
@@ -8009,9 +8001,9 @@ modalBody.addEventListener("submit", async event => {
   }
   if (form.id === "stock-form") {
     const book = getBook(form.dataset.id);
-    const before = Number(book.stock || 0);
-    book.stock = Number(formData.stock);
-    recordStockMovement(book, formData.reason || "تسوية مخزون", book.stock - before, before, book.stock, `ADJ-${Date.now()}`, formData.note || "");
+    const before = Number(book.stock || 0),adjustmentId=`ADJ-${Date.now()}`;
+    try{synchronizeStockAdjustment(book,Number(formData.stock),adjustmentId,formData.reason||"تسوية مخزون");}catch(error){return toast("تم منع التسوية لأنها كانت ستنشئ فرقًا بين المخزون والدفعات.","error");}
+    recordStockMovement(book, formData.reason || "تسوية مخزون", book.stock - before, before, book.stock, adjustmentId, formData.note || "");
     saveData("تسوية مخزون", "المخزون", book.id);
     closeModal();
     renderBooks();
@@ -10624,6 +10616,8 @@ function cancelPurchase(id) {
     const book = getBook(line.bookId);
     if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد «${book.name}» أقل من كمية المستند.`, "error");
   }
+  if(purchase.status==="مستلمة")try{const preview=JSON.parse(JSON.stringify(data)),previewPurchase=preview.purchases.find(item=>item.id===purchase.id);PurchaseInventoryIntegrity.consumePurchaseBatches(preview,previewPurchase);for(const line of previewPurchase.lines||[]){const book=preview.books.find(item=>item.id===(line.bookId||line.productId));if(book)book.stock=Number(book.stock||0)-Number(line.qty||line.quantity||0);}PurchaseInventoryIntegrity.assertInventoryConsistency(preview,[...(previewPurchase.lines||[]).map(line=>line.bookId||line.productId)]);}catch(error){return toast("لا يمكن إلغاء المستند لأن دفعاته استُهلكت أو لا تطابق المخزون. استخدم مرتجع مشتريات محددًا بدلًا من الإلغاء.","error");}
+  if(purchase.status==="مستلمة")try{PurchaseInventoryIntegrity.consumePurchaseBatches(data,purchase);}catch(error){return toast("لا يمكن إلغاء المستند لأن دفعاته استُهلكت أو لا تطابق المخزون. استخدم مرتجع مشتريات محددًا بدلًا من الإلغاء.","error");}
   (purchase.status === "مستلمة" ? (purchase.lines || []) : []).forEach(line => {
     const book = getBook(line.bookId);
     if (book) { const before = book.stock; book.stock -= Number(line.qty || 0); recordStockMovement(book, purchase.type === "أمانة" ? "إلغاء أمانة" : "إلغاء شراء", -Number(line.qty || 0), before, book.stock, purchase.id, "إلغاء المستند"); }
