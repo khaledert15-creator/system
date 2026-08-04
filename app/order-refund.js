@@ -55,8 +55,8 @@
     if (!["cash_refund", "customer_credit", "linked_disbursement", "pending_credit"].includes(type)) throw Object.assign(new Error("اختر طريقة تسوية صحيحة."), { code:"INVALID_SETTLEMENT_TYPE", status:400 });
     const amount = round(payload.amount);
     if (!(amount > 0) || amount > preview.outstanding) throw Object.assign(new Error("قيمة التسوية أكبر من المدفوع الصافي أو غير صالحة."), { code:"REFUND_EXCEEDS_NET_PAID", status:409 });
-    const paymentId = String(payload.paymentId || preview.payments.find(item => round(item.amount) > 0)?.id || "");
-    if (!paymentId) throw Object.assign(new Error("اختر الدفعة الأصلية."), { code:"PAYMENT_REQUIRED", status:400 });
+    const paymentId = String(payload.paymentId || "");
+    if (!paymentId) throw Object.assign(new Error("اختر الدفعة الأصلية المرتبطة بالرد"), { code:"PAYMENT_REQUIRED", status:400 });
     const payment = preview.payments.find(item => item.id === paymentId);
     if (!payment) throw Object.assign(new Error("الدفعة الأصلية غير موجودة."), { code:"PAYMENT_NOT_FOUND", status:404 });
     const paymentSettled = round(preview.refunds.filter(item => item.paymentId === paymentId).reduce((sum,item) => sum + Number(item.amount || 0), 0));
@@ -65,7 +65,7 @@
     let account = null, receipt = null;
     if (type === "cash_refund") {
       account = list(db, "cashAccounts").find(item => !item.deletedAt && item.active !== false && item.id === payload.cashAccountId);
-      if (!account) throw Object.assign(new Error("اختر الخزنة التي سيخرج منها الرد."), { code:"CASH_ACCOUNT_REQUIRED", status:400 });
+      if (!account) throw Object.assign(new Error("اختر الخزنة التي سيتم رد المبلغ منها"), { code:"CASH_ACCOUNT_REQUIRED", status:400 });
     }
     if (type === "linked_disbursement") {
       receipt = preview.candidates.find(item => item.id === payload.receiptId);

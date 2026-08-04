@@ -1131,6 +1131,12 @@ function cashAccountOptions(selected = "") {
   return activeCashAccounts().map(account => `<option value="${esc(account.name)}" ${account.name === current ? "selected" : ""}>${esc(account.name)}</option>`).join("");
 }
 
+function refundCashAccountOptions(selectedId = "") {
+  const accounts = activeCashAccounts();
+  const currentId = accounts.some(account => account.id === selectedId) ? selectedId : accounts.length === 1 ? accounts[0].id : "";
+  return `${accounts.length > 1 ? `<option value="">اختر الخزنة...</option>` : ""}${accounts.map(account => `<option value="${esc(account.id)}" ${account.id === currentId ? "selected" : ""}>${esc(account.name)}</option>`).join("")}`;
+}
+
 function cashAccountBalance(name) {
   const account = activeCashAccounts().find(item => item.name === name);
   const opening = Number(account?.openingBalance || 0);
@@ -3256,7 +3262,7 @@ function openCancellationSettlement(kind,id,financial){
     <div class="metric-strip"><div class="mini-metric"><span>إجمالي المستند</span><strong>${money(financial.total)}</strong></div><div class="mini-metric"><span>المدفوع</span><strong>${money(financial.paid)}</strong></div><div class="mini-metric"><span>المسترد</span><strong>${money(financial.refunded)}</strong></div><div class="mini-metric"><span>الرصيد الدائن</span><strong>${money(financial.credited)}</strong></div><div class="mini-metric"><span>المطلوب تسويته</span><strong>${money(financial.outstanding)}</strong></div></div>
     <div class="finance-callout"><strong>${esc(financial.customerName)}</strong><span>${esc(financial.orderId||"—")} · ${esc(financial.invoiceId||"بدون فاتورة")}</span></div>
     ${(financial.refunds||[]).length?`<div class="table-wrap"><table><thead><tr><th>التسوية</th><th>النوع</th><th>المبلغ</th><th>المستخدم</th></tr></thead><tbody>${financial.refunds.map(row=>`<tr><td>${esc(row.refundId)}</td><td>${esc(cancellationSettlementLabel(row.settlementType))}</td><td>${money(row.amount)}</td><td>${esc(row.performedBy)}</td></tr>`).join("")}</tbody></table></div>`:""}
-    ${financial.outstanding>0?`<form id="cancellation-settlement-form" data-kind="${kind}" data-id="${esc(id)}"><div class="form-grid"><div class="form-field"><label>طريقة التسوية</label><select name="settlementType"><option value="cash_refund">رد نقدي للعميل</option><option value="customer_credit">تحويل لرصيد دائن</option><option value="linked_disbursement" ${receiptOptions?"":"disabled"}>ربط إيصال صرف موجود</option><option value="pending_credit">رصيد معلق — Advanced</option></select></div><div class="form-field"><label>المبلغ</label><input name="amount" type="number" min="0.01" max="${financial.outstanding}" step="0.01" value="${financial.outstanding}" required></div><div class="form-field"><label>الدفعة الأصلية</label><select name="paymentId">${paymentOptions}</select></div><div class="form-field"><label>الخزنة</label><select name="cashAccountId">${cashAccountOptions()}</select></div><div class="form-field"><label>إيصال الصرف</label><select name="receiptId"><option value="">اختر يدويًا...</option>${receiptOptions}</select></div><div class="form-field full"><label>السبب</label><textarea name="reason" required>تسوية المبلغ قبل الإلغاء</textarea></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد التسوية</button><button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء العملية</button></div></form>`:"<div class=\"success-note\">تمت تسوية كامل المبلغ. يمكن الآن إلغاء المستند.</div>"}
+    ${financial.outstanding>0?`<form id="cancellation-settlement-form" data-kind="${kind}" data-id="${esc(id)}"><input type="hidden" name="orderId" value="${esc(financial.orderId||"")}"><input type="hidden" name="invoiceId" value="${esc(financial.invoiceId||"")}"><input type="hidden" name="customerId" value="${esc(financial.customerId||"")}"><div class="form-grid"><div class="form-field"><label>طريقة التسوية</label><select name="settlementType"><option value="cash_refund">رد نقدي للعميل</option><option value="customer_credit">تحويل لرصيد دائن</option><option value="linked_disbursement" ${receiptOptions?"":"disabled"}>ربط إيصال صرف موجود</option><option value="pending_credit">رصيد معلق — Advanced</option></select></div><div class="form-field"><label>المبلغ</label><input name="amount" type="number" min="0.01" max="${financial.outstanding}" step="0.01" value="${financial.outstanding}" required></div><div class="form-field"><label>الدفعة الأصلية</label><select name="paymentId">${paymentOptions}</select></div><div class="form-field"><label>الخزنة</label><select name="cashAccountId">${refundCashAccountOptions()}</select></div><div class="form-field"><label>إيصال الصرف</label><select name="receiptId"><option value="">اختر يدويًا...</option>${receiptOptions}</select></div><div class="form-field full"><label>السبب</label><textarea name="reason" required>تسوية المبلغ قبل الإلغاء</textarea></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد التسوية</button><button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء العملية</button></div></form>`:"<div class=\"success-note\">تمت تسوية كامل المبلغ. يمكن الآن إلغاء المستند.</div>"}
     <div class="form-actions">${finalButton}<button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button></div>`);
 }
 
@@ -6921,6 +6927,17 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "cancellation-open-ledger") {
+    const customerId=String(appAction.dataset.id||"");
+    if(!customerId||!getCustomer(customerId))return toast("لا يمكن فتح كشف الحساب لأن العميل غير مرتبط بالسجل","error");
+    try{showStatement(customerId,"customer");}catch(error){toast("تعذر فتح كشف حساب العميل، برجاء تحديث الصفحة والمحاولة مرة أخرى","error");}
+    return;
+  }
+  if (appAction?.dataset.action === "cancellation-finalize") {
+    const kind=appAction.dataset.kind,id=appAction.dataset.id;
+    if(confirm(`تمت التسوية المالية. هل تريد ${kind==="sale"?"إبطال الفاتورة":"إلغاء الطلب"} الآن؟`))orderWorkflowRequest(cancellationEndpoint(kind,id,"cancel"),{body:{reason:"إلغاء بعد اكتمال التسوية المالية"}}).then(()=>{closeModal();kind==="sale"?renderSales():renderOnlineOrders();toast("تم إلغاء المستند بعد التسوية المالية.");}).catch(error=>toast(error.message,"error"));
+    return;
+  }
   if(appAction?.dataset.action==="statement-filter"){
     modalBody.querySelectorAll('[data-action="statement-filter"]').forEach(button=>button.classList.toggle("active",button===appAction));applyStatementFilters(appAction.dataset.filter);return;
   }
@@ -7352,8 +7369,12 @@ modalBody.addEventListener("submit", async event => {
   const form = event.target;
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){
+    const payment=(data.orderPayments||[]).find(item=>item.id===formData.paymentId),originalCashMovement=(data.cash||[]).find(item=>item.paymentId===formData.paymentId||item.receiptId===formData.paymentId);
+    const payload={...formData,refundMethod:formData.settlementType==="cash_refund"?"cash":formData.settlementType,amount:Number(formData.amount),orderId:String(formData.orderId||""),invoiceId:String(formData.invoiceId||""),paymentId:String(formData.paymentId||""),originalCashMovementId:String(originalCashMovement?.id||payment?.originalCashMovementId||""),customerId:String(formData.customerId||""),cashAccountId:String(formData.cashAccountId||""),reason:String(formData.reason||"").trim(),operationKey:`cancel-settlement:${form.dataset.kind}:${form.dataset.id}:${crypto.randomUUID?.()||Date.now()}`};
+    if(payload.settlementType==="cash_refund"&&!payload.cashAccountId)return toast("اختر الخزنة التي سيتم رد المبلغ منها","error");
+    if(!payload.paymentId)return toast("اختر الدفعة الأصلية المرتبطة بالرد","error");
     const button=form.querySelector('button[type="submit"]');button.disabled=true;
-    try{const payload={...formData,amount:Number(formData.amount),operationKey:`cancel-settlement:${form.dataset.kind}:${form.dataset.id}:${crypto.randomUUID?.()||Date.now()}`};await orderWorkflowRequest(cancellationEndpoint(form.dataset.kind,form.dataset.id,"refunds"),{body:payload});await refreshCancellationSettlement(form.dataset.kind,form.dataset.id);toast("تم تسجيل التسوية وربطها بالمستند وكشف حساب العميل.");}catch(error){button.disabled=false;toast(error.message,"error");}
+    try{await orderWorkflowRequest(cancellationEndpoint(form.dataset.kind,form.dataset.id,"refunds"),{body:payload});await refreshCancellationSettlement(form.dataset.kind,form.dataset.id);toast("تم تسجيل التسوية وربطها بالمستند وكشف حساب العميل.");}catch(error){button.disabled=false;toast(error.message,"error");}
     return;
   }
   if (form.id === "factory-reset-confirm-form") {
