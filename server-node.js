@@ -2643,8 +2643,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/cancel") && req.method === "POST") {
-      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إلغاء الطلب."});
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"تم إنشاء فاتورة للطلب؛ استخدم إجراء إلغاء الفاتورة الحالي."});
@@ -2712,8 +2712,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/reopen") && req.method === "POST") {
-      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إعادة فتح التجهيز."});
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});

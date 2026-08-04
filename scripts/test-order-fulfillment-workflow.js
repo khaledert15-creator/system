@@ -17,22 +17,23 @@ const company=(db.shippingCompanies||[]).find(x=>!x.deletedAt&&x.active!==false)
 if(!company)throw new Error("No active shipping company fixture.");
 db.onlineOrders=db.onlineOrders||[];db.sales=db.sales||[];db.shipments=db.shipments||[];
 const now=new Date().toISOString();
-function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true}={}){
+function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true,withSale=true}={}){
   const orderId=`ORD-WF-${String(index).padStart(2,"0")}`,saleId=`INV-WF-${String(index).padStart(2,"0")}`,total=670;
   const order={id:orderId,date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone||"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA",source:"whatsapp",status:prepared?"تم التجهيز":"قيد التجهيز",workflowStage:stage,confirmedAt:now,confirmedBy:"QA",preparedAt:prepared?now:null,preparedBy:prepared?"QA":null,lines:[{bookId:book.id,qty:1,price:600,discount:0,discountType:"percent"}],shippingCost:70,subtotal:600,discountTotal:0,total,paidAmount:paid,amountDueAtDelivery:total-paid,saleId,createdAt:now,updatedAt:now,deletedAt:null};
   const sale={id:saleId,date:now.slice(0,10),customerId:customer.id,onlineOrderId:orderId,total,shipping:70,paid,paidAmount:paid,remaining:total-paid,remainingAmount:total-paid,customerSnapshot:{name:customer.name,phone:customer.phone||"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA"},lines:order.lines,createdAt:now,updatedAt:now,deletedAt:null};
-  db.onlineOrders.push(order);db.sales.push(sale);return order;
+  db.onlineOrders.push(order);if(withSale)db.sales.push(sale);else order.saleId=null;return order;
 }
 const prep=fixture(0,{stage:"awaiting_preparation",prepared:false});
 for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
+const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
 fs.writeFileSync(dbPath,JSON.stringify(db,null,2));
 
 const port=8935,child=spawn(process.execPath,["server-node.js"],{cwd:qa,env:{...process.env,PORT:String(port),HOST:"127.0.0.1",TRACKING_RPA_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
 let output="";child.stdout.on("data",d=>output+=d);child.stderr.on("data",d=>output+=d);
 const base=`http://127.0.0.1:${port}`;let token="";
 const pass=(ok,label)=>{if(!ok)throw new Error(label);console.log(`PASS ${label}`);};
-async function call(route,{method="GET",body}={}){
-  const response=await fetch(base+route,{method,headers:{...(token?{"X-Session-Token":token}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
+async function call(route,{method="GET",body,authToken=token}={}){
+  const response=await fetch(base+route,{method,headers:{...(authToken?{"X-Session-Token":authToken}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
   return {status:response.status,body:await response.json().catch(()=>({}))};
 }
 async function wait(){
@@ -41,7 +42,22 @@ async function wait(){
 }
 (async()=>{
   await wait();
+  const beforeAuthFailures=fs.readFileSync(dbPath,"utf8");
+  let denied=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",authToken:"expired-session-token"});
+  pass(denied.status===401&&denied.body.code==="AUTHENTICATION_REQUIRED"&&denied.body.message.includes("انتهت جلسة الدخول"),"expired session returns a clear 401 for cancel");
+  denied=await call(`/api/orders/${prep.id}/prepare/reopen`,{method:"POST",authToken:"expired-session-token"});
+  pass(denied.status===401&&denied.body.code==="AUTHENTICATION_REQUIRED"&&denied.body.message.includes("انتهت جلسة الدخول"),"expired session returns a clear 401 for reopen");
+  pass(fs.readFileSync(dbPath,"utf8")===beforeAuthFailures,"401 order actions do not change data");
+  const accountantLogin=await call("/api/login",{method:"POST",body:{username:"accountant",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"},authToken:""});
+  pass(accountantLogin.status===200,"restricted user login");
+  denied=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",authToken:accountantLogin.body.token});
+  pass(denied.status===403&&denied.body.code==="PERMISSION_DENIED"&&denied.body.message==="ليس لديك صلاحية لتنفيذ هذا الإجراء","restricted user gets a clear 403 for cancel");
+  denied=await call(`/api/orders/${prep.id}/prepare/reopen`,{method:"POST",authToken:accountantLogin.body.token});
+  pass(denied.status===403&&denied.body.code==="PERMISSION_DENIED","restricted user gets a clear 403 for reopen");
+  pass(fs.readFileSync(dbPath,"utf8")===beforeAuthFailures,"403 order actions do not change data");
   const login=await call("/api/login",{method:"POST",body:{username:"owner",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"}});token=login.body.token;pass(login.status===200,"owner login");
+  const cancelled=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",body:{reason:"QA auth action"}});
+  pass(cancelled.status===200&&cancelled.body.order.status==="ملغي","owner can cancel an order");
   const editPayload={phone:`010${String(Date.now()).slice(-8)}`,customerName:"عميل تعديل التجهيز",governorate:"القاهرة",address:"QA",chatwootConversationId:`wf-edit-${Date.now()}`,lines:[{bookId:book.id,qty:1,discount:0,discountType:"percent"}],shippingCost:70,paymentPlan:"cash_on_delivery",paidAmount:0,paymentConfirmed:false};
   const created=await call("/api/orders/quick",{method:"POST",body:editPayload}),editId=created.body.order?.id;pass(created.status===201&&editId,"editable order created");
   await call(`/api/orders/${editId}/confirm`,{method:"POST"});await call(`/api/orders/${editId}/prepare/start`,{method:"POST"});await call(`/api/orders/${editId}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}});

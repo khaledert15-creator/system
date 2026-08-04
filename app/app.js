@@ -270,6 +270,23 @@ function authHeaders(extra = {}) {
   return { ...extra, ...(sessionToken ? { "X-Session-Token": sessionToken } : {}) };
 }
 
+const orderWorkflowRequests = new Map();
+
+function orderAuthenticationError(status, result = {}) {
+  if (status === 401) {
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionToken = "";
+    currentUser = null;
+    const message = "انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى";
+    showLogin(message);
+    return Object.assign(new Error(message), { code:result.code || "AUTHENTICATION_REQUIRED", status });
+  }
+  if (status === 403) {
+    return Object.assign(new Error("ليس لديك صلاحية لتنفيذ هذا الإجراء"), { code:result.code || "PERMISSION_DENIED", status });
+  }
+  return null;
+}
+
 function normalizeSessionUser(user) {
   const roles = { owner:"مالك", manager:"مدير", accountant:"محاسب", cashier:"كاشير", warehouse:"مخزن", shipping:"شحن" };
   const names = { owner:"مالك النظام", manager:"مدير النظام", accountant:"المحاسب", cashier:"الكاشير", warehouse:"مسؤول المخزن", shipping:"مسؤول الشحن" };
@@ -3159,12 +3176,20 @@ function renderPreparationQueue() {
 }
 
 async function orderWorkflowRequest(path,{method="POST",body}={}) {
-  const response=await fetch(path,{method,headers:authHeaders(body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
-  const result=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(result.message||"تعذر تنفيذ الإجراء.");
-  dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;
-  await reloadRemoteData();
-  return result;
+  const requestKey=`${method}:${path}`;
+  if(orderWorkflowRequests.has(requestKey))return orderWorkflowRequests.get(requestKey);
+  const request=(async()=>{
+    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders(body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
+    const result=await response.json().catch(()=>({}));
+    const authError=orderAuthenticationError(response.status,result);
+    if(authError)throw authError;
+    if(!response.ok)throw Object.assign(new Error(result.message||"تعذر تنفيذ الإجراء."),{code:result.code||"ORDER_ACTION_FAILED",status:response.status});
+    dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;
+    await reloadRemoteData();
+    return result;
+  })();
+  orderWorkflowRequests.set(requestKey,request);
+  try{return await request;}finally{orderWorkflowRequests.delete(requestKey);}
 }
 
 function quickOrderPayload() {
