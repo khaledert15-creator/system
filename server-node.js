@@ -11,6 +11,7 @@ const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
+const OrderRefunds = require("./app/order-refund.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
@@ -2649,12 +2650,64 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"تم إنشاء فاتورة للطلب؛ استخدم إجراء إلغاء الفاتورة الحالي."});
       if(order.status==="ملغي")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
-      if(confirmedOrderPayments(db,order.id).length)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"يوجد مبلغ مدفوع على الطلب. يجب تنفيذ Refund / Reversal مالي قبل الإلغاء، ولن يتم حذف الإيصال."});
+      const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});
+      if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الطلب قبل تسوية المبلغ المدفوع.",financial});
       const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();
       releaseOrderInventory(db,order,user,String(payload.reason||"إلغاء الطلب"));
       Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});
       appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/cancellation/preview") && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{return send(res,200,{ok:true,financial:OrderRefunds.cancellationPreview(db,{orderId:route.split("/")[3]}),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
+      catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/refunds") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefunds.createSettlement(db,{orderId:route.split("/")[3]},payload,user,()=>crypto.randomUUID());if(!result.existing){const order=result.preview.order;appendOrderAudit(db,user,order,"تسوية المبلغ قبل إلغاء الطلب",`${result.settlement.settlementType} · ${result.settlement.amount}`);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLATION_SETTLEMENT",performedBy:user.username});}return send(res,result.existing?200:201,{ok:true,...result,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
+      catch(error){return send(res,error.status||409,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route.startsWith("/api/sales/") && route.endsWith("/cancellation/preview") && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"cancel-sale"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{return send(res,200,{ok:true,financial:OrderRefunds.cancellationPreview(db,{invoiceId:route.split("/")[3]}),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
+      catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route.startsWith("/api/sales/") && route.endsWith("/refunds") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"cancel-sale"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefunds.createSettlement(db,{invoiceId:route.split("/")[3]},payload,user,()=>crypto.randomUUID());if(!result.existing){const context=OrderRefunds.resolveDocument(db,{invoiceId:route.split("/")[3]});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_CANCELLATION_SETTLEMENT",action:"تسوية المبلغ قبل إلغاء الفاتورة",entity:"المبيعات",entityId:context.invoiceId,user:user.name||user.username,username:user.username,performedAt:new Date().toISOString(),details:`${result.settlement.settlementType} · ${result.settlement.amount}`});writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SALE_CANCELLATION_SETTLEMENT",performedBy:user.username});}return send(res,result.existing?200:201,{ok:true,...result,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
+      catch(error){return send(res,error.status||409,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route.startsWith("/api/sales/") && route.endsWith("/cancel") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"cancel-sale"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      const invoiceId=route.split("/")[3],sale=(db.sales||[]).find(item=>item.id===invoiceId&&!item.deletedAt);if(!sale)return send(res,404,{ok:false,message:"الفاتورة غير موجودة."});
+      if(sale.status==="ملغاة")return send(res,200,{ok:true,sale,existing:true,revision:dbRevision()});
+      if((db.shipments||[]).some(item=>!item.deletedAt&&(item.invoiceId===sale.id||item.orderId===sale.id)))return send(res,409,{ok:false,code:"SHIPMENT_CANCELLATION_REQUIRED",message:"ألغِ الشحنة المرتبطة أولًا."});
+      const financial=OrderRefunds.cancellationPreview(db,{invoiceId});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الفاتورة قبل تسوية المبلغ المدفوع.",financial});
+      const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إبطال الفاتورة دون حذف",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}
+      const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});const order=(db.onlineOrders||[]).find(item=>item.id===sale.onlineOrderId);if(order)Object.assign(order,{saleId:null,status:"قيد التجهيز",updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED",action:"إبطال فاتورة بيع",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:"تمت التسوية المالية قبل الإبطال"});writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SALE_VOIDED",performedBy:user.username});return send(res,200,{ok:true,sale,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/customers/") && route.endsWith("/ledger") && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());return send(res,200,{ok:true,rows:OrderRefunds.customerLedger(db,route.split("/")[3]),revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/customers/") && route.endsWith("/credits/use") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.payment.receive"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية استخدام الرصيد الدائن."});try{const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefunds.useCustomerCredit(db,{...payload,customerId:route.split("/")[3]},user,()=>crypto.randomUUID());if(!result.existing)writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"CUSTOMER_CREDIT_USED",performedBy:user.username});return send(res,result.existing?200:201,{ok:true,...result,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}catch(error){return send(res,error.status||409,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route === "/api/order-cancellation/repair-preview" && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());if(user.username!=="owner"&&orderRole(user)!=="مالك")return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"هذه المعاينة متاحة للمالك فقط."});return send(res,200,{ok:true,preview:OrderRefunds.repairPreview(db),revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/start") && req.method === "POST") {

@@ -1217,7 +1217,7 @@ function customerSnapshot(customer, fallback = {}) {
 
 function normalizeData(value) {
   const normalized = value && typeof value === "object" ? structuredClone(value) : structuredClone(seed);
-  ["books", "customers", "suppliers", "sales", "purchases", "shipments", "cash", "employees", "receipts", "audit", "users", "stockMovements", "onlineOrders", "returns", "shippingCompanies", "cashAccounts", "trackingHistory", "trackingRuns", "notifications", "complaints", "inventoryBatches", "dayClosings", "expenseTypes", "incomeTypes", "expenses", "otherIncome", "carrierSettlements", "orderCollections"].forEach(key => {
+  ["books", "customers", "suppliers", "sales", "purchases", "shipments", "cash", "employees", "receipts", "audit", "users", "stockMovements", "onlineOrders", "returns", "shippingCompanies", "cashAccounts", "trackingHistory", "trackingRuns", "notifications", "complaints", "inventoryBatches", "dayClosings", "expenseTypes", "incomeTypes", "expenses", "otherIncome", "carrierSettlements", "orderCollections", "orderPayments", "orderRefunds", "customerCredits", "customerCreditUses"].forEach(key => {
     if (!Array.isArray(normalized[key])) normalized[key] = [];
   });
   normalized.version = Math.max(3, Number(normalized.version || 0));
@@ -3179,7 +3179,7 @@ async function orderWorkflowRequest(path,{method="POST",body}={}) {
   const requestKey=`${method}:${path}`;
   if(orderWorkflowRequests.has(requestKey))return orderWorkflowRequests.get(requestKey);
   const request=(async()=>{
-    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders(body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
+    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders({...(body?{"Content-Type":"application/json"}:{}),...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:body?JSON.stringify(body):undefined});
     const result=await response.json().catch(()=>({}));
     const authError=orderAuthenticationError(response.status,result);
     if(authError)throw authError;
@@ -3236,10 +3236,31 @@ async function copyQuickOrderMessage() {
 
 async function cancelOnlineOrder(id) {
   const order=getOnlineOrder(id);if(!order)return;
-  if(!confirm(`هل تريد إلغاء الطلب ${id} وتحرير الكميات المحجوزة؟`))return;
-  try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel`,{body:{reason:"إلغاء يدوي من شاشة الطلبات"}});renderOnlineOrders();toast("تم إلغاء الطلب وتحرير المخزون المحجوز.");}
-  catch(error){toast(error.message,"error");}
+  try{
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET"});
+    if(result.financial.paid>0)return openCancellationSettlement("order",id,result.financial);
+    if(!confirm(`هل تريد إلغاء الطلب ${id} وتحرير الكميات المحجوزة؟`))return;
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel`,{body:{reason:"إلغاء يدوي من شاشة الطلبات"}});renderOnlineOrders();toast("تم إلغاء الطلب وتحرير المخزون المحجوز.");
+  }catch(error){toast(error.message,"error");}
 }
+
+function cancellationEndpoint(kind,id,suffix){return `/api/${kind==="sale"?"sales":"orders"}/${encodeURIComponent(id)}/${suffix}`;}
+
+function cancellationSettlementLabel(type){return({cash_refund:"رد نقدي للعميل",customer_credit:"تحويل المبلغ إلى رصيد دائن",linked_disbursement:"ربط إيصال صرف موجود",pending_credit:"إبقاء المبلغ كرصيد معلق — Advanced"}[type]||type);}
+
+function openCancellationSettlement(kind,id,financial){
+  const paymentOptions=(financial.payments||[]).map(item=>`<option value="${esc(item.id)}">${esc(item.id)} · ${money(item.amount)} · ${esc(item.cashAccountName||item.paymentMethod||"—")}</option>`).join("");
+  const receiptOptions=(financial.candidates||[]).map(item=>`<option value="${esc(item.id)}">${esc(item.id)} · ${money(item.amount)} · ${fmtDate(item.date)}</option>`).join("");
+  const finalButton=financial.canCancel?`<button class="btn danger" type="button" data-action="cancellation-finalize" data-kind="${kind}" data-id="${esc(id)}">${kind==="sale"?"إلغاء الفاتورة الآن":"إلغاء الطلب الآن"}</button>`:"";
+  openModal("لا يمكن إلغاء الطلب قبل تسوية المبلغ المدفوع","تسوية المبلغ قبل الإلغاء",`
+    <div class="metric-strip"><div class="mini-metric"><span>إجمالي المستند</span><strong>${money(financial.total)}</strong></div><div class="mini-metric"><span>المدفوع</span><strong>${money(financial.paid)}</strong></div><div class="mini-metric"><span>المسترد</span><strong>${money(financial.refunded)}</strong></div><div class="mini-metric"><span>الرصيد الدائن</span><strong>${money(financial.credited)}</strong></div><div class="mini-metric"><span>المطلوب تسويته</span><strong>${money(financial.outstanding)}</strong></div></div>
+    <div class="finance-callout"><strong>${esc(financial.customerName)}</strong><span>${esc(financial.orderId||"—")} · ${esc(financial.invoiceId||"بدون فاتورة")}</span></div>
+    ${(financial.refunds||[]).length?`<div class="table-wrap"><table><thead><tr><th>التسوية</th><th>النوع</th><th>المبلغ</th><th>المستخدم</th></tr></thead><tbody>${financial.refunds.map(row=>`<tr><td>${esc(row.refundId)}</td><td>${esc(cancellationSettlementLabel(row.settlementType))}</td><td>${money(row.amount)}</td><td>${esc(row.performedBy)}</td></tr>`).join("")}</tbody></table></div>`:""}
+    ${financial.outstanding>0?`<form id="cancellation-settlement-form" data-kind="${kind}" data-id="${esc(id)}"><div class="form-grid"><div class="form-field"><label>طريقة التسوية</label><select name="settlementType"><option value="cash_refund">رد نقدي للعميل</option><option value="customer_credit">تحويل لرصيد دائن</option><option value="linked_disbursement" ${receiptOptions?"":"disabled"}>ربط إيصال صرف موجود</option><option value="pending_credit">رصيد معلق — Advanced</option></select></div><div class="form-field"><label>المبلغ</label><input name="amount" type="number" min="0.01" max="${financial.outstanding}" step="0.01" value="${financial.outstanding}" required></div><div class="form-field"><label>الدفعة الأصلية</label><select name="paymentId">${paymentOptions}</select></div><div class="form-field"><label>الخزنة</label><select name="cashAccountId">${cashAccountOptions()}</select></div><div class="form-field"><label>إيصال الصرف</label><select name="receiptId"><option value="">اختر يدويًا...</option>${receiptOptions}</select></div><div class="form-field full"><label>السبب</label><textarea name="reason" required>تسوية المبلغ قبل الإلغاء</textarea></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد التسوية</button><button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء العملية</button></div></form>`:"<div class=\"success-note\">تمت تسوية كامل المبلغ. يمكن الآن إلغاء المستند.</div>"}
+    <div class="form-actions">${finalButton}<button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button></div>`);
+}
+
+async function refreshCancellationSettlement(kind,id){const result=await orderWorkflowRequest(cancellationEndpoint(kind,id,"cancellation/preview"),{method:"GET"});openCancellationSettlement(kind,id,result.financial);}
 
 async function confirmExistingOnlineOrder(id) {
   try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/confirm`);onlineOrdersMode="orders";renderOnlineOrders();toast(`تم تأكيد ${id} وحجز الكمية المتاحة.`);}
@@ -6288,6 +6309,11 @@ root.addEventListener("click", async event => {
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
+  if (action === "cancellation-open-ledger") { closeModal(); showStatement(target.dataset.id,"customer"); }
+  if (action === "cancellation-finalize") {
+    const kind=target.dataset.kind,id=target.dataset.id;
+    if(confirm(`تمت التسوية المالية. هل تريد ${kind==="sale"?"إبطال الفاتورة":"إلغاء الطلب"} الآن؟`))orderWorkflowRequest(cancellationEndpoint(kind,id,"cancel"),{body:{reason:"إلغاء بعد اكتمال التسوية المالية"}}).then(()=>{closeModal();kind==="sale"?renderSales():renderOnlineOrders();toast("تم إلغاء المستند بعد التسوية المالية.");}).catch(error=>toast(error.message,"error"));
+  }
   if (action === "confirm-online-order") confirmExistingOnlineOrder(target.dataset.id);
   if (action === "shipping-stat") applyShippingStatFilter(target.dataset.stat);
   if (action === "open-notifications") showNotificationCenter();
@@ -6895,6 +6921,9 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if(appAction?.dataset.action==="statement-filter"){
+    modalBody.querySelectorAll('[data-action="statement-filter"]').forEach(button=>button.classList.toggle("active",button===appAction));applyStatementFilters(appAction.dataset.filter);return;
+  }
   if (appAction?.dataset.action === "print-sale") {
     printSale(appAction.dataset.id, appAction.dataset.format || "a4");
     return;
@@ -7137,6 +7166,7 @@ modalBody.addEventListener("click", event => {
 });
 
 modalBody.addEventListener("change", event => {
+  if(event.target.matches("[data-statement-date]")){applyStatementFilters();return;}
   if(event.target.matches("[data-preparation-book]")){
     const orderId=modalTitle.textContent.replace(/^تجهيز\s+/,""),doneBookIds=[...modalBody.querySelectorAll("[data-preparation-book]:checked")].map(input=>input.dataset.preparationBook);
     orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/prepare/checklist`,{method:"PATCH",body:{doneBookIds}}).then(()=>openPreparationOrder(orderId)).catch(error=>toast(error.message,"error"));
@@ -7321,6 +7351,11 @@ modalBody.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
   const formData = Object.fromEntries(new FormData(form).entries());
+  if(form.id==="cancellation-settlement-form"){
+    const button=form.querySelector('button[type="submit"]');button.disabled=true;
+    try{const payload={...formData,amount:Number(formData.amount),operationKey:`cancel-settlement:${form.dataset.kind}:${form.dataset.id}:${crypto.randomUUID?.()||Date.now()}`};await orderWorkflowRequest(cancellationEndpoint(form.dataset.kind,form.dataset.id,"refunds"),{body:payload});await refreshCancellationSettlement(form.dataset.kind,form.dataset.id);toast("تم تسجيل التسوية وربطها بالمستند وكشف حساب العميل.");}catch(error){button.disabled=false;toast(error.message,"error");}
+    return;
+  }
   if (form.id === "factory-reset-confirm-form") {
     if (formData.confirmationPhrase !== "إعادة ضبط النظام بالكامل") return toast("عبارة التأكيد غير مطابقة.", "danger");
     if (formData.currentUsername !== currentUser?.username) return toast("اسم المستخدم الحالي غير مطابق.", "danger");
@@ -8201,10 +8236,13 @@ function consumeOrderReservation(order, sale) {
   Object.assign(reservation,{status:"consumed",consumedAt:now,updatedAt:now,consumedBy:currentUser?.name||currentUser?.username||"—",invoiceId:sale.id});
 }
 
+const orderInvoiceConversions = new Set();
+
 function convertOnlineOrderToSale(id, options = {}) {
   const order = getOnlineOrder(id);
   if (!order) return toast("الطلب غير موجود.", "error");
-  const existingSale = data.sales.find(sale => sale.id === order.saleId || sale.onlineOrderId === order.id);
+  const invoiceOperationKey=`order-invoice:${order.id}`;
+  const existingSale = data.sales.find(sale => sale.id === order.saleId || sale.onlineOrderId === order.id || sale.operationKey===invoiceOperationKey);
   if (existingSale) {
     order.saleId = existingSale.id;
     toast("تم إنشاء فاتورة لهذا الطلب من قبل.");
@@ -8212,6 +8250,7 @@ function convertOnlineOrderToSale(id, options = {}) {
   }
   if (!INVOICE_READY_ORDER_STATUSES.includes(order.status)) return toast("يجب تجهيز الطلب أولًا قبل إنشاء الفاتورة.", "error");
   if (!order.lines.length) return toast("أضف أصنافًا إلى الطلب أولًا.", "error");
+  if(orderInvoiceConversions.has(order.id))return toast("جاري إنشاء فاتورة هذا الطلب بالفعل.");
   const totals = onlineOrderTotals(order.lines, order.orderDiscount, order.orderDiscountType, order.shippingCost);
   for (const computed of totals.lines) {
     const book = getBook(computed.bookId);
@@ -8229,6 +8268,7 @@ function convertOnlineOrderToSale(id, options = {}) {
   const paymentSummary=OrderFinance.calculatePayment(grandTotal,Number(order.paidAmount||0));
   const paid = paymentSummary.paidAmount;
   const actor = actorSnapshot();
+  orderInvoiceConversions.add(order.id);
   const sale = {
     id: nextId("INV-", data.sales), date: today(), customerId: customer.id, channel: "متجر إلكتروني",
     saleOperationType: "طلب أونلاين",
@@ -8236,6 +8276,7 @@ function convertOnlineOrderToSale(id, options = {}) {
     paid, paidAmount:paid, remaining: paymentSummary.remainingAmount, remainingAmount:paymentSummary.remainingAmount, status: "معتمدة", pointsAwarded: 0,
     lines: totals.lines.map(line => ({ bookId: line.bookId, productId: line.bookId, qty: line.qty, quantity: line.qty, price: line.price, originalPrice:line.price, originalTotal:line.originalTotal, unitOriginalPrice:line.unitOriginalPrice, unitSellingPrice: line.finalUnitPrice, unitFinalPrice:line.unitFinalPrice, finalUnitPrice:line.finalUnitPrice, totalSellingPrice: line.finalNet, finalNet:line.finalNet, discount:line.discountPercent, discountPercent:line.discountPercent, discountAmount:line.discountAmount, unitDiscountAmount:line.unitDiscountAmount, lineDiscountTotal:line.lineDiscountTotal, discountType:line.discountType, discountScope:line.discountScope })),
     onlineOrderId: order.id,
+    operationKey:invoiceOperationKey,
     customerSnapshot: customerSnapshot(customer, order),
     createdByUserId: actor.userId, createdByName: actor.name, createdByUsername: actor.username, createdByRole: actor.role,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null
@@ -8258,6 +8299,7 @@ function convertOnlineOrderToSale(id, options = {}) {
   data.sales.push(sale);
   order.saleId = sale.id; order.status = "تم إنشاء الفاتورة"; order.updatedAt = new Date().toISOString();
   saveData("تحويل طلب أونلاين إلى فاتورة", "طلبات الأونلاين", order.id);
+  saveQueue.finally(()=>orderInvoiceConversions.delete(order.id));
   if(!options.keepModal){closeModal();renderOnlineOrders();}
   toast(`تم إنشاء الفاتورة ${sale.id} وربطها بالطلب.`);
   if (options.askShipping !== false) setTimeout(() => postInvoiceShippingChoice(order.id, sale.id), 100);
@@ -8886,29 +8928,35 @@ function statementRows(id, kind) {
   return [
     ...invoices.map(invoice => ({
       date: invoice.date,
+      type:"invoice",
       reference: invoice.id,
       description: kind === "customer" ? "فاتورة مبيعات" : `مستند ${invoice.type || "مشتريات"}`,
       debit: invoice.status === "ملغاة" ? 0 : Number(invoice.remaining ?? invoice.total ?? 0),
       credit: 0,
-      status: invoice.status
+      status: invoice.status,user:invoice.createdByName||invoice.createdByUsername||"—",links:{invoiceId:invoice.id,orderId:invoice.onlineOrderId||""}
     })),
     ...returnInvoices.map(item => ({
       date: item.date,
+      type:"return",
       reference: returnNo(item),
       description: `${returnTypeLabel(item.type)} من ${item.sourceDocuments?.join("، ") || item.documentId || "—"} — ${returnSettlementLabel(item)}`,
       debit: 0,
       credit: Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))),
-      status: item.status || "معتمد"
+      status: item.status || "معتمد",user:item.createdBy||item.user||"—",links:{invoiceId:item.documentId||""}
     })),
     ...vouchers.map(receipt => ({
       date: receipt.date,
+      type:"payment",
       reference: receipt.id,
       description: `إيصال ${receipt.type} — ${receipt.method}`,
       debit: 0,
       credit: receipt.status === "ملغى" ? 0 : Number(receipt.balanceApplied || 0),
-      status: receipt.status
-    }))
-  ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      status: receipt.status,user:receipt.createdBy||"—",links:{receiptId:receipt.id}
+    })),
+    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
+    ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:"استخدام رصيد دائن في طلب جديد",debit:Number(item.amount),credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
+    ...(kind==="customer"?(data.onlineOrders||[]).filter(item=>item.customerId===id&&item.status==="ملغي").map(item=>({date:item.cancelledAt,type:"cancelled_order",reference:item.id,description:"إلغاء طلب — إلغاء مستند دون حذف",debit:0,credit:0,status:"ملغي",user:item.cancelledBy||"—",links:{orderId:item.id,invoiceId:item.saleId||""}})):[])
+  ].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row,index,rows)=>({...row,balance:rows.slice(0,index+1).reduce((sum,item)=>sum+Number(item.debit||0)-Number(item.credit||0),0)}));
 }
 
 function showStatement(id, kind) {
@@ -8921,10 +8969,16 @@ function showStatement(id, kind) {
       <div class="mini-metric"><span>الحد الائتماني</span><strong>${money(item.creditLimit)}</strong></div>
     </div>
     <div class="actions" style="margin:0 0 14px"><button class="btn secondary small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="استلام">إيصال استلام</button><button class="btn ghost small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="دفع">إيصال دفع</button></div>
-    <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن / مسدد</th><th>الحالة</th></tr></thead><tbody>
-      ${movements.map(row => `<tr><td>${fmtDate(row.date)}</td><td><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
+    <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد بعد الحركة</th><th>الحالة</th><th>المستخدم</th><th>روابط المستندات</th></tr></thead><tbody>
+      <tr><td colspan="10"><div class="statement-filters"><button class="tab active" type="button" data-action="statement-filter" data-filter="all">كل الحركات</button><button class="tab" type="button" data-action="statement-filter" data-filter="invoice">فواتير</button><button class="tab" type="button" data-action="statement-filter" data-filter="payment">مدفوعات</button><button class="tab" type="button" data-action="statement-filter" data-filter="refund">مردودات / Refunds</button><button class="tab" type="button" data-action="statement-filter" data-filter="credit">أرصدة دائنة</button><button class="tab" type="button" data-action="statement-filter" data-filter="cancelled_order">طلبات ملغاة</button><input type="date" data-statement-date="from" aria-label="من تاريخ"><input type="date" data-statement-date="to" aria-label="إلى تاريخ"></div></td></tr>
+      ${movements.map(row => `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${row.links?.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(row.links.invoiceId)}">${esc(row.links.invoiceId)}</button>`:""}</td></tr>`).join("") || `<tr><td colspan="10" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-statement" data-id="${id}" data-kind="${kind}">طباعة كشف الحساب</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+}
+
+function applyStatementFilters(filter=modalBody.querySelector('[data-action="statement-filter"].active')?.dataset.filter||"all"){
+  const from=modalBody.querySelector('[data-statement-date="from"]')?.value||"",to=modalBody.querySelector('[data-statement-date="to"]')?.value||"",groups={refund:["cash_refund","linked_disbursement"],credit:["customer_credit","pending_credit","credit_use"]};
+  modalBody.querySelectorAll("[data-statement-row]").forEach(row=>{const type=row.dataset.type,date=row.dataset.date,typeOk=filter==="all"||type===filter||(groups[filter]||[]).includes(type),dateOk=(!from||date>=from)&&(!to||date<=to);row.hidden=!(typeOk&&dateOk);});
 }
 
 function viewPartyVoucher(id) {
@@ -9871,44 +9925,13 @@ function salePaymentModal(id) {
     </form>`);
 }
 
-function cancelSale(id) {
+async function cancelSale(id) {
   const sale = data.sales.find(item => item.id === id);
   if (!saleCanBeModified(sale)) return toast("هذه اليومية مقفولة. الإلغاء يحتاج صلاحية مدير.", "error");
   if (sale && shipmentForSale(id)) return toast("لا يمكن إلغاء فاتورة مرتبطة بشحنة. ألغِ الشحنة أولًا.", "error");
   if (sale?.status === "مرتجع جزئي") return toast("لا يمكن إلغاء فاتورة عليها مرتجع جزئي. أكمل المرتجع من شاشة المرتجعات أو راجع السجل.", "error");
-  if (!sale || sale.status === "ملغاة" || !confirm(`سيتم إلغاء الفاتورة ${id} وإرجاع الكميات للمخزون. هل أنت متأكد؟`)) return;
-  (sale.lines || []).forEach(line => {
-    const book = getBook(line.bookId);
-    if (book) { const before = book.stock; book.stock += Number(line.qty || 0); recordStockMovement(book, "إلغاء بيع", Number(line.qty || 0), before, book.stock, sale.id, "إلغاء الفاتورة"); }
-  });
-  const customer = getCustomer(sale.customerId);
-  if (customer) {
-    customer.balance = Math.max(0, Number(customer.balance || 0) - Number(sale.remaining || 0));
-    const pts = sale.pointsAwarded != null ? Number(sale.pointsAwarded) : (customer.type === "تجزئة" ? Math.floor(Number(sale.total || 0) / 10) : 0);
-    if (pts) customer.points = Math.max(0, Number(customer.points || 0) - pts);
-  }
-  if (sale.onlineOrderId) {
-    const order = data.onlineOrders.find(o => o.id === sale.onlineOrderId);
-    if (order) { order.saleId = null; order.status = "قيد التجهيز"; order.updatedAt = new Date().toISOString(); }
-  }
-  if (Number(sale.paid || 0) > 0) {
-    data.cash.push({
-      id: nextId("TX-", data.cash),
-      date: today(),
-      type: "صرف",
-      locked: true,
-      account: sale.payment === "نقدي" || sale.payment === "آجل" ? "الخزينة الرئيسية" : sale.payment,
-      party: customer?.name || "عميل",
-      amount: Number(sale.paid),
-      category: "مرتجع مبيعات",
-      note: `رد قيمة الفاتورة الملغاة ${sale.id}`
-    });
-  }
-  sale.status = "ملغاة";
-  sale.cancelledAt = new Date().toISOString();
-  saveData("إلغاء فاتورة بيع", "المبيعات", id);
-  if (currentView === "sales") renderSales(); else showSalesList();
-  toast("تم إلغاء الفاتورة وإرجاع المخزون.");
+  if (!sale || sale.status === "ملغاة") return;
+  try{const result=await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancellation/preview"),{method:"GET"});if(result.financial.paid>0)return openCancellationSettlement("sale",id,result.financial);if(!confirm(`سيتم إبطال الفاتورة ${id} وإرجاع الكميات للمخزون. هل أنت متأكد؟`))return;await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancel"),{body:{reason:"إبطال فاتورة بيع"}});if(currentView==="sales")renderSales();else showSalesList();toast("تم إبطال الفاتورة وإرجاع المخزون دون حذف المستند.");}catch(error){toast(error.message,"error");}
 }
 
 function returnedQuantityMap(type, documentId) {
