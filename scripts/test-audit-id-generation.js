@@ -20,6 +20,13 @@ assert.strictEqual(regenerated.id, "AUD-new");
 assert.strictEqual(calls, 2);
 
 assert.throws(() => AuditIds.appendAuditRecord([{ id:"AUD-collision" }], {}, { generate:() => "AUD-collision" }), error => error.code === "AUDIT_ID_COLLISION_BLOCKED");
+const historical = [{ id:"AUD-8.084061550614568e+25", action:"old" }];
+const reconciled = AuditIds.reconcileClientAudit(historical, [...historical, { id:"AUD-8.084061550614568e+25", action:"new from stale client" }]);
+assert.strictEqual(reconciled[0].id, historical[0].id);
+assert.match(reconciled[1].id, /^AUD-[0-9a-f-]{36}$/i);
+assert.notStrictEqual(reconciled[1].id, historical[0].id);
+assert.throws(() => AuditIds.reconcileClientAudit(historical, []), error => error.code === "AUDIT_HISTORY_IMMUTABLE");
+assert.throws(() => AuditIds.reconcileClientAudit(historical, [{ ...historical[0], action:"changed" }]), error => error.code === "AUDIT_HISTORY_IMMUTABLE");
 const root = path.join(__dirname, "..");
 for (const file of ["app/app.js", "app/factory-reset.js", "app/season-data-management.js", "server-node.js"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");

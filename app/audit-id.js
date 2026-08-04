@@ -43,5 +43,28 @@
     return next;
   }
 
-  return { MAX_GENERATION_ATTEMPTS, secureUuid, generateAuditId, assignUniqueAuditId, appendAuditRecord };
+  function reconcileClientAudit(currentRecords = [], incomingRecords = []) {
+    if (!Array.isArray(currentRecords) || !Array.isArray(incomingRecords)) {
+      throw Object.assign(new Error("Audit history must be an array."), { code:"AUDIT_HISTORY_INVALID" });
+    }
+    if (incomingRecords.length < currentRecords.length) {
+      throw Object.assign(new Error("Existing audit history cannot be removed."), { code:"AUDIT_HISTORY_IMMUTABLE" });
+    }
+    for (let index = 0; index < currentRecords.length; index += 1) {
+      if (JSON.stringify(currentRecords[index]) !== JSON.stringify(incomingRecords[index])) {
+        throw Object.assign(new Error("Existing audit history cannot be changed."), { code:"AUDIT_HISTORY_IMMUTABLE", index });
+      }
+    }
+    const reconciled = currentRecords.map(row => ({ ...row }));
+    const uuidPattern = /^AUD-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    for (const row of incomingRecords.slice(currentRecords.length)) {
+      const incomingId = String(row?.id || "");
+      const collision = reconciled.some(existing => String(existing?.id || "") === incomingId);
+      if (uuidPattern.test(incomingId) && !collision) reconciled.push({ ...row });
+      else appendAuditRecord(reconciled, { ...row });
+    }
+    return reconciled;
+  }
+
+  return { MAX_GENERATION_ATTEMPTS, secureUuid, generateAuditId, assignUniqueAuditId, appendAuditRecord, reconcileClientAudit };
 });

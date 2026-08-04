@@ -10,6 +10,7 @@ const OrderFinance = require("./app/order-finance.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
+const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
@@ -27,7 +28,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -3010,6 +3011,25 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
       const currentSource = fs.existsSync(DB_PATH) ? readDb() : { books:[], sales:[], settings:{} };
       const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
+      try { parsed.audit = AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || []); }
+      catch (error) { return send(res, 409, { ok:false, code:error.code || "AUDIT_HISTORY_INVALID", message:error.message, index:error.index }); }
+      const currentBookIds = new Set((currentDb.books || []).map(book => String(book.id || "")));
+      const acceptedBooks = [...(currentDb.books || [])];
+      for (const book of (parsed.books || []).filter(row => !currentBookIds.has(String(row.id || "")))) {
+        const conflicts = PurchaseInventoryIntegrity.productIdentityConflicts(acceptedBooks, book);
+        if (conflicts.length) return send(res, 409, { ok:false, code:"DUPLICATE_PRODUCT_IDENTITY", message:"يوجد صنف مطابق بالفعل. عدّل السجل الموجود بدل إنشاء نسخة مكررة.", conflictingProductIds:conflicts.map(row => row.id) });
+        acceptedBooks.push(book);
+      }
+      const currentPurchaseIds = new Set((currentDb.purchases || []).map(purchase => String(purchase.id || "")));
+      for (const purchase of (parsed.purchases || []).filter(row => !currentPurchaseIds.has(String(row.id || "")))) {
+        try {
+          purchase.lines = PurchaseInventoryIntegrity.resolvePurchaseLines(parsed.books || [], purchase.lines || []);
+          PurchaseInventoryIntegrity.validatePurchaseEffects(currentDb, parsed, purchase, { inventoryAffecting:!/بانتظار|قيد/.test(String(purchase.status || "")) });
+        } catch (error) {
+          console.warn(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"PURCHASE_INVENTORY_WRITE_BLOCKED", purchaseId:purchase.id || "", performedBy:user.username, code:error.code || "PURCHASE_INVENTORY_VALIDATION_FAILED", failures:error.failures || [] }));
+          return send(res, 409, { ok:false, code:error.code || "PURCHASE_INVENTORY_VALIDATION_FAILED", message:error.message, failures:error.failures || [] });
+        }
+      }
       pruneLazyFinanceFields(currentSource,parsed);
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));

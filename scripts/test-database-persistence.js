@@ -46,4 +46,10 @@ test("Purchase stale retry module is versioned",()=>{
   assert.ok(fs.readFileSync(path.join(__dirname,"..","app","index.html"),"utf8").includes('src="purchase-stale-retry.js"'));
 });
 
-console.log(`${passed}/14 database persistence tests passed`);
+test("Purchase inventory and stale-client audit guards run on the server",()=>{
+  assert.ok(server.includes('PurchaseInventoryIntegrity.validatePurchaseEffects(currentDb, parsed, purchase'));
+  assert.ok(server.includes('AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || [])'));
+  assert.ok(fs.readFileSync(path.join(__dirname,"..","app","index.html"),"utf8").includes('src="purchase-inventory-integrity.js"'));
+});
+
+console.log(`${passed}/15 database persistence tests passed`);

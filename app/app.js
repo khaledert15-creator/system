@@ -7506,6 +7506,8 @@ modalBody.addEventListener("submit", async event => {
       lastSale: getBook(form.dataset.editId)?.lastSale || null,
       createdAt: getBook(form.dataset.editId)?.createdAt || now, updatedAt: now, deletedAt: null
     };
+    const identityConflicts = PurchaseInventoryIntegrity.productIdentityConflicts(data.books, item, form.dataset.editId || "");
+    if (identityConflicts.length) return toast(`يوجد صنف مطابق بالفعل: ${identityConflicts.map(book => `${book.name} (${book.barcode || book.id})`).join("، ")}. عدّل السجل الموجود بدل إنشاء نسخة مكررة.`, "error");
     const index = data.books.findIndex(b => b.id === item.id);
     if (index >= 0) data.books[index] = { ...data.books[index], ...item };
     else data.books.push(item);
@@ -8467,6 +8469,14 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
     }
   }
   const dataBeforePurchase = structuredClone(data);
+  try {
+    draftPurchase.lines = PurchaseInventoryIntegrity.resolvePurchaseLines(data.books, draftPurchase.lines);
+  } catch (error) {
+    rememberPurchaseRetry(dataBeforePurchase, [{ code:error.code, lineIndex:error.lineIndex, reference:error.reference || "" }]);
+    renderPurchases();
+    toast("تعذر اعتماد الفاتورة: يوجد بند غير مربوط بصنف واحد واضح. راجع الصنف أو الباركود.", "error");
+    return false;
+  }
   const totals = purchaseTotals();
   const lineEntries = draftPurchase.lines
     .map((line, index) => ({ line, computed: totals.lines[index] || {} }))
@@ -8553,6 +8563,15 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
     if (type === "أمانة") book.returnDeadline = document.getElementById("purchase-return").value;
     book.supplierId = supplierId;
   });
+  try {
+    PurchaseInventoryIntegrity.validatePurchaseEffects(dataBeforePurchase, data, purchase, { inventoryAffecting:receivingStatus !== "في انتظار الفحص" });
+  } catch (error) {
+    data = dataBeforePurchase;
+    rememberPurchaseRetry(dataBeforePurchase, error.failures || [{ code:error.code }]);
+    renderPurchases();
+    toast("تم منع اعتماد الفاتورة لأن أحد البنود لم يُنشئ حركة ودفعة مخزون مكتملتين.", "error");
+    return false;
+  }
   data.purchases.push(purchase);
   if (type === "شراء" && remaining > 0) getSupplier(supplierId).balance += remaining;
   if (paid > 0) {
