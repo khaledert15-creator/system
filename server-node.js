@@ -2649,13 +2649,13 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"تم إنشاء فاتورة للطلب؛ استخدم إجراء إلغاء الفاتورة الحالي."});
-      if(order.status==="ملغي")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(order.cancelledAt||order.workflowStage==="cancelled"||["ملغي","cancelled","canceled"].includes(String(order.status||"").toLowerCase()))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});
       if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الطلب قبل تسوية المبلغ المدفوع.",financial});
       const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();
       releaseOrderInventory(db,order,user,String(payload.reason||"إلغاء الطلب"));
       Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});
-      appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db);
+      appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLED",performedBy:user.username});
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 

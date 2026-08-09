@@ -2144,7 +2144,12 @@ function toast(message, type = "") {
   setTimeout(() => item.remove(), 3200);
 }
 
+function closeAllDropdowns() {
+  document.querySelectorAll("details.table-actions-menu[open]").forEach(menu => menu.removeAttribute("open"));
+}
+
 function openModal(title, eyebrow, html) {
+  closeAllDropdowns();
   modalTitle.textContent = title;
   modalEyebrow.textContent = eyebrow;
   modalBody.innerHTML = html;
@@ -2868,8 +2873,8 @@ function onlineOrderQuickFilterLabel(filter = onlineOrderQuickFilter) {
 }
 
 function onlineOrderWorkflowStage(order={}) {
-  if(order.workflowStage==="cancelled"||order.status==="ملغي")return "cancelled";
-  if(order.workflowStage==="returned"||order.status==="مرتجع")return "cancelled";
+  if(order.cancelledAt||order.workflowStage==="cancelled"||["ملغي","cancelled","canceled"].includes(String(order.status||"").toLowerCase()))return "cancelled";
+  if(order.workflowStage==="returned"||["مرتجع","returned"].includes(String(order.status||"").toLowerCase()))return "cancelled";
   if(order.workflowStage==="delivered"||order.status==="تم التسليم")return "delivered";
   if(order.workflowStage==="shipped"||order.shipmentId||["تم الشحن","تم إنشاء الشحنة","خرج للتوصيل"].includes(order.status))return "shipped";
   if(order.workflowStage==="awaiting_shipping"||Boolean(order.preparedAt))return "ready";
@@ -3243,6 +3248,35 @@ async function cancelOnlineOrder(id) {
 
 function cancellationEndpoint(kind,id,suffix){return `/api/${kind==="sale"?"sales":"orders"}/${encodeURIComponent(id)}/${suffix}`;}
 
+function mergeCancelledOrder(result) {
+  const updated=result?.order;
+  if(!updated?.id)return null;
+  const index=(data.onlineOrders||[]).findIndex(order=>order.id===updated.id);
+  if(index>=0)data.onlineOrders[index]={...data.onlineOrders[index],...updated};
+  return index>=0?data.onlineOrders[index]:updated;
+}
+
+async function finalizeCancellation(button) {
+  if(button.disabled||button.dataset.pending==="true")return;
+  const kind=button.dataset.kind,id=button.dataset.id;
+  if(!confirm(`تمت التسوية المالية. هل تريد ${kind==="sale"?"إبطال الفاتورة":"إلغاء الطلب"} الآن؟`))return;
+  button.disabled=true;button.dataset.pending="true";button.setAttribute("aria-busy","true");
+  const previousText=button.textContent;button.textContent="جارٍ الإلغاء...";
+  try{
+    const result=await orderWorkflowRequest(cancellationEndpoint(kind,id,"cancel"),{body:{reason:"إلغاء بعد اكتمال التسوية المالية"}});
+    if(kind==="order"){
+      const updated=mergeCancelledOrder(result);
+      if(!updated||onlineOrderWorkflowStage(updated)!=="cancelled")throw Object.assign(new Error("لم يؤكد الخادم تحديث حالة الطلب. حدّث الصفحة قبل إعادة المحاولة."),{code:"CANCEL_STATE_NOT_CONFIRMED"});
+    }
+    closeModal();
+    if(kind==="sale")renderSales();else renderOnlineOrders();
+    toast(kind==="sale"?"تم إلغاء الفاتورة وتحديث حالتها بنجاح":"تم إلغاء الطلب وتحديث حالته بنجاح");
+  }catch(error){
+    button.disabled=false;delete button.dataset.pending;button.removeAttribute("aria-busy");button.textContent=previousText;
+    toast(error.message,"error");
+  }
+}
+
 function cancellationSettlementLabel(type){return({cash_refund:"رد نقدي للعميل",customer_credit:"تحويل المبلغ إلى رصيد دائن",linked_disbursement:"ربط إيصال صرف موجود",pending_credit:"إبقاء المبلغ كرصيد معلق — Advanced"}[type]||type);}
 
 function openCancellationSettlement(kind,id,financial){
@@ -3349,6 +3383,7 @@ async function submitReadyOrderShipment(orderId,payload,{silent=false}={}) {
 }
 
 function renderOnlineOrders() {
+  closeAllDropdowns();
   if(onlineOrdersMode==="quick"&&canAction("order.quick.create")){root.innerHTML=renderQuickOrderScreen();return;}
   if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();return;}
   if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();return;}
@@ -6195,6 +6230,7 @@ document.addEventListener("pointerover", event => {
 }, true);
 
 document.addEventListener("click", event => {
+  if (!event.target.closest?.("details.table-actions-menu")) closeAllDropdowns();
   const wrap = event.target.closest?.(".table-wrap");
   if (wrap && tableWrapNeedsSticky(wrap)) {
     stickyTableScroll.wrap = wrap;
@@ -6203,6 +6239,7 @@ document.addEventListener("click", event => {
 }, true);
 
 document.addEventListener("scroll", event => {
+  closeAllDropdowns();
   if (event.target?.classList?.contains("table-wrap")) {
     if (stickyTableScroll.syncing) return;
     stickyTableScroll.wrap = event.target;
@@ -6308,8 +6345,7 @@ root.addEventListener("click", async event => {
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
   if (action === "cancellation-open-ledger") { closeModal(); showStatement(target.dataset.id,"customer"); }
   if (action === "cancellation-finalize") {
-    const kind=target.dataset.kind,id=target.dataset.id;
-    if(confirm(`تمت التسوية المالية. هل تريد ${kind==="sale"?"إبطال الفاتورة":"إلغاء الطلب"} الآن؟`))orderWorkflowRequest(cancellationEndpoint(kind,id,"cancel"),{body:{reason:"إلغاء بعد اكتمال التسوية المالية"}}).then(()=>{closeModal();kind==="sale"?renderSales():renderOnlineOrders();toast("تم إلغاء المستند بعد التسوية المالية.");}).catch(error=>toast(error.message,"error"));
+    finalizeCancellation(target);
   }
   if (action === "confirm-online-order") confirmExistingOnlineOrder(target.dataset.id);
   if (action === "shipping-stat") applyShippingStatFilter(target.dataset.stat);
@@ -6925,8 +6961,7 @@ modalBody.addEventListener("click", event => {
     return;
   }
   if (appAction?.dataset.action === "cancellation-finalize") {
-    const kind=appAction.dataset.kind,id=appAction.dataset.id;
-    if(confirm(`تمت التسوية المالية. هل تريد ${kind==="sale"?"إبطال الفاتورة":"إلغاء الطلب"} الآن؟`))orderWorkflowRequest(cancellationEndpoint(kind,id,"cancel"),{body:{reason:"إلغاء بعد اكتمال التسوية المالية"}}).then(()=>{closeModal();kind==="sale"?renderSales():renderOnlineOrders();toast("تم إلغاء المستند بعد التسوية المالية.");}).catch(error=>toast(error.message,"error"));
+    finalizeCancellation(appAction);
     return;
   }
   if(appAction?.dataset.action==="statement-filter"){

@@ -26,6 +26,11 @@ function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true,withSale=
 const prep=fixture(0,{stage:"awaiting_preparation",prepared:false});
 for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
 const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
+const settledCancellable=fixture(12,{paid:670,stage:"awaiting_preparation",prepared:false,withSale:false});
+db.orderPayments=db.orderPayments||[];db.cashAccounts=db.cashAccounts||[];
+const refundCashAccount=db.cashAccounts.find(row=>!row.deletedAt&&row.active!==false)||{id:"CA-WF",name:"QA Cash",active:true};
+if(!db.cashAccounts.some(row=>row.id===refundCashAccount.id))db.cashAccounts.push(refundCashAccount);
+db.orderPayments.push({id:"PAY-WF-12",orderId:settledCancellable.id,customerId:settledCancellable.customerId,amount:670,status:"confirmed",confirmed:true,cashAccountId:refundCashAccount.id,cashAccountName:refundCashAccount.name,receivedAt:now});
 fs.writeFileSync(dbPath,JSON.stringify(db,null,2));
 
 const port=8935,child=spawn(process.execPath,["server-node.js"],{cwd:qa,env:{...process.env,PORT:String(port),HOST:"127.0.0.1",TRACKING_RPA_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
@@ -57,7 +62,21 @@ async function wait(){
   pass(fs.readFileSync(dbPath,"utf8")===beforeAuthFailures,"403 order actions do not change data");
   const login=await call("/api/login",{method:"POST",body:{username:"owner",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"}});token=login.body.token;pass(login.status===200,"owner login");
   const cancelled=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",body:{reason:"QA auth action"}});
-  pass(cancelled.status===200&&cancelled.body.order.status==="ملغي","owner can cancel an order");
+  pass(cancelled.status===200&&cancelled.body.order.status==="ملغي"&&cancelled.body.order.workflowStage==="cancelled"&&cancelled.body.order.cancelledAt,"owner can cancel an order with terminal workflow state");
+  const afterFirstCancel=JSON.parse(fs.readFileSync(dbPath,"utf8")),cancelAuditCount=(afterFirstCancel.audit||[]).filter(row=>row.entityId===cancellable.id&&row.action==="إلغاء الطلب وتحرير الحجز").length;
+  const cancelledAgain=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",body:{reason:"duplicate click"}});
+  const afterSecondCancel=JSON.parse(fs.readFileSync(dbPath,"utf8"));
+  pass(cancelledAgain.status===200&&cancelledAgain.body.existing===true&&cancelledAgain.body.order.workflowStage==="cancelled","already-cancelled order returns idempotently");
+  pass((afterSecondCancel.audit||[]).filter(row=>row.entityId===cancellable.id&&row.action==="إلغاء الطلب وتحرير الحجز").length===cancelAuditCount,"idempotent cancel creates no duplicate audit");
+  const blockedPaidCancel=await call(`/api/orders/${settledCancellable.id}/cancel`,{method:"POST",body:{reason:"must settle first"}});
+  pass(blockedPaidCancel.status===409&&blockedPaidCancel.body.code==="PAYMENT_REFUND_REQUIRED","paid order cancellation is blocked before settlement");
+  const refund=await call(`/api/orders/${settledCancellable.id}/refunds`,{method:"POST",body:{settlementType:"cash_refund",refundMethod:"cash",amount:670,orderId:settledCancellable.id,invoiceId:"",paymentId:"PAY-WF-12",customerId:settledCancellable.customerId,cashAccountId:refundCashAccount.id,reason:"QA full settlement",operationKey:"WF-REFUND-12"}});
+  pass(refund.status===201&&refund.body.preview.canCancel===true,"full refund unlocks paid order cancellation");
+  const paidCancelled=await call(`/api/orders/${settledCancellable.id}/cancel`,{method:"POST",body:{reason:"QA cancel after settlement"}});
+  pass(paidCancelled.status===200&&paidCancelled.body.order.status==="ملغي"&&paidCancelled.body.order.workflowStage==="cancelled","paid order cancels after full settlement");
+  const paidCancelSnapshot=JSON.parse(fs.readFileSync(dbPath,"utf8")),paidCounts={refunds:paidCancelSnapshot.orderRefunds.length,payments:paidCancelSnapshot.orderPayments.length,cash:paidCancelSnapshot.cash.length,audit:paidCancelSnapshot.audit.length};
+  const paidCancelledAgain=await call(`/api/orders/${settledCancellable.id}/cancel`,{method:"POST",body:{reason:"duplicate paid cancel"}}),paidRetrySnapshot=JSON.parse(fs.readFileSync(dbPath,"utf8"));
+  pass(paidCancelledAgain.body.existing===true&&paidRetrySnapshot.orderRefunds.length===paidCounts.refunds&&paidRetrySnapshot.orderPayments.length===paidCounts.payments&&paidRetrySnapshot.cash.length===paidCounts.cash&&paidRetrySnapshot.audit.length===paidCounts.audit,"paid-order cancel retry creates no refund payment cash movement or audit");
   const editPayload={phone:`010${String(Date.now()).slice(-8)}`,customerName:"عميل تعديل التجهيز",governorate:"القاهرة",address:"QA",chatwootConversationId:`wf-edit-${Date.now()}`,lines:[{bookId:book.id,qty:1,discount:0,discountType:"percent"}],shippingCost:70,paymentPlan:"cash_on_delivery",paidAmount:0,paymentConfirmed:false};
   const created=await call("/api/orders/quick",{method:"POST",body:editPayload}),editId=created.body.order?.id;pass(created.status===201&&editId,"editable order created");
   await call(`/api/orders/${editId}/confirm`,{method:"POST"});await call(`/api/orders/${editId}/prepare/start`,{method:"POST"});await call(`/api/orders/${editId}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}});
