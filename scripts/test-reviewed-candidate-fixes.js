@@ -51,10 +51,21 @@ pass("mobile quick sale keeps discount value and type visible",()=>{
   assert.doesNotMatch(css,/invoice-line \.discount-field[^\n]*display:\s*none/);
 });
 pass("shipping fallback prefers shippingFee then shippingCost",()=>{
-  const source=app.match(/function orderShippingFee\(order=\{\}\)\{[^\n]+/)[0];
-  const read=new Function(`${source};return orderShippingFee;`)();
-  assert.strictEqual(read({shippingFee:70,shippingCost:40}),70);
-  assert.strictEqual(read({shippingCost:40}),40);
+  const source=app.match(/function orderShippingFee\(order\)\{[^\n]+/)[0];
+  const read=new Function("OrderFinance",`${source};return orderShippingFee;`)(Finance);
+  assert.strictEqual(read(null),0);
+  assert.strictEqual(read(undefined),0);
   assert.strictEqual(read({}),0);
+  assert.strictEqual(read({shippingFee:25}),25);
+  assert.strictEqual(read({shippingCost:30}),30);
+  assert.strictEqual(read({shipping:40}),40);
+  assert.strictEqual(read({shippingFee:25,shippingCost:30}),25);
+  assert.strictEqual(read({shippingFee:"٢٥٫٥"}),25.5);
+  const input={shippingFee:"25",shippingCost:30},before=JSON.stringify(input);read(input);assert.strictEqual(JSON.stringify(input),before);
+});
+pass("new online order modal uses the null-safe shipping helper without mutation",()=>{
+  const modal=app.match(/function onlineOrderModal\(order = null\)[\s\S]*?\n}\n\nfunction getOnlineOrder/)[0];
+  assert.match(modal,/value="\$\{orderShippingFee\(order\)\}"/);
+  assert.doesNotMatch(modal,/data\.onlineOrders\.push|saveData\(/);
 });
 console.log(`${passed}/${passed} reviewed candidate fix tests passed`);

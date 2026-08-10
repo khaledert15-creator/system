@@ -2936,7 +2936,7 @@ function quickOrderShipping(governorate="",lines=[]) {
 
 function shippingRateForGovernorate(governorate="",goods=0){return OrderFinance.resolveShippingRate(data.settings?.shippingRules||data.settings?.shippingRates||{},governorate,goods);}
 
-function orderShippingFee(order={}){return Number(order.shippingFee ?? order.shippingCost ?? order.shipping ?? 0)||0;}
+function orderShippingFee(order){const source=order&&typeof order==="object"?order:{};for(const key of ["shippingFee","shippingCost","shipping"]){if(source[key]==null)continue;const value=OrderFinance.normalizeNumber(source[key]);if(Number.isFinite(value)&&value>=0)return value;}return 0;}
 
 function applySaleCustomerShipping(customer) {
   if(!customer||draftSale.shippingFeeOverride)return;
