@@ -3,6 +3,7 @@ const fs = require("fs");
 
 const app = fs.readFileSync("app/app.js", "utf8");
 const css = fs.readFileSync("app/styles.css", "utf8");
+const finance = require("../app/order-finance.js");
 let passed = 0;
 
 function test(name, fn) {
@@ -69,9 +70,21 @@ test("summary distinguishes free automatic and manual shipping", () => {
   assert.match(app, /free-shipping/);
 });
 
+test("shipping presentation updates immediately from free to manual and back", () => {
+  const source = app.match(/function saleShippingPresentation\(shipping, state = \{\}\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert(source, "saleShippingPresentation helper is missing");
+  const factory = new Function("OrderFinance", "money", "draftSale", `${source}; return saleShippingPresentation;`);
+  const present = factory(finance, value => `${value} ج.م`, {});
+  assert.deepStrictEqual(present(0, { override:false, source:"governorate:الجيزة" }), { fee:0, amountLabel:"مجاني", sourceLabel:"حسب المحافظة", free:true });
+  assert.deepStrictEqual(present(25, { override:true, source:"manual" }), { fee:25, amountLabel:"25 ج.م", sourceLabel:"تم تعديل الشحن يدويًا", free:false });
+  assert.deepStrictEqual(present(0, { override:true, source:"manual" }), { fee:0, amountLabel:"مجاني", sourceLabel:"تم تعديل الشحن يدويًا", free:true });
+  assert.match(app, /classList\.toggle\("free-shipping",shippingPresentation\.free\)/);
+  assert.match(app, /sale-shipping-source"\)\)el\("sale-shipping-source"\)\.textContent=shippingPresentation\.sourceLabel/);
+});
+
 test("save remains server-confirmed before clearing the draft", () => {
   assert.match(app, /const saved=await saveData\([\s\S]*?if\(!saved\)[\s\S]*?draftSale=beforeDraft[\s\S]*?resetSaleDraft\(\)/);
   assert.match(app, /if\(!saved\)[\s\S]*?return null;[\s\S]*?toast\(`تم اعتماد الفاتورة/);
 });
 
-console.log(`${passed}/11 quick sale customer change UI tests passed`);
+console.log(`${passed}/12 quick sale customer change UI tests passed`);

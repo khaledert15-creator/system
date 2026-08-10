@@ -2843,6 +2843,7 @@ function renderSales() {
 function renderSaleInvoice() {
   const selectedCustomer = getCustomer(draftSale.customerId);
   const totals = saleTotals();
+  const shippingPresentation = saleShippingPresentation(totals.shipping);
   const lines = draftSale.lines.map((line, index) => {
     const book = getBook(line.bookId);
     const computed = totals.lines[index] || {};
@@ -2883,7 +2884,7 @@ function renderSaleInvoice() {
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
         <div class="summary-row ${totals.invoiceDiscount ? "" : "summary-row-muted"}"><span>خصم الطلب</span><strong id="sale-invoice-discount-total">${totals.invoiceDiscount ? money(totals.invoiceDiscount) : "—"}</strong></div>
         <div class="summary-row"><span>السعر بعد الخصم</span><strong id="sale-goods-total">${money(totals.goods)}</strong></div>
-        <div class="summary-row shipping-summary-row"><span>رسوم الشحن <small>${draftSale.shippingFeeOverride ? "تم تعديل الشحن يدويًا" : draftSale.shippingPriceSource?.startsWith("governorate:") ? "حسب المحافظة" : ""}</small></span><strong id="sale-shipping-total" class="${totals.shipping ? "" : "free-shipping"}">${totals.shipping?money(totals.shipping):"مجاني"}</strong></div>
+        <div class="summary-row shipping-summary-row"><span>رسوم الشحن <small id="sale-shipping-source">${shippingPresentation.sourceLabel}</small></span><strong id="sale-shipping-total" class="${shippingPresentation.free ? "free-shipping" : ""}">${shippingPresentation.amountLabel}</strong></div>
         <div class="summary-row total"><span>الإجمالي النهائي</span><strong id="sale-total">${money(totals.total)}</strong></div>
         <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
         <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
@@ -2968,6 +2969,24 @@ function applySaleCustomerShipping(customer) {
   if(!customer||draftSale.shippingFeeOverride)return;
   const goods=saleTotals().goods||0,rate=shippingRateForGovernorate(customer.governorate,goods);
   draftSale.shippingCost=rate.fee;draftSale.shippingPriceSource=rate.source;
+}
+
+function saleShippingPresentation(shipping, state = {}) {
+  const fee = Math.max(0, OrderFinance.normalizeNumber(shipping) || 0);
+  const override = state.override ?? Boolean(draftSale.shippingFeeOverride);
+  const source = String(state.source ?? draftSale.shippingPriceSource ?? "none");
+  const sourceLabel = override
+    ? "تم تعديل الشحن يدويًا"
+    : source.startsWith("governorate:")
+      ? "حسب المحافظة"
+      : source === "free_shipping"
+        ? "شحن مجاني حسب القاعدة"
+        : source === "default"
+          ? "السعر الافتراضي"
+          : source.startsWith("governorate_disabled:")
+            ? "سعر المحافظة غير مفعّل"
+            : "لا يوجد سعر محافظة";
+  return { fee, amountLabel: fee > 0 ? money(fee) : "مجاني", sourceLabel, free: fee === 0 };
 }
 
 function bookReservedStock(book={}) {
@@ -3769,7 +3788,12 @@ function updateSaleSummary() {
   if (el("sale-invoice-discount-total")) el("sale-invoice-discount-total").textContent = totals.invoiceDiscount ? money(totals.invoiceDiscount) : "—";
   if (el("sale-discount-total")) el("sale-discount-total").textContent = money(totals.discount);
   if(el("sale-goods-total"))el("sale-goods-total").textContent=money(totals.goods);
-  if(el("sale-shipping-total"))el("sale-shipping-total").textContent=totals.shipping?money(totals.shipping):"مجاني";
+  const shippingPresentation = saleShippingPresentation(totals.shipping);
+  if(el("sale-shipping-total")){
+    el("sale-shipping-total").textContent=shippingPresentation.amountLabel;
+    el("sale-shipping-total").classList.toggle("free-shipping",shippingPresentation.free);
+  }
+  if(el("sale-shipping-source"))el("sale-shipping-source").textContent=shippingPresentation.sourceLabel;
   el("sale-total").textContent = money(totals.total);
   if (el("sale-points")) el("sale-points").textContent = `${Math.floor(totals.total / 10)} نقطة`;
   el("sale-remaining").textContent = money(totals.remaining);
