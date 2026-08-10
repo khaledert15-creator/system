@@ -766,10 +766,21 @@ textarea { resize: vertical; min-height: 80px; }
 .quick-sale-layout #sale-quick-qty { min-height: 52px; text-align: center; }
 .quick-sale-line.stock-warning { border-color: var(--danger); background: var(--danger-soft); }
 .inline-stock-warning { display: inline-flex; margin-inline-start: 8px; padding: 2px 8px; border-radius: 999px; color: var(--danger); background: #fff; font-weight: 800; }
-.quick-customer { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding: 12px; margin: 12px 0; border-radius: var(--radius-card); background: var(--green-50); }
+.quick-customer { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; align-items: center; padding: 14px; margin: 12px 0 16px; border: 1px solid #cfe2f8; border-radius: var(--radius-card); background: var(--green-50); }
 .quick-customer > span { grid-column: 1; color: var(--muted); font-size: 12px; }
 .quick-customer > strong { grid-column: 1; }
 .quick-customer > button { grid-column: 2; grid-row: 1 / 3; }
+.quick-change-customer { min-height: 38px; white-space: nowrap; }
+.quick-sale-notes { margin-top: 14px; }
+.quick-sale-notes textarea { min-height: 76px; resize: vertical; }
+.summary-row-muted strong { color: var(--muted); font-weight: 600; }
+.shipping-summary-row > span { display: grid; gap: 3px; }
+.shipping-summary-row small { color: var(--green-700); font-size: 10px; font-weight: 700; }
+.free-shipping { color: var(--green-700) !important; }
+.sale-customer-change { display: grid; gap: 16px; }
+.sale-customer-change .sale-customer-picker { min-height: 280px; }
+.modal-customer-suggestions { position: static; margin-top: 8px; max-height: 235px; overflow-y: auto; border: 1px solid var(--line); box-shadow: none; }
+.sale-customer-current { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border-radius: 11px; background: #f6f8f7; }
 .quick-save { width: 100%; margin-top: 8px; }
 .sale-extra-options { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 .sale-extra-options > summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; color: var(--green-800); font-weight: 800; }
@@ -1340,8 +1351,8 @@ tbody tr.target-highlight > td {
 .invoice-lines { padding: 16px; }
 .invoice-line {
   display: grid;
-  grid-template-columns: minmax(160px, 2fr) 75px 100px 80px 90px 35px;
-  gap: 7px;
+  grid-template-columns: minmax(180px, 2fr) 72px 92px minmax(82px, .75fr) 72px 96px 36px;
+  gap: 9px;
   align-items: center;
   margin-bottom: 8px;
 }
@@ -1352,7 +1363,9 @@ tbody tr.target-highlight > td {
 .summary-row.total strong { color: var(--green-800); font-size: 20px; }
 .invoice-meta { padding: 16px; border-bottom: 1px solid var(--line); }
 .invoice-meta .form-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.line-head { display: grid; grid-template-columns: minmax(160px, 2fr) 75px 100px 80px 90px 35px; gap: 7px; color: var(--muted); font-size: 8px; padding: 0 4px 7px; }
+.line-head { display: grid; grid-template-columns: minmax(180px, 2fr) 72px 92px minmax(82px, .75fr) 72px 96px 36px; gap: 9px; color: var(--muted); font-size: 8px; padding: 0 4px 7px; }
+.quick-sale-line .sale-discount, .quick-sale-line .sale-discount-type { min-width: 0; width: 100%; }
+.quick-sale-line .sale-line-net { font-weight: 800; color: var(--green-800); }
 .purchase-invoice-line,
 .purchase-line-head { grid-template-columns: minmax(180px, 2fr) 70px 95px 95px 105px 110px 35px; }
 
@@ -1587,10 +1600,13 @@ tbody tr.target-highlight > td {
   .quick-sale-line .sale-book-picker { grid-column: 1 / -1; }
   .quick-sale-line .sale-qty { grid-column: 1 / 3; }
   .quick-sale-line .sale-price { grid-column: 3 / 6; }
-  .quick-sale-line .discount-field { grid-column: 6 / 10; display: grid; }
-  .quick-sale-line .sale-line-net { grid-column: 10 / 12; display: block; align-self: center; }
+  .quick-sale-line .discount-field { grid-column: 6 / 9; display: grid; }
+  .quick-sale-line .sale-discount-type { grid-column: 9 / 11; }
+  .quick-sale-line .sale-line-net { grid-column: 11 / 12; display: block; align-self: center; }
   .quick-sale-line .sale-remove { grid-column: 12; }
   .quick-sale-line .sale-book-info { grid-column: 1 / -1; }
+  .quick-customer { grid-template-columns: 1fr; }
+  .quick-customer > button { grid-column: 1; grid-row: auto; width: 100%; }
   .purchase-invoice-line, .purchase-line-head { grid-template-columns: minmax(160px, 1fr) 65px 80px 80px 90px 95px 35px; min-width: 720px; }
   .invoice-meta .form-grid { grid-template-columns: 1fr; }
   .modal-backdrop { padding: 10px; }

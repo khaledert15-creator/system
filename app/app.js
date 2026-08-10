@@ -2509,6 +2509,30 @@ function saleCustomerDetailsMarkup(customer) {
   </div>`;
 }
 
+function saleCustomerChoiceButton(customer) {
+  return `<button type="button" data-action="choose-sale-customer" data-id="${esc(customer.id)}">
+    <strong>${esc(customer.name)}</strong>
+    <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
+  </button>`;
+}
+
+function openSaleCustomerPicker() {
+  if (salesScreenMode !== "invoice") return toast("لا يمكن تغيير العميل بعد اعتماد الفاتورة.", "error");
+  const selected = getCustomer(draftSale.customerId);
+  const customers = (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);
+  openModal("تغيير عميل الفاتورة", "مسودة البيع السريع — لن يتم الحفظ", `
+    <div class="sale-customer-change">
+      <div class="notice info"><strong>المسودة محفوظة كما هي</strong><span>اختيار العميل لا يحفظ الفاتورة ولا يغيّر الأصناف أو الخصومات أو الملاحظة.</span></div>
+      <div class="form-field sale-customer-picker">
+        <label for="sale-customer-modal-search">ابحث بالاسم أو رقم الهاتف</label>
+        <div class="search"><input id="sale-customer-modal-search" autocomplete="off" autofocus placeholder="اسم العميل أو رقم الهاتف"></div>
+        <div id="sale-customer-modal-suggestions" class="customer-suggestions modal-customer-suggestions">${customers.map(saleCustomerChoiceButton).join("")}</div>
+      </div>
+      <div class="sale-customer-current"><span>العميل الحالي</span><strong>${esc(selected?.name || "عميل نقدي")}</strong></div>
+      <div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">رجوع بدون تغيير</button></div>
+    </div>`);
+}
+
 function resetSaleDraft() {
   const cashCustomer = (data.customers || []).find(customer => !customer.deletedAt && (customer.id === "C001" || customer.name === "عميل نقدي"));
   draftSale = { customerId: cashCustomer?.id || "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, shippingCost:0, shippingFeeOverride:false, shippingPriceSource:"none", notes:"", invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
@@ -2830,7 +2854,8 @@ function renderSaleInvoice() {
       ${bookPickerDatalist(listId)}
       <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
       <input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}">
-      <div class="discount-input discount-field"><input class="sale-discount" data-index="${index}" inputmode="decimal" min="0" value="${line.discount || 0}"><select class="sale-discount-type" data-index="${index}"><option value="percent" ${line.discountType!=="amount"?"selected":""}>%</option><option value="amount" ${line.discountType==="amount"?"selected":""}>ج.م</option></select></div>
+      <input class="sale-discount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${line.discount || 0}" aria-label="قيمة الخصم">
+      <select class="sale-discount-type" data-index="${index}" aria-label="نوع الخصم"><option value="percent" ${line.discountType!=="amount"?"selected":""}>%</option><option value="amount" ${line.discountType==="amount"?"selected":""}>ج.م</option></select>
       <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
       ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
@@ -2847,27 +2872,28 @@ function renderSaleInvoice() {
         <div class="invoice-lines">
           <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
           <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
-          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">الخصم</span><span>الإجمالي</span><span></span></div>
+          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">الخصم</span><span>نوع الخصم</span><span>الإجمالي</span><span></span></div>
           <div id="sale-lines">${lines}</div>
         </div>
       </article>
       <aside class="card invoice-summary">
         <span class="eyebrow">ملخص الفاتورة</span>
-        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="row-action" type="button" data-action="toggle-sale-options">تغيير</button></div>
+        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="btn secondary quick-change-customer" type="button" data-action="open-sale-customer-picker">تغيير العميل</button></div>
         <div class="summary-row"><span>المجموع الإجمالي قبل الخصم</span><strong id="sale-subtotal">${money(totals.subtotal)}</strong></div>
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
+        <div class="summary-row ${totals.invoiceDiscount ? "" : "summary-row-muted"}"><span>خصم الطلب</span><strong id="sale-invoice-discount-total">${totals.invoiceDiscount ? money(totals.invoiceDiscount) : "—"}</strong></div>
         <div class="summary-row"><span>السعر بعد الخصم</span><strong id="sale-goods-total">${money(totals.goods)}</strong></div>
-        <div class="summary-row"><span>رسوم الشحن</span><strong id="sale-shipping-total">${totals.shipping?money(totals.shipping):"مجاني"}</strong></div>
+        <div class="summary-row shipping-summary-row"><span>رسوم الشحن <small>${draftSale.shippingFeeOverride ? "تم تعديل الشحن يدويًا" : draftSale.shippingPriceSource?.startsWith("governorate:") ? "حسب المحافظة" : ""}</small></span><strong id="sale-shipping-total" class="${totals.shipping ? "" : "free-shipping"}">${totals.shipping?money(totals.shipping):"مجاني"}</strong></div>
         <div class="summary-row total"><span>الإجمالي النهائي</span><strong id="sale-total">${money(totals.total)}</strong></div>
         <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
         <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row"><span>المتبقي على العميل</span><strong id="sale-remaining" class="${totals.remaining > 0 ? "text-danger" : ""}">${money(totals.remaining)}</strong></div>
+        <div class="form-field quick-sale-notes"><label for="sale-notes">ملحوظة اختيارية</label><textarea id="sale-notes" maxlength="5000" rows="3" placeholder="تظهر في تفاصيل الفاتورة والطباعة وكشف الحساب">${esc(draftSale.notes||"")}</textarea>${draftSale.notes ? `<small>ستظهر الملاحظة مع الفاتورة.</small>` : ""}</div>
         <div id="sale-warning"></div>
         <button class="btn gold daily-action quick-save" data-action="save-sale" data-print-after="1">حفظ وطباعة</button>
         <button class="btn ghost quick-save" data-action="save-sale">حفظ بدون طباعة</button>
         <details class="sale-extra-options" id="sale-extra-options"><summary>خيارات إضافية</summary>
-          <div class="sale-customer-picker"><label>تغيير العميل</label><div class="customer-search-row"><div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div><button class="btn secondary" type="button" data-action="register-sale-customer">تسجيل عميل</button></div><div id="sale-customer-suggestions" class="customer-suggestions"></div><div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div></div>
-          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" inputmode="decimal" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div><div class="form-field"><label>رسوم الشحن</label><input id="sale-shipping-cost" inputmode="decimal" min="0" value="${draftSale.shippingCost||0}"><small>${draftSale.shippingPriceSource?.startsWith("governorate:")?"حسب محافظة العميل":"قيمة يدوية"}</small></div><div class="form-field full"><label>ملحوظة اختيارية</label><textarea id="sale-notes" maxlength="5000" placeholder="تظهر في تفاصيل الفاتورة والطباعة وكشف الحساب">${esc(draftSale.notes||"")}</textarea></div></div>
+          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" inputmode="decimal" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div><div class="form-field"><label>رسوم الشحن</label><input id="sale-shipping-cost" inputmode="decimal" min="0" value="${draftSale.shippingCost||0}"><small>${draftSale.shippingFeeOverride?"تم تعديل الشحن يدويًا":draftSale.shippingPriceSource?.startsWith("governorate:")?"حسب المحافظة":"غير محسوب"}</small></div></div>
           <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div><div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
         </details>
       </aside>
@@ -3740,11 +3766,12 @@ function updateSaleSummary() {
   });
   el("sale-subtotal").textContent = money(totals.subtotal);
   if (el("sale-line-discount-total")) el("sale-line-discount-total").textContent = money(totals.lineDiscountTotal);
-  el("sale-discount-total").textContent = money(totals.discount);
+  if (el("sale-invoice-discount-total")) el("sale-invoice-discount-total").textContent = totals.invoiceDiscount ? money(totals.invoiceDiscount) : "—";
+  if (el("sale-discount-total")) el("sale-discount-total").textContent = money(totals.discount);
   if(el("sale-goods-total"))el("sale-goods-total").textContent=money(totals.goods);
   if(el("sale-shipping-total"))el("sale-shipping-total").textContent=totals.shipping?money(totals.shipping):"مجاني";
   el("sale-total").textContent = money(totals.total);
-  el("sale-points").textContent = `${Math.floor(totals.total / 10)} نقطة`;
+  if (el("sale-points")) el("sale-points").textContent = `${Math.floor(totals.total / 10)} نقطة`;
   el("sale-remaining").textContent = money(totals.remaining);
   el("sale-remaining").className = totals.remaining > 0 ? "text-danger" : "text-success";
   const maxDiscount = Math.max(...draftSale.lines.map(l => Number(l.discount || 0)));
@@ -6441,8 +6468,10 @@ root.addEventListener("click", async event => {
   if (action === "choose-sale-customer") {
     draftSale.customerId = target.dataset.id;
     applySaleCustomerShipping(getCustomer(draftSale.customerId));
+    if (target.closest(".sale-customer-change")) closeModal();
     renderSales();
   }
+  if (action === "open-sale-customer-picker") openSaleCustomerPicker();
   if (action === "add-online-order") onlineOrderModal();
   if (action === "view-online-order") viewOnlineOrder(target.dataset.id);
   if (action === "edit-online-order") onlineOrderModal(getOnlineOrder(target.dataset.id));
@@ -6826,11 +6855,6 @@ root.addEventListener("input", event => {
         <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
       </button>`).join("") || (event.target.value.trim() ? `<div class="customer-no-results">لا يوجد عميل مطابق. استخدم «تسجيل عميل جديد».</div>` : "");
     }
-    if (!matches.some(customer => customer.id === draftSale.customerId && customer.name === event.target.value)) {
-      draftSale.customerId = "";
-      const details = document.getElementById("sale-customer-details");
-      if (details) details.innerHTML = saleCustomerDetailsMarkup(null);
-    }
   }
   const index = Number(event.target.dataset.index);
   if (event.target.classList.contains("sale-qty")) draftSale.lines[index].qty = Math.max(1, Number(event.target.value));
@@ -7018,6 +7042,15 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "choose-sale-customer") {
+    const customer = getCustomer(appAction.dataset.id);
+    if (!customer) return toast("تعذر اختيار العميل. حدّث الصفحة وحاول مرة أخرى.", "error");
+    draftSale.customerId = customer.id;
+    applySaleCustomerShipping(customer);
+    closeModal();
+    renderSales();
+    return;
+  }
   if (appAction?.dataset.action === "cancellation-open-ledger") {
     const customerId=String(appAction.dataset.id||"");
     if(!customerId||!getCustomer(customerId))return toast("لا يمكن فتح كشف الحساب لأن العميل غير مرتبط بالسجل","error");
@@ -7352,6 +7385,12 @@ modalBody.addEventListener("change", event => {
 });
 
 modalBody.addEventListener("input", event => {
+  if (event.target.id === "sale-customer-modal-search") {
+    const suggestions = document.getElementById("sale-customer-modal-suggestions");
+    const matches = event.target.value.trim() ? searchCustomers(event.target.value) : (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);
+    if (suggestions) suggestions.innerHTML = matches.map(saleCustomerChoiceButton).join("") || `<div class="customer-no-results">لا يوجد عميل مطابق. جرّب الاسم أو رقم الهاتف.</div>`;
+    return;
+  }
   if (event.target.id === "return-customer-search") {
     const suggestions = document.getElementById("return-customer-suggestions");
     const matches = searchCustomers(event.target.value).filter(customer => customerReturnableSaleLines(customer.id).length);
