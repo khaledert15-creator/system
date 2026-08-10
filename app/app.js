@@ -3948,13 +3948,44 @@ function sortedPurchases() {
     .sort((a, b) => String(b.date || b.createdAt).localeCompare(String(a.date || a.createdAt)) || String(b.id).localeCompare(String(a.id)));
 }
 
+function normalizePurchaseSearch(value = "") {
+  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+  return String(value || "")
+    .replace(/[٠-٩]/g, digit => String(arabicDigits.indexOf(digit)))
+    .trim()
+    .toLocaleLowerCase("ar-EG");
+}
+
+function filterPurchasesForSearch(purchases = sortedPurchases(), query = "") {
+  const term = normalizePurchaseSearch(query);
+  if (!term) return purchases;
+  return purchases.filter(purchase => {
+    const supplier = getSupplier(purchase.supplierId);
+    const products = (purchase.lines || []).map(line => {
+      const book = getBook(line.bookId || line.productId);
+      return [book?.name, book?.barcode, book?.extraBarcode].filter(Boolean).join(" ");
+    });
+    return normalizePurchaseSearch([
+      purchase.id,
+      purchase.supplierInvoiceNumber,
+      purchase.date,
+      purchase.createdAt,
+      purchase.type,
+      purchase.status,
+      supplier?.name,
+      supplier?.phone,
+      ...products
+    ].filter(Boolean).join(" ")).includes(term);
+  });
+}
+
 function purchaseStatusTone(status = "") {
   if (["ملغاة", "مرتجع"].includes(status)) return "danger";
   if (["بانتظار الفحص", "مرتجع جزئي"].includes(status)) return "warning";
   return "";
 }
 
-function purchaseHistoryTable(purchases = sortedPurchases(), actionAttribute = "data-action") {
+function purchaseHistoryTable(purchases = sortedPurchases(), actionAttribute = "data-action", emptyMessage = "لم يتم تسجيل مشتريات بعد. استخدم زر «تسجيل مشتريات جديدة» بالأعلى.") {
   return `<table><thead><tr><th>المستند</th><th>فاتورة المورد</th><th>التاريخ</th><th>المورد</th><th>النوع</th><th>الأصناف</th><th>الإجمالي</th><th>المتبقي</th><th>الحالة</th><th></th></tr></thead><tbody>${purchases.map(p => {
     const supplier = getSupplier(p.supplierId);
     const canReceive = p.status === "بانتظار الفحص";
@@ -3973,7 +4004,7 @@ function purchaseHistoryTable(purchases = sortedPurchases(), actionAttribute = "
       <td>${badge(p.status || "مستلمة", purchaseStatusTone(p.status))}</td>
       <td><div class="row-actions"><button class="row-action" ${actionAttribute}="view-purchase" data-id="${esc(p.id)}">عرض</button>${canReceive ? `<button class="row-action" ${actionAttribute}="receive-purchase" data-id="${esc(p.id)}">استلام</button>` : ""}${canReturn ? `<button class="row-action" ${actionAttribute}="return-purchase" data-id="${esc(p.id)}">مرتجع</button>` : ""}<button class="row-action text-danger" ${actionAttribute}="${cancelAction}" data-id="${esc(p.id)}">${cancelLabel}</button></div></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="text-center muted">لم يتم تسجيل مشتريات بعد. استخدم زر «تسجيل مشتريات جديدة» بالأعلى.</td></tr>`}</tbody></table>`;
+  }).join("") || `<tr><td colspan="10" class="text-center muted">${esc(emptyMessage)}</td></tr>`}</tbody></table>`;
 }
 
 function purchasesHistoryPanel() {
@@ -4004,8 +4035,41 @@ function purchasesHistoryPanel() {
         <div><span>بانتظار الفحص</span><strong>${pendingCount.toLocaleString("ar-EG")}</strong></div>
         <div><span>متاح للمرتجع</span><strong>${returnableCount.toLocaleString("ar-EG")}</strong></div>
       </div>
-      <div class="table-wrap purchase-history-table">${purchaseHistoryTable(recent)}</div>
+      <div class="purchase-history-searchbar">
+        <label class="purchase-history-search" for="purchase-history-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="purchase-history-search" type="search" autocomplete="off" placeholder="ابحث برقم المستند، فاتورة المورد، المورد أو الصنف...">
+        </label>
+        <span class="purchase-search-count" id="purchase-history-search-count">عرض آخر ${recent.length.toLocaleString("ar-EG")} من ${purchases.length.toLocaleString("ar-EG")} مستند</span>
+      </div>
+      <div class="table-wrap purchase-history-table" id="purchase-history-results">${purchaseHistoryTable(recent)}</div>
     </article>`;
+}
+
+function updatePurchaseHistorySearch() {
+  const input = document.getElementById("purchase-history-search");
+  const results = document.getElementById("purchase-history-results");
+  const count = document.getElementById("purchase-history-search-count");
+  if (!input || !results) return;
+  const all = sortedPurchases();
+  const query = input.value;
+  const filtered = filterPurchasesForSearch(all, query);
+  const shown = query.trim() ? filtered : filtered.slice(0, 10);
+  results.innerHTML = purchaseHistoryTable(shown, "data-action", query.trim() ? "لا توجد مشتريات مطابقة لعبارة البحث." : undefined);
+  if (count) count.textContent = query.trim()
+    ? `${filtered.length.toLocaleString("ar-EG")} نتيجة من ${all.length.toLocaleString("ar-EG")}`
+    : `عرض آخر ${shown.length.toLocaleString("ar-EG")} من ${all.length.toLocaleString("ar-EG")} مستند`;
+}
+
+function updatePurchaseModalSearch() {
+  const input = document.getElementById("purchase-list-search");
+  const results = document.getElementById("purchase-list-results");
+  const count = document.getElementById("purchase-list-search-count");
+  if (!input || !results) return;
+  const all = sortedPurchases();
+  const filtered = filterPurchasesForSearch(all, input.value);
+  results.innerHTML = purchaseHistoryTable(filtered, "data-modal-action", input.value.trim() ? "لا توجد مشتريات مطابقة لعبارة البحث." : undefined);
+  if (count) count.textContent = `${filtered.length.toLocaleString("ar-EG")} نتيجة من ${all.length.toLocaleString("ar-EG")}`;
 }
 
 function returnKind(type) {
@@ -6865,6 +6929,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
   if (event.target.id === "old-sales-search") updateSalesHistorySearch();
+  if (event.target.id === "purchase-history-search") updatePurchaseHistorySearch();
   if (event.target.id === "sale-book-search") {
     const suggestions = document.getElementById("sale-book-suggestions");
     const matches = searchSaleBooks(event.target.value);
@@ -7524,6 +7589,7 @@ modalBody.addEventListener("input", event => {
     return;
   }
   if (event.target.id === "old-sales-search") updateSalesHistorySearch();
+  if (event.target.id === "purchase-list-search") updatePurchaseModalSearch();
 });
 
 modalBody.addEventListener("change", event => {
@@ -9039,12 +9105,20 @@ function limitedEditSale(id) {
 }
 
 function showPurchasesList() {
+  const purchases = sortedPurchases();
   openModal("سجل المشتريات والأمانة", "التوريد", `
     <div class="alert-item" style="margin-bottom:14px">
       <div class="alert-badge blue">▤</div>
       <div><strong>سجل موحد للمشتريات والأمانة</strong><span>يمكنك عرض المستند، اعتماد الاستلام، أو تسجيل مرتجع مشتريات من نفس السجل.</span></div>
     </div>
-    <div class="table-wrap">${purchaseHistoryTable(sortedPurchases(), "data-modal-action")}</div>`);
+    <div class="purchase-history-searchbar purchase-history-searchbar-modal">
+      <label class="purchase-history-search" for="purchase-list-search">
+        <span aria-hidden="true">⌕</span>
+        <input id="purchase-list-search" type="search" autocomplete="off" placeholder="ابحث برقم المستند، فاتورة المورد، المورد أو الصنف...">
+      </label>
+      <span class="purchase-search-count" id="purchase-list-search-count">${purchases.length.toLocaleString("ar-EG")} مستند</span>
+    </div>
+    <div class="table-wrap" id="purchase-list-results">${purchaseHistoryTable(purchases, "data-modal-action")}</div>`);
 }
 
 function preparePurchaseForBook(id) {
@@ -9195,7 +9269,11 @@ function showStatement(id, kind) {
     <div class="actions" style="margin:0 0 14px"><button class="btn secondary small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="استلام">إيصال استلام</button><button class="btn ghost small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="دفع">إيصال دفع</button></div>
     <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد بعد الحركة</th><th>الحالة</th><th>المستخدم</th><th>الملاحظة</th><th>روابط المستندات</th></tr></thead><tbody>
       <tr><td colspan="11"><div class="statement-filters"><button class="tab active" type="button" data-action="statement-filter" data-filter="all">كل الحركات</button><button class="tab" type="button" data-action="statement-filter" data-filter="invoice">فواتير</button><button class="tab" type="button" data-action="statement-filter" data-filter="payment">مدفوعات</button><button class="tab" type="button" data-action="statement-filter" data-filter="refund">مردودات / Refunds</button><button class="tab" type="button" data-action="statement-filter" data-filter="credit">أرصدة دائنة</button><button class="tab" type="button" data-action="statement-filter" data-filter="cancelled_order">طلبات ملغاة</button><input type="date" data-statement-date="from" aria-label="من تاريخ"><input type="date" data-statement-date="to" aria-label="إلى تاريخ"></div></td></tr>
-      ${movements.map(row => `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${row.links?.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(row.links.invoiceId)}">${esc(row.links.invoiceId)}</button>`:""}</td></tr>`).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
+      ${movements.map(row => {
+        const referenceAction = statementRecordAction(row.reference);
+        const linkedInvoice = row.links?.invoiceId && row.links.invoiceId !== row.reference ? row.links.invoiceId : "";
+        return `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td>${referenceAction ? `<button class="statement-document-link" type="button" data-action="open-statement-record" data-reference="${esc(row.reference)}" title="فتح المستند ${esc(row.reference)}">${esc(row.reference)} <span aria-hidden="true">↗</span></button>` : `<strong>${esc(row.reference)}</strong>`}</td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${linkedInvoice?`<button class="row-action" data-action="open-statement-record" data-reference="${esc(linkedInvoice)}">${esc(linkedInvoice)}</button>`:""}</td></tr>`;
+      }).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-statement" data-id="${id}" data-kind="${kind}">طباعة كشف الحساب</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
