@@ -19,8 +19,30 @@ test("customer change button opens a dedicated picker", () => {
 
 test("picker searches by customer name or phone", () => {
   assert.match(app, /sale-customer-modal-search/);
+  assert.match(app, /type="search"[\s\S]*placeholder="ابحث بالاسم أو رقم الهاتف"/);
   assert.match(app, /searchCustomers\(event\.target\.value\)/);
   assert.match(app, /customer\.name\.toLowerCase\(\)[\s\S]*normalizePhone\(customer\.phone\)/);
+});
+
+test("picker renders separate accessible customer rows", () => {
+  assert.match(app, /class="sale-customer-result/);
+  assert.match(app, /role="listbox" aria-label="نتائج البحث عن العملاء"/);
+  assert.match(css, /\.sale-customer-result \{[\s\S]*display: grid;[\s\S]*border: 1px solid/);
+  assert.match(css, /\.modal-customer-suggestions \{[\s\S]*display: grid;[\s\S]*gap: 8px/);
+});
+
+test("current customer has a non-overlapping badge", () => {
+  assert.match(app, /sale-customer-current-badge">العميل الحالي/);
+  assert.match(app, /customer\.id === draftSale\.customerId/);
+  assert.match(css, /\.sale-customer-current-badge[^\{]*\{[^}]*white-space: nowrap/);
+});
+
+test("picker has independent scrolling and a fixed footer", () => {
+  assert.match(css, /\.modal-customer-suggestions \{[^}]*overflow-y: auto/);
+  assert.match(css, /\.sale-customer-change \{[^}]*grid-template-rows: auto minmax\(0, 1fr\) auto/);
+  assert.match(css, /\.sale-customer-footer \{[^}]*border-top: 1px solid/);
+  assert.doesNotMatch(css.match(/\.sale-customer-footer \{[^}]*\}/)?.[0] || "", /position:\s*(absolute|fixed|sticky)/);
+  assert.match(app, /sale-customer-footer[\s\S]*رجوع بدون تغيير/);
 });
 
 test("selecting a customer updates the draft and preserves its commercial fields", () => {
@@ -42,8 +64,15 @@ test("opening and cancelling the picker do not save or mutate the draft", () => 
 });
 
 test("typing in customer search does not clear the selected customer", () => {
-  const inputHandler = app.match(/if \(event\.target\.id === "sale-customer-search"\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  const inputHandler = app.match(/if \(event\.target\.id === "sale-customer-modal-search"\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.match(inputHandler, /searchCustomers\(event\.target\.value\)/);
   assert.doesNotMatch(inputHandler, /draftSale\.customerId\s*=\s*""/);
+});
+
+test("mobile customer picker stacks safely without overlapping results", () => {
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.sale-customer-change \{[^}]*max-height:/);
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.sale-customer-footer \{[^}]*flex-direction: column/);
+  assert.match(css, /\.sale-customer-result-copy strong[^\{]*\{[^}]*text-overflow: ellipsis/);
 });
 
 test("notes are visible outside collapsed extra options", () => {
@@ -87,4 +116,4 @@ test("save remains server-confirmed before clearing the draft", () => {
   assert.match(app, /if\(!saved\)[\s\S]*?return null;[\s\S]*?toast\(`تم اعتماد الفاتورة/);
 });
 
-console.log(`${passed}/12 quick sale customer change UI tests passed`);
+console.log(`${passed}/16 quick sale customer change UI tests passed`);

@@ -2510,9 +2510,14 @@ function saleCustomerDetailsMarkup(customer) {
 }
 
 function saleCustomerChoiceButton(customer) {
-  return `<button type="button" data-action="choose-sale-customer" data-id="${esc(customer.id)}">
-    <strong>${esc(customer.name)}</strong>
-    <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
+  const isCurrent = customer.id === draftSale.customerId;
+  return `<button type="button" class="sale-customer-result${isCurrent ? " is-current" : ""}" data-action="choose-sale-customer" data-id="${esc(customer.id)}" ${isCurrent ? 'aria-current="true"' : ""}>
+    <span class="sale-customer-result-copy">
+      <strong>${esc(customer.name)}</strong>
+      <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span></span>
+      <small>${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || "العنوان غير مسجل")}</small>
+    </span>
+    ${isCurrent ? '<span class="sale-customer-current-badge">العميل الحالي</span>' : '<span class="sale-customer-select-hint">اختيار</span>'}
   </button>`;
 }
 
@@ -2522,14 +2527,14 @@ function openSaleCustomerPicker() {
   const customers = (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);
   openModal("تغيير عميل الفاتورة", "مسودة البيع السريع — لن يتم الحفظ", `
     <div class="sale-customer-change">
-      <div class="notice info"><strong>المسودة محفوظة كما هي</strong><span>اختيار العميل لا يحفظ الفاتورة ولا يغيّر الأصناف أو الخصومات أو الملاحظة.</span></div>
-      <div class="form-field sale-customer-picker">
-        <label for="sale-customer-modal-search">ابحث بالاسم أو رقم الهاتف</label>
-        <div class="search"><input id="sale-customer-modal-search" autocomplete="off" autofocus placeholder="اسم العميل أو رقم الهاتف"></div>
-        <div id="sale-customer-modal-suggestions" class="customer-suggestions modal-customer-suggestions">${customers.map(saleCustomerChoiceButton).join("")}</div>
+      <div class="notice info sale-customer-draft-notice"><strong>المسودة محفوظة كما هي</strong><span>المسودة محفوظة كما هي؛ اختيار العميل لا يحفظ الفاتورة ولا يغيّر الأصناف أو الخصومات أو الملاحظة.</span></div>
+      <div class="sale-customer-picker">
+        <label for="sale-customer-modal-search">البحث عن عميل</label>
+        <div class="sale-customer-search-control"><span aria-hidden="true">⌕</span><input id="sale-customer-modal-search" type="search" autocomplete="off" autofocus placeholder="ابحث بالاسم أو رقم الهاتف" aria-controls="sale-customer-modal-suggestions"></div>
+        <div class="sale-customer-results-heading"><strong>العملاء</strong><span>اختر العميل المطلوب من القائمة</span></div>
+        <div id="sale-customer-modal-suggestions" class="modal-customer-suggestions" role="listbox" aria-label="نتائج البحث عن العملاء">${customers.map(saleCustomerChoiceButton).join("")}</div>
       </div>
-      <div class="sale-customer-current"><span>العميل الحالي</span><strong>${esc(selected?.name || "عميل نقدي")}</strong></div>
-      <div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">رجوع بدون تغيير</button></div>
+      <div class="sale-customer-footer"><div class="sale-customer-current"><span>العميل الحالي</span><strong>${esc(selected?.name || "عميل نقدي")}</strong></div><button class="btn ghost" type="button" data-action="close-modal">رجوع بدون تغيير</button></div>
     </div>`);
 }
 
