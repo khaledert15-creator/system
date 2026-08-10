@@ -98,5 +98,32 @@
     };
   }
 
-  return { round, normalizeNumber, calculateDiscount, calculateOrder, calculatePayment };
+  function normalizeNote(value, maxLength = 5000) {
+    const note=String(value??"").trim();
+    if(note.length>maxLength)throw new Error(`الملاحظة لا يمكن أن تتجاوز ${maxLength} حرفًا.`);
+    return note;
+  }
+
+  function normalizeShippingRules(rules = {}) {
+    const byGovernorate={},activeByGovernorate={};
+    for(const [name,value] of Object.entries(rules.byGovernorate||{})){
+      const amount=normalizeNumber(value);
+      if(!Number.isFinite(amount)||amount<0)throw new Error(`سعر الشحن لمحافظة ${name} غير صالح.`);
+      byGovernorate[String(name)]=round(amount);
+      activeByGovernorate[String(name)]=rules.activeByGovernorate?.[name]!==false;
+    }
+    const defaultCost=normalizeNumber(rules.defaultCost||0),freeShippingAbove=normalizeNumber(rules.freeShippingAbove||0);
+    if(!Number.isFinite(defaultCost)||defaultCost<0||!Number.isFinite(freeShippingAbove)||freeShippingAbove<0)throw new Error("إعدادات الشحن غير صالحة.");
+    return {byGovernorate,activeByGovernorate,defaultCost:round(defaultCost),freeShippingAbove:round(freeShippingAbove)};
+  }
+
+  function resolveShippingRate(rules = {}, governorate = "", goodsValue = 0) {
+    const normalized=normalizeShippingRules(rules),name=String(governorate||"").trim(),goods=Math.max(0,Number(goodsValue)||0);
+    if(normalized.freeShippingAbove>0&&goods>=normalized.freeShippingAbove)return {fee:0,source:"free_shipping",configured:true,active:true};
+    const configured=Object.prototype.hasOwnProperty.call(normalized.byGovernorate,name),active=normalized.activeByGovernorate[name]!==false;
+    if(configured&&active)return {fee:normalized.byGovernorate[name],source:`governorate:${name}`,configured:true,active:true};
+    return {fee:normalized.defaultCost,source:configured?`governorate_disabled:${name}`:"default",configured,active};
+  }
+
+  return { round, normalizeNumber, calculateDiscount, calculateOrder, calculatePayment, normalizeNote, normalizeShippingRules, resolveShippingRate };
 });

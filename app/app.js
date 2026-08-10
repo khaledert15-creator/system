@@ -172,7 +172,7 @@ let salesScreenMode = "main";
 let salesDateFilter = "today";
 let salesFilterFrom = today();
 let salesFilterTo = today();
-let draftSale = { customerId: "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
+let draftSale = { customerId: "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, shippingCost:0, shippingFeeOverride:false, shippingPriceSource:"none", notes:"", invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
 const emptyPurchaseDraft = () => ({ supplierId: "S001", supplierInvoiceNumber: "", type: "شراء", payment: "آجل", returnDeadline: "", status: "تم الفحص والاستلام", paid: 0, shipping: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" }] });
 function loadPurchaseDraft() { try { const value=JSON.parse(localStorage.getItem(PURCHASE_DRAFT_KEY)||"null"); return value?.lines?.length ? value : emptyPurchaseDraft(); } catch { return emptyPurchaseDraft(); } }
 function persistPurchaseDraft() { localStorage.setItem(PURCHASE_DRAFT_KEY, JSON.stringify(draftPurchase)); }
@@ -2496,7 +2496,7 @@ function saleCustomerDetailsMarkup(customer) {
 
 function resetSaleDraft() {
   const cashCustomer = (data.customers || []).find(customer => !customer.deletedAt && (customer.id === "C001" || customer.name === "عميل نقدي"));
-  draftSale = { customerId: cashCustomer?.id || "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
+  draftSale = { customerId: cashCustomer?.id || "", channel: "تجزئة", saleOperationType: "بيع مباشر", payment: "نقدي", date: today(), paid: 0, shippingCost:0, shippingFeeOverride:false, shippingPriceSource:"none", notes:"", invoiceDiscount: 0, invoiceDiscountType: "percent", lines: [{ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" }] };
 }
 
 function saleCreatedByName(sale = {}) {
@@ -2814,7 +2814,7 @@ function renderSaleInvoice() {
       ${bookPickerDatalist(listId)}
       <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
       <input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}">
-      <input class="sale-discount discount-field" data-index="${index}" type="number" min="0" max="100" value="${line.discount || 0}">
+      <div class="discount-input discount-field"><input class="sale-discount" data-index="${index}" inputmode="decimal" min="0" value="${line.discount || 0}"><select class="sale-discount-type" data-index="${index}"><option value="percent" ${line.discountType!=="amount"?"selected":""}>%</option><option value="amount" ${line.discountType==="amount"?"selected":""}>ج.م</option></select></div>
       <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
       ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
@@ -2840,7 +2840,9 @@ function renderSaleInvoice() {
         <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="row-action" type="button" data-action="toggle-sale-options">تغيير</button></div>
         <div class="summary-row"><span>المجموع الإجمالي قبل الخصم</span><strong id="sale-subtotal">${money(totals.subtotal)}</strong></div>
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
-        <div class="summary-row total"><span>صافي الفاتورة</span><strong id="sale-total">${money(totals.total)}</strong></div>
+        <div class="summary-row"><span>السعر بعد الخصم</span><strong id="sale-goods-total">${money(totals.goods)}</strong></div>
+        <div class="summary-row"><span>رسوم الشحن</span><strong id="sale-shipping-total">${totals.shipping?money(totals.shipping):"مجاني"}</strong></div>
+        <div class="summary-row total"><span>الإجمالي النهائي</span><strong id="sale-total">${money(totals.total)}</strong></div>
         <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
         <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${totals.total}" value="${draftSale.paid || 0}"></div>
         <div class="summary-row"><span>المتبقي على العميل</span><strong id="sale-remaining" class="${totals.remaining > 0 ? "text-danger" : ""}">${money(totals.remaining)}</strong></div>
@@ -2849,7 +2851,7 @@ function renderSaleInvoice() {
         <button class="btn ghost quick-save" data-action="save-sale">حفظ بدون طباعة</button>
         <details class="sale-extra-options" id="sale-extra-options"><summary>خيارات إضافية</summary>
           <div class="sale-customer-picker"><label>تغيير العميل</label><div class="customer-search-row"><div class="search"><input id="sale-customer-search" autocomplete="off" value="${esc(selectedCustomer?.name || "")}" placeholder="ابحث باسم العميل أو رقم الهاتف"></div><button class="btn secondary" type="button" data-action="register-sale-customer">تسجيل عميل</button></div><div id="sale-customer-suggestions" class="customer-suggestions"></div><div id="sale-customer-details">${saleCustomerDetailsMarkup(selectedCustomer)}</div></div>
-          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" type="number" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div></div>
+          <div class="form-grid"><div class="form-field"><label>قناة البيع</label><select id="sale-channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${draftSale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>نوع البيع</label><select id="sale-operation-type">${["بيع مباشر","طلب أونلاين","حجز / Pre-order","بيع مدرسي / جملة","استبدال","مرتجع جزئي"].map(value => `<option ${draftSale.saleOperationType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field"><label>التاريخ</label><input id="sale-date" type="date" value="${draftSale.date || today()}"></div><div class="form-field"><label>خصم الفاتورة</label><div class="discount-input"><input id="sale-invoice-discount" inputmode="decimal" min="0" value="${draftSale.invoiceDiscount || 0}"><select id="sale-invoice-discount-type"><option value="percent" ${draftSale.invoiceDiscountType !== "amount" ? "selected" : ""}>%</option><option value="amount" ${draftSale.invoiceDiscountType === "amount" ? "selected" : ""}>ج.م</option></select></div></div><div class="form-field"><label>رسوم الشحن</label><input id="sale-shipping-cost" inputmode="decimal" min="0" value="${draftSale.shippingCost||0}"><small>${draftSale.shippingPriceSource?.startsWith("governorate:")?"حسب محافظة العميل":"قيمة يدوية"}</small></div><div class="form-field full"><label>ملحوظة اختيارية</label><textarea id="sale-notes" maxlength="5000" placeholder="تظهر في تفاصيل الفاتورة والطباعة وكشف الحساب">${esc(draftSale.notes||"")}</textarea></div></div>
           <div class="summary-row"><span>إجمالي الخصم</span><strong id="sale-discount-total">${money(totals.discount)}</strong></div><div class="summary-row"><span>نقاط مكتسبة</span><strong id="sale-points">${Math.floor(totals.total / 10)} نقطة</strong></div>
         </details>
       </aside>
@@ -2908,10 +2910,15 @@ function applyOnlineOrderQuickFilter(stat) {
 function quickOrderShipping(governorate="",lines=[]) {
   const rules=data.settings?.shippingRules||data.settings?.shippingRates||{};
   const goods=onlineOrderTotals(lines,0,"percent",0).goods;
-  const freeAbove=Number(rules.freeShippingAbove||0);
-  if(freeAbove>0&&goods>=freeAbove)return 0;
-  const byGovernorate=rules.byGovernorate||{};
-  return Math.max(0,Number(byGovernorate[governorate]??rules.defaultCost??0));
+  return OrderFinance.resolveShippingRate(rules,governorate,goods).fee;
+}
+
+function shippingRateForGovernorate(governorate="",goods=0){return OrderFinance.resolveShippingRate(data.settings?.shippingRules||data.settings?.shippingRates||{},governorate,goods);}
+
+function applySaleCustomerShipping(customer) {
+  if(!customer||draftSale.shippingFeeOverride)return;
+  const goods=saleTotals().goods||0,rate=shippingRateForGovernorate(customer.governorate,goods);
+  draftSale.shippingCost=rate.fee;draftSale.shippingPriceSource=rate.source;
 }
 
 function bookReservedStock(book={}) {
@@ -3571,7 +3578,7 @@ function onlineOrderModal(order = null) {
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(selectedCustomer?.address || order?.address || "")}"></div>
         <div class="form-field"><label>مصدر الطلب</label><select name="source">${["المتجر الإلكتروني","WhatsApp","Facebook","Instagram","هاتف","أخرى"].map(v => `<option ${order?.source === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         <div class="form-field"><label>طريقة الدفع</label><select name="paymentMethod">${["الدفع عند الاستلام","نقدي","Visa","تحويل بنكي","InstaPay","محفظة"].map(v => `<option ${order?.paymentMethod === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
-        <div class="form-field"><label>تكلفة الشحن</label><input name="shippingCost" type="number" min="0" value="${order?.shippingCost || 0}"></div>
+        <div class="form-field"><label>رسوم الشحن</label><input name="shippingCost" inputmode="decimal" min="0" data-shipping-override="${order?.shippingFeeOverride?"true":"false"}" value="${order?.shippingFee??order?.shippingCost??0}"><small id="online-order-shipping-hint">${order?.shippingPriceSource?.startsWith("governorate:")?"حسب المحافظة":"يمكن تعديلها يدويًا"}</small></div>
         <div class="form-field"><label>كود التتبع</label><input name="tracking" value="${esc(order?.tracking || "")}"></div>
         <div class="form-field"><label>الحالة</label><select name="status">${editableOrderStatuses(order).map(v => `<option ${(order?.status || "طلب جديد") === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         <div class="form-field full"><label>ملاحظات</label><textarea name="notes">${esc(order?.notes || "")}</textarea></div>
@@ -3626,7 +3633,7 @@ function viewOnlineOrder(id) {
   const shipmentButton = order.shipmentId
     ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>`
     : `<button class="btn secondary" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`;
-  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${order.status}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || "—")}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.price)}</td><td>${lineDisc(line)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${money(totals.shipping)}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div><div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${order.status}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || "—")}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.price)}</td><td>${lineDisc(line)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div><div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
 }
 
 function saleTotals() {
@@ -3650,7 +3657,9 @@ function saleTotals() {
     const totalDiscount = line.lineDiscount + invoiceDiscountShare;
     return { ...line, invoiceDiscountShare, totalDiscount, finalNet: Math.max(0, line.base - totalDiscount) };
   });
-  const totals = { lines: computed, subtotal, lineDiscountTotal, invoiceDiscount, discount: lineDiscountTotal + invoiceDiscount, total: Math.max(0, afterLine - invoiceDiscount) };
+  const goods=Math.max(0,afterLine-invoiceDiscount),shipping=OrderFinance.normalizeNumber(draftSale.shippingCost||0);
+  if(!Number.isFinite(shipping)||shipping<0)throw new Error("رسوم الشحن غير صالحة.");
+  const totals = { lines: computed, subtotal, lineDiscountTotal, invoiceDiscount, discount: lineDiscountTotal + invoiceDiscount, goods, shipping, total: Math.max(0,goods+shipping) };
   totals.paid = Math.max(0, Math.min(Number(draftSale.paid || 0), totals.total));
   totals.remaining = Math.max(0, totals.total - totals.paid);
   return totals;
@@ -3694,6 +3703,8 @@ function updateSaleSummary() {
   el("sale-subtotal").textContent = money(totals.subtotal);
   if (el("sale-line-discount-total")) el("sale-line-discount-total").textContent = money(totals.lineDiscountTotal);
   el("sale-discount-total").textContent = money(totals.discount);
+  if(el("sale-goods-total"))el("sale-goods-total").textContent=money(totals.goods);
+  if(el("sale-shipping-total"))el("sale-shipping-total").textContent=totals.shipping?money(totals.shipping):"مجاني";
   el("sale-total").textContent = money(totals.total);
   el("sale-points").textContent = `${Math.floor(totals.total / 10)} نقطة`;
   el("sale-remaining").textContent = money(totals.remaining);
@@ -4994,6 +5005,11 @@ function showSeasons() {
   openModal("المواسم", "السجل الموسمي", `<div class="season-timeline">${seasons.map(item => `<article><span></span><div><strong>${esc(item.name)}</strong><small>${esc(item.academicYear)} · ${seasonStatusLabel(item.status)}</small><p>${item.runtimeOnly ? "عرض Runtime فقط؛ لم تتم إضافة seasonId للسجلات القديمة." : `${fmtDate(item.startsAt)}${item.endsAt ? ` — ${fmtDate(item.endsAt)}` : ""}`}</p></div></article>`).join("")}</div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
 }
 
+function shippingPricesSettingsMarkup(){
+  const rules=OrderFinance.normalizeShippingRules(data.settings?.shippingRules||data.settings?.shippingRates||{});
+  return `<article class="card" style="margin-top:18px"><div class="card-header"><div><h3>أسعار الشحن للمحافظات</h3><p>السعر يطبق تلقائيًا على الطلب ويمكن للمستخدم المخول استبداله يدويًا.</p></div></div><div class="form-grid"><div class="form-field"><label>السعر الافتراضي عند عدم وجود سعر</label><input id="shipping-default-cost" inputmode="decimal" min="0" value="${rules.defaultCost}"></div><div class="form-field"><label>شحن مجاني بداية من</label><input id="shipping-free-above" inputmode="decimal" min="0" value="${rules.freeShippingAbove}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>سعر الشحن</th><th>مفعّل</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-shipping-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="shipping-governorate-price" inputmode="decimal" min="0" value="${rules.byGovernorate[name]??rules.defaultCost}"></td><td><input class="shipping-governorate-active" type="checkbox" ${rules.activeByGovernorate[name]!==false?"checked":""}></td></tr>`).join("")}</tbody></table></div></article>`;
+}
+
 function renderSettings() {
   const permissions = permissionSettings();
   const users = (data.users || []).filter(user => user.active !== false);
@@ -5018,6 +5034,7 @@ function renderSettings() {
         <div class="alert-item"><div class="alert-badge blue">◎</div><div><strong>تقارير WhatsApp</strong><span>يحتاج رقم المستلم وحساب WhatsApp Business API.</span></div>${badge("بانتظار الربط","warning")}</div>
       </div></article>
     </div>
+    ${shippingPricesSettingsMarkup()}
     <article class="card" style="margin-top:18px"><div class="card-header"><div><h3>حالة خدمة التتبع</h3><p>الاتصال، آخر تحديث، والمهام المعلقة.</p></div></div>
       <div class="metric-strip">
         <div class="mini-metric"><span>حالة الخدمة</span><strong id="settings-tracking-state">جارٍ التحقق...</strong></div>
@@ -6385,6 +6402,7 @@ root.addEventListener("click", async event => {
   }
   if (action === "choose-sale-customer") {
     draftSale.customerId = target.dataset.id;
+    applySaleCustomerShipping(getCustomer(draftSale.customerId));
     renderSales();
   }
   if (action === "add-online-order") onlineOrderModal();
@@ -6779,10 +6797,12 @@ root.addEventListener("input", event => {
   const index = Number(event.target.dataset.index);
   if (event.target.classList.contains("sale-qty")) draftSale.lines[index].qty = Math.max(1, Number(event.target.value));
   if (event.target.classList.contains("sale-price")) draftSale.lines[index].price = Number(event.target.value);
-  if (event.target.classList.contains("sale-discount")) draftSale.lines[index].discount = Number(event.target.value);
+  if (event.target.classList.contains("sale-discount")){event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0)draftSale.lines[index].discount=value;}
   if (event.target.id === "sale-paid") draftSale.paid = Math.max(0, Number(event.target.value || 0));
-  if (event.target.id === "sale-invoice-discount") draftSale.invoiceDiscount = Math.max(0, Number(event.target.value || 0));
-  if (event.target.classList.contains("sale-qty") || event.target.classList.contains("sale-price") || event.target.classList.contains("sale-discount") || event.target.id === "sale-invoice-discount") updateSaleSummary();
+  if (event.target.id === "sale-invoice-discount"){event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0)draftSale.invoiceDiscount=value;}
+  if(event.target.id==="sale-shipping-cost"){event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0){draftSale.shippingCost=value;draftSale.shippingFeeOverride=true;draftSale.shippingPriceSource="manual";}}
+  if(event.target.id==="sale-notes")draftSale.notes=event.target.value;
+  if (event.target.classList.contains("sale-qty") || event.target.classList.contains("sale-price") || event.target.classList.contains("sale-discount") || event.target.id === "sale-invoice-discount" || event.target.id==="sale-shipping-cost") updateSaleSummary();
   if (event.target.id === "sale-paid") updateSaleSummary();
   if (event.target.classList.contains("purchase-qty")) draftPurchase.lines[index].qty = Math.max(1, Number(event.target.value));
   if (event.target.classList.contains("purchase-cover")) {
@@ -6916,6 +6936,9 @@ root.addEventListener("change", event => {
   if (event.target.id === "sale-invoice-discount-type") {
     draftSale.invoiceDiscountType = event.target.value === "amount" ? "amount" : "percent";
     updateSaleSummary();
+  }
+  if(event.target.classList.contains("sale-discount-type")){
+    const index=Number(event.target.dataset.index);if(draftSale.lines[index])draftSale.lines[index].discountType=event.target.value==="amount"?"amount":"percent";updateSaleSummary();
   }
   if (event.target.id === "purchase-supplier") draftPurchase.supplierId = event.target.value;
   if (event.target.id === "purchase-type") draftPurchase.type = event.target.value;
@@ -7239,6 +7262,15 @@ modalBody.addEventListener("change", event => {
     updateOnlineOrderSummary();
     return;
   }
+  if(event.target.matches('#online-order-form [name="governorate"]')){
+    const form=event.target.form,input=form?.querySelector('[name="shippingCost"]'),draft=readOnlineOrderForm(),goods=onlineOrderTotals(draft.lines,draft.orderDiscount,draft.orderDiscountType,0).goods,rate=shippingRateForGovernorate(event.target.value,goods);
+    if(input&&input.dataset.shippingOverride!=="true"){
+      input.value=rate.fee;input.dataset.shippingSource=rate.source;
+      const hint=document.getElementById("online-order-shipping-hint");if(hint)hint.textContent=rate.configured&&rate.active?"تم تطبيق سعر المحافظة":rate.configured?"سعر المحافظة غير مفعل — تم استخدام الافتراضي":"لا يوجد سعر للمحافظة — تم استخدام السعر الافتراضي";
+      updateOnlineOrderSummary();
+    }
+    return;
+  }
   if (event.target.id === "count-filter-type") {
     const type = event.target.value;
     const valueSelect = document.getElementById("count-filter-value");
@@ -7366,6 +7398,7 @@ modalBody.addEventListener("input", event => {
     return;
   }
   if (event.target.closest("#online-order-form") && event.target.matches(".ool-qty, .ool-price, .ool-discount, [name='shippingCost'], #ool-order-discount")) {
+    if(event.target.name==="shippingCost"){event.target.value=normalizeArabicNumericText(event.target.value);event.target.dataset.shippingOverride="true";event.target.dataset.shippingSource="manual";}
     updateOnlineOrderSummary();
     return;
   }
@@ -7548,7 +7581,9 @@ modalBody.addEventListener("submit", async event => {
       customerId: linkedCustomer.id,
       customerName: orderCustomerName, phone: orderPhone, governorate: orderGovernorate,
       city: orderCity, address: orderAddress, source: formData.source,
-      paymentMethod: formData.paymentMethod, shippingCost: Number(formData.shippingCost || 0),
+      paymentMethod: formData.paymentMethod, shippingCost: totals.shipping, shippingFee:totals.shipping,
+      shippingFeeOverride:form.querySelector('[name="shippingCost"]')?.dataset.shippingOverride==="true",
+      shippingPriceSource:form.querySelector('[name="shippingCost"]')?.dataset.shippingSource||existing?.shippingPriceSource||"manual",
       tracking: formData.tracking, status: protectedStatus, notes: formData.notes, lines,
       orderDiscount, orderDiscountType, subtotal: totals.subtotal, discountTotal: totals.discountTotal,
       total: totals.total,
@@ -8470,10 +8505,16 @@ function saveSale({ printAfter = false } = {}) {
     invoiceDiscountType: draftSale.invoiceDiscountType || "percent",
     invoiceDiscountAmount: totals.invoiceDiscount,
     discount: totals.discount,
+    shipping:totals.shipping,
+    shippingCost:totals.shipping,
+    shippingFee:totals.shipping,
+    shippingFeeOverride:Boolean(draftSale.shippingFeeOverride),
+    shippingPriceSource:draftSale.shippingPriceSource||"none",
     total: totals.total,
     paid,
     remaining,
     status: "معتمدة",
+    notes:OrderFinance.normalizeNote(draftSale.notes||""),
     customerSnapshot: customerSnapshot(customer),
     lines: validEntries.map(({ line, computed }) => {
       const finalNet = computed.finalNet ?? (Number(line.qty || 0) * Number(line.price || 0));
@@ -8504,7 +8545,7 @@ function saveSale({ printAfter = false } = {}) {
     recordStockMovement(book, "بيع", -Number(line.qty), before, book.stock, sale.id, customer.name);
   });
   if (remaining > 0) customer.balance += remaining;
-  if (paid > 0) data.cash.push({ id: nextId("TX-", data.cash), date: sale.date, type: "قبض", locked: true, account: payment === "نقدي" || payment === "آجل" ? "الخزينة الرئيسية" : payment, party: customer.name, amount: paid, category: "مبيعات", note: `فاتورة ${sale.id}` });
+  if (paid > 0) data.cash.push({ id: nextId("TX-", data.cash), date: sale.date, type: "قبض", locked: true, account: payment === "نقدي" || payment === "آجل" ? "الخزينة الرئيسية" : payment, party: customer.name, amount: paid, category: "مبيعات", note: [`فاتورة ${sale.id}`,sale.notes].filter(Boolean).join(" — ") });
   if (customer.type === "تجزئة") { sale.pointsAwarded = Math.floor(totals.total / 10); customer.points = (customer.points || 0) + sale.pointsAwarded; }
   data.sales.push(sale);
   saveData("إنشاء فاتورة بيع", "المبيعات", sale.id);
@@ -8978,10 +9019,10 @@ function statementRows(id, kind) {
       date: invoice.date,
       type:"invoice",
       reference: invoice.id,
-      description: kind === "customer" ? "فاتورة مبيعات" : `مستند ${invoice.type || "مشتريات"}`,
+      description: kind === "customer" ? `فاتورة مبيعات · خصم ${money(invoice.discount||0)} · شحن ${Number(invoice.shippingFee ?? invoice.shipping ?? invoice.shippingCost ?? 0) ? money(invoice.shippingFee ?? invoice.shipping ?? invoice.shippingCost ?? 0) : "مجاني"}` : `مستند ${invoice.type || "مشتريات"}`,
       debit: invoice.status === "ملغاة" ? 0 : Number(invoice.remaining ?? invoice.total ?? 0),
       credit: 0,
-      status: invoice.status,user:invoice.createdByName||invoice.createdByUsername||"—",links:{invoiceId:invoice.id,orderId:invoice.onlineOrderId||""}
+      status: invoice.status,user:invoice.createdByName||invoice.createdByUsername||"—",note:invoice.notes||invoice.note||"",links:{invoiceId:invoice.id,orderId:invoice.onlineOrderId||""}
     })),
     ...returnInvoices.map(item => ({
       date: item.date,
@@ -8999,9 +9040,9 @@ function statementRows(id, kind) {
       description: `إيصال ${receipt.type} — ${receipt.method}`,
       debit: 0,
       credit: receipt.status === "ملغى" ? 0 : Number(receipt.balanceApplied || 0),
-      status: receipt.status,user:receipt.createdBy||"—",links:{receiptId:receipt.id}
+      status: receipt.status,user:receipt.createdBy||"—",note:receipt.note||"",links:{receiptId:receipt.id}
     })),
-    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
+    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
     ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:"استخدام رصيد دائن في طلب جديد",debit:Number(item.amount),credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
     ...(kind==="customer"?(data.onlineOrders||[]).filter(item=>item.customerId===id&&item.status==="ملغي").map(item=>({date:item.cancelledAt,type:"cancelled_order",reference:item.id,description:"إلغاء طلب — إلغاء مستند دون حذف",debit:0,credit:0,status:"ملغي",user:item.cancelledBy||"—",links:{orderId:item.id,invoiceId:item.saleId||""}})):[])
   ].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row,index,rows)=>({...row,balance:rows.slice(0,index+1).reduce((sum,item)=>sum+Number(item.debit||0)-Number(item.credit||0),0)}));
@@ -9017,9 +9058,9 @@ function showStatement(id, kind) {
       <div class="mini-metric"><span>الحد الائتماني</span><strong>${money(item.creditLimit)}</strong></div>
     </div>
     <div class="actions" style="margin:0 0 14px"><button class="btn secondary small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="استلام">إيصال استلام</button><button class="btn ghost small" data-action="party-voucher" data-kind="${kind}" data-id="${id}" data-voucher-type="دفع">إيصال دفع</button></div>
-    <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد بعد الحركة</th><th>الحالة</th><th>المستخدم</th><th>روابط المستندات</th></tr></thead><tbody>
-      <tr><td colspan="10"><div class="statement-filters"><button class="tab active" type="button" data-action="statement-filter" data-filter="all">كل الحركات</button><button class="tab" type="button" data-action="statement-filter" data-filter="invoice">فواتير</button><button class="tab" type="button" data-action="statement-filter" data-filter="payment">مدفوعات</button><button class="tab" type="button" data-action="statement-filter" data-filter="refund">مردودات / Refunds</button><button class="tab" type="button" data-action="statement-filter" data-filter="credit">أرصدة دائنة</button><button class="tab" type="button" data-action="statement-filter" data-filter="cancelled_order">طلبات ملغاة</button><input type="date" data-statement-date="from" aria-label="من تاريخ"><input type="date" data-statement-date="to" aria-label="إلى تاريخ"></div></td></tr>
-      ${movements.map(row => `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${row.links?.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(row.links.invoiceId)}">${esc(row.links.invoiceId)}</button>`:""}</td></tr>`).join("") || `<tr><td colspan="10" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
+    <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد بعد الحركة</th><th>الحالة</th><th>المستخدم</th><th>الملاحظة</th><th>روابط المستندات</th></tr></thead><tbody>
+      <tr><td colspan="11"><div class="statement-filters"><button class="tab active" type="button" data-action="statement-filter" data-filter="all">كل الحركات</button><button class="tab" type="button" data-action="statement-filter" data-filter="invoice">فواتير</button><button class="tab" type="button" data-action="statement-filter" data-filter="payment">مدفوعات</button><button class="tab" type="button" data-action="statement-filter" data-filter="refund">مردودات / Refunds</button><button class="tab" type="button" data-action="statement-filter" data-filter="credit">أرصدة دائنة</button><button class="tab" type="button" data-action="statement-filter" data-filter="cancelled_order">طلبات ملغاة</button><input type="date" data-statement-date="from" aria-label="من تاريخ"><input type="date" data-statement-date="to" aria-label="إلى تاريخ"></div></td></tr>
+      ${movements.map(row => `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${row.links?.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(row.links.invoiceId)}">${esc(row.links.invoiceId)}</button>`:""}</td></tr>`).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-statement" data-id="${id}" data-kind="${kind}">طباعة كشف الحساب</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
@@ -9088,7 +9129,7 @@ function printSale(id, format = "a4") {
     const base = Number(line.qty || line.quantity || 0) * Number(line.price || line.unitSellingPrice || 0);
     const net = saleLineNet(line, line.qty || line.quantity || 0);
     const discount = Math.max(0, base - net);
-    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || line.quantity || 0).toLocaleString("ar-EG")}</td><td>${money(line.price || line.unitSellingPrice || 0)}</td><td>${money(discount)}</td><td>${money(net)}</td></tr>`;
+    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || line.quantity || 0).toLocaleString("ar-EG")}</td><td>${money(line.price || line.unitSellingPrice || 0)}</td><td>${esc(lineDiscountLabel(line))} (${money(discount)})</td><td>${money(net)}</td></tr>`;
   }).join("");
   printHtml(`فاتورة بيع ${sale.id}`, `
     <div class="table-wrap"><table><tbody>
@@ -9099,7 +9140,7 @@ function printSale(id, format = "a4") {
     </tbody></table></div>
     <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="6">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
     <div class="table-wrap"><table><tbody>
-      <tr><th>إجمالي قبل الخصم</th><td>${money(sale.subtotal || 0)}</td><th>إجمالي الخصم</th><td>${money(sale.discount || 0)}</td></tr>
+      <tr><th>إجمالي قبل الخصم</th><td>${money(sale.subtotal || 0)}</td><th>إجمالي الخصم</th><td>${esc(sale.invoiceDiscountType === "amount" ? "مبلغ" : "نسبة")} — ${money(sale.discount || 0)}</td></tr>
       <tr><th>الشحن</th><td>${money(sale.shipping || 0)}</td><th>الصافي</th><td>${money(sale.total || 0)}</td></tr>
       <tr><th>المدفوع</th><td>${money(sale.paid || 0)}</td><th>المتبقي</th><td>${money(sale.remaining || 0)}</td></tr>
       <tr><th>ملاحظات</th><td colspan="3">${esc(sale.notes || "—")}</td></tr>
@@ -9172,14 +9213,15 @@ function printOnlineOrder(id, format = "a4") {
   if (!order.saleId && !order.shipmentId && !["مرتجع","ملغي"].includes(order.status)) {
     if(!order.confirmedAt||order.inventoryReservation?.status!=="active")return toast("يجب تأكيد الطلب وحجز المخزون أولًا قبل إصدار أمر التجهيز.","error");
   }
-  printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>تم</th></tr></thead><tbody>${order.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>—</td></tr>`).join("")}</tbody></table><p>ملاحظات: ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
+  const totals=onlineOrderTotals(order.lines||[],order.orderDiscount||0,order.orderDiscountType||"percent",order.shippingFee??order.shippingCost??0);
+  printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>نوع الخصم</th><th>قيمة الخصم</th><th>بعد الخصم</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${esc(line.discountType==="amount"?"مبلغ":"نسبة")}</td><td>${money(line.discountAmount||0)}</td><td>${money(line.lineTotal||0)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
 }
 
 function printStatement(id, kind) {
   const party = kind === "customer" ? getCustomer(id) : getSupplier(id);
   if (!party) return;
   const movements = statementRows(id, kind);
-  printHtml(`كشف حساب ${kind === "customer" ? "عميل" : "مورد"}`, `<p><strong>${esc(party.name)}</strong> — <span dir="ltr">${esc(party.phone||"")}</span></p><table><thead><tr><th>التاريخ</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن / مسدد</th><th>الحالة</th></tr></thead><tbody>${movements.map(row=>`<tr><td>${fmtDate(row.date)}</td><td>${esc(row.reference)}</td><td>${esc(row.description)}</td><td>${row.debit ? money(row.debit) : "—"}</td><td>${row.credit ? money(row.credit) : "—"}</td><td>${esc(row.status||"معتمد")}</td></tr>`).join("")||`<tr><td colspan="6">لا توجد حركات مسجلة.</td></tr>`}</tbody></table><div class="total">الرصيد الحالي: ${money(party.balance||0)}</div>${party.advance ? `<p>دفعات مقدمة: ${money(party.advance)}</p>` : ""}`);
+  printHtml(`كشف حساب ${kind === "customer" ? "عميل" : "مورد"}`, `<p><strong>${esc(party.name)}</strong> — <span dir="ltr">${esc(party.phone||"")}</span></p><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>المرجع</th><th>البيان</th><th>مدين</th><th>دائن / مسدد</th><th>الرصيد</th><th>الحالة</th><th>المستخدم</th><th>الملاحظة</th></tr></thead><tbody>${movements.map(row=>`<tr><td>${fmtDate(row.date)}</td><td>${esc(row.type||"حركة")}</td><td>${esc(row.reference)}</td><td>${esc(row.description)}</td><td>${row.debit ? money(row.debit) : "—"}</td><td>${row.credit ? money(row.credit) : "—"}</td><td>${money(row.balance||0)}</td><td>${esc(row.status||"معتمد")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td></tr>`).join("")||`<tr><td colspan="10">لا توجد حركات مسجلة.</td></tr>`}</tbody></table><div class="total">الرصيد الحالي: ${money(party.balance||0)}</div>${party.advance ? `<p>دفعات مقدمة: ${money(party.advance)}</p>` : ""}`);
 }
 
 function printCashDaily() {
@@ -11183,6 +11225,7 @@ function saveSettings() {
   data.settings.staleDays = Number(document.getElementById("setting-stale").value);
   data.settings.approvalDiscount = Number(document.getElementById("setting-discount").value);
   data.settings.allowNegativeStock = document.getElementById("setting-negative").value === "true";
+  try{const byGovernorate={},activeByGovernorate={};document.querySelectorAll("[data-shipping-rate]").forEach(row=>{const name=row.dataset.shippingRate,value=OrderFinance.normalizeNumber(row.querySelector(".shipping-governorate-price")?.value||0);if(!Number.isFinite(value)||value<0)throw new Error(`سعر الشحن لمحافظة ${name} غير صالح.`);byGovernorate[name]=value;activeByGovernorate[name]=Boolean(row.querySelector(".shipping-governorate-active")?.checked);});data.settings.shippingRules=OrderFinance.normalizeShippingRules({byGovernorate,activeByGovernorate,defaultCost:document.getElementById("shipping-default-cost")?.value||0,freeShippingAbove:document.getElementById("shipping-free-above")?.value||0});}catch(error){return toast(error.message,"error");}
   data.settings.tracking.intervalHours = [1, 3, 6, 12, 24].includes(Number(document.getElementById("tracking-interval")?.value)) ? Number(document.getElementById("tracking-interval")?.value) : 6;
   data.settings.tracking.minIntervalHours = [1, 3, 6, 12, 24].includes(Number(document.getElementById("tracking-min-interval")?.value)) ? Number(document.getElementById("tracking-min-interval")?.value) : data.settings.tracking.intervalHours;
   data.settings.tracking.maxConcurrent = 1;
