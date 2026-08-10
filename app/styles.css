@@ -1582,9 +1582,16 @@ tbody tr.target-highlight > td {
   .monthly-sales-grid { grid-template-columns: 1fr; }
   .monthly-projection div { grid-template-columns: 1fr; }
   .section-title { align-items: flex-start; flex-direction: column; }
-  .invoice-line, .line-head { grid-template-columns: 1fr 65px 80px 35px; }
+  .invoice-line { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; }
+  .line-head { display: none; }
+  .quick-sale-line .sale-book-picker { grid-column: 1 / -1; }
+  .quick-sale-line .sale-qty { grid-column: 1 / 3; }
+  .quick-sale-line .sale-price { grid-column: 3 / 6; }
+  .quick-sale-line .discount-field { grid-column: 6 / 10; display: grid; }
+  .quick-sale-line .sale-line-net { grid-column: 10 / 12; display: block; align-self: center; }
+  .quick-sale-line .sale-remove { grid-column: 12; }
+  .quick-sale-line .sale-book-info { grid-column: 1 / -1; }
   .purchase-invoice-line, .purchase-line-head { grid-template-columns: minmax(160px, 1fr) 65px 80px 80px 90px 95px 35px; min-width: 720px; }
-  .invoice-line .discount-field, .line-head .discount-head { display: none; }
   .invoice-meta .form-grid { grid-template-columns: 1fr; }
   .modal-backdrop { padding: 10px; }
 }
