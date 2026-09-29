@@ -18,7 +18,9 @@ const checks=[
   ["book selection closes results and focuses quantity",/selectedIndex=quickOrderDraft\.lines\.findIndex[\s\S]*focusSelector:`\[data-quick-order-qty=/],
   ["book rows have visual hierarchy",/quick-book-avatar[\s\S]*quick-price-cell[\s\S]*quick-final-price/],
   ["shipping and payment cards are compact",/\.quick-shipping-card,.quick-payment-card\{padding:14px 16px\}[\s\S]*\.quick-shipping-preview\{display:grid;grid-template-columns:auto 1fr/],
-  ["medium screens place shipping and payment side by side",/@media\(min-width:900px\) and \(max-width:1450px\)[\s\S]*\.quick-shipping-card,.quick-payment-card\{align-self:start\}/]
+  ["medium screens place shipping and payment side by side",/@media\(min-width:900px\) and \(max-width:1450px\)[\s\S]*\.quick-shipping-card,.quick-payment-card\{align-self:start\}/],
+  ["accounting strip replaces the large summary tiles",/quick-accounting-strip[\s\S]*إجمالي الفاتورة[\s\S]*data-quick-summary="remaining"/],
+  ["accounting values stay connected to live summary fields",/data-quick-summary="subtotal"[\s\S]*data-quick-summary="discountTotal"[\s\S]*data-quick-summary="goods"[\s\S]*data-quick-summary="shipping"[\s\S]*data-quick-summary="total"[\s\S]*data-quick-summary="paid"/]
 ];
 for(const [name,pattern] of checks){const source=["columns","mobile","compact","screens","hierarchy"].some(token=>name.includes(token))?css:app;assert(pattern.test(source),name);console.log(`PASS ${name}`);}
 console.log(`${checks.length}/${checks.length} quick order book discount UX tests passed`);
