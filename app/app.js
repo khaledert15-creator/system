@@ -3106,13 +3106,10 @@ function quickPaymentStatusLabel(value) {
 function quickOrderMessage(confirmed=false) {
   const totals=quickOrderTotalsNow(),payment=quickOrderPaymentNow(totals),order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null;
   const rows=totals.lines.map((line,index)=>{
-    const book=getBook(line.bookId),hasDiscount=line.lineDiscountTotal>0;
-    const lines=[`${index+1}️⃣ ${book?.name||line.bookId}`,`الكمية: ${line.qty}`,`السعر قبل الخصم: ${line.unitOriginalPrice.toFixed(2)} ج.م للنسخة`,`السعر بعد الخصم: ${line.unitFinalPrice.toFixed(2)} ج.م للنسخة`,`إجمالي قبل الخصم: ${line.originalTotal.toFixed(2)} ج.م`];
-    if(hasDiscount)lines.push(`خصم النسخة: ${line.unitDiscountAmount.toFixed(2)} ج.م (${line.discountPercent}%)`,`إجمالي الخصم: ${line.lineDiscountTotal.toFixed(2)} ج.م`);
-    lines.push(`الإجمالي بعد الخصم: ${line.finalNet.toFixed(2)} ج.م`);
-    return lines.join("\n");
+    const book=getBook(line.bookId);
+    return `${index+1}. ${book?.name||line.bookId} × ${line.qty}\nقبل الخصم: ${line.unitOriginalPrice.toFixed(2)} ج.م\nبعد الخصم: ${line.unitFinalPrice.toFixed(2)} ج.م`;
   }).join("\n\n");
-  return `${confirmed?"✅ تم تأكيد طلبك من مكتبة دوت كوم":"📚 ملخص طلبك من مكتبة دوت كوم"}\n${confirmed&&order?`\n🧾 رقم الطلب: ${order.id}\n`:""}\n👤 الاسم: ${quickOrderDraft.customerName||quickOrderCustomer()?.name||"—"}\n\n📖 الكتب:\n\n${rows}\n\n────────────────\n💰 إجمالي الكتب قبل الخصم: ${totals.subtotal.toFixed(2)} ج.م\n${totals.productDiscountTotal?`🏷️ خصومات الكتب: ${totals.productDiscountTotal.toFixed(2)} ج.م\n`:""}${totals.orderDiscountAmount?`🏷️ خصم إضافي على الطلب: ${totals.orderDiscountAmount.toFixed(2)} ج.م\n`:""}${totals.discountTotal?`🏷️ إجمالي الخصم: ${totals.discountTotal.toFixed(2)} ج.م\n`:""}📚 بعد الخصم: ${totals.goods.toFixed(2)} ج.م\n${totals.shipping?`🚚 الشحن: ${totals.shipping.toFixed(2)} ج.م`:"🚚 الشحن: مجاني"}\n\n✅ إجمالي الطلب: ${totals.total.toFixed(2)} ج.م\n\n💵 طريقة الدفع: ${paymentPlanLabel()}\n💳 المدفوع: ${payment.paidAmount.toFixed(2)} ج.م\n📌 المتبقي: ${payment.remainingAmount.toFixed(2)} ج.م`;
+  return `${confirmed?"✅ تم تأكيد الطلب":"📚 مراجعة الطلب"}${confirmed&&order?` · ${order.id}`:""}\n\nالكتب المطلوبة:\n${rows||"—"}\n\n────────────\nالإجمالي بعد الخصم: ${totals.total.toFixed(2)} ج.م\nالمدفوع: ${payment.paidAmount.toFixed(2)} ج.م\nالمتبقي: ${payment.remainingAmount.toFixed(2)} ج.م`;
 }
 
 function quickOrderBookResults() {
@@ -3254,10 +3251,11 @@ function renderQuickOrderScreen() {
       <div class="form-field"><label>الخزنة / الحساب</label><select id="quick-order-cash-account" ${canReceive&&quickOrderDraft.paymentConfirmed?"":"disabled"}><option value="">اختر الحساب</option>${(data.cashAccounts||[]).filter(x=>x.active!==false).map(x=>`<option value="${x.id}" ${quickOrderDraft.cashAccountId===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>
       ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>يوجد مبلغ مدفوع على الطلب</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.</span></div>`:""}
     </article>
-  </div><aside class="quick-order-summary card"><div class="card-header"><div><h3>إجراءات الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ رسالة التأكيد.":"راجع الرسالة ثم احفظ أو أكد الطلب."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
+    <aside class="quick-order-summary card"><div class="card-header"><div><h3>مراجعة وحفظ الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ الرسالة.":"مراجعة سريعة ثم الحفظ أو التأكيد."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
     <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":"📋 نسخ ملخص الطلب"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-new">طلب جديد</button>`}</div>
-  </aside></div>`;
+    </aside>
+  </div></div>`;
 }
 
 function preparationOrders() {
