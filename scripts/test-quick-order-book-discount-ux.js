@@ -14,7 +14,9 @@ const checks=[
   ["final unit and line totals are visible",/data-quick-line-unit-final[\s\S]*data-quick-line-total/],
   ["search uses smart matching",/term\?smartBookSearch\(quickOrderSearch,10\)/],
   ["desktop table columns are aligned",/\.quick-order-table-head,.quick-order-line\{display:grid;grid-template-columns/],
-  ["mobile layout is responsive",/@media\(max-width:760px\)\{\.quick-order-line\{grid-template-columns:repeat\(2/]
+  ["mobile layout is responsive",/@media\(max-width:760px\)\{\.quick-order-line\{grid-template-columns:repeat\(2/],
+  ["book selection closes results and focuses quantity",/selectedIndex=quickOrderDraft\.lines\.findIndex[\s\S]*focusSelector:`\[data-quick-order-qty=/],
+  ["book rows have visual hierarchy",/quick-book-avatar[\s\S]*quick-price-cell[\s\S]*quick-final-price/]
 ];
 for(const [name,pattern] of checks){const source=name.includes("columns")||name.includes("mobile")?css:app;assert(pattern.test(source),name);console.log(`PASS ${name}`);}
 console.log(`${checks.length}/${checks.length} quick order book discount UX tests passed`);
