@@ -3025,6 +3025,29 @@ function quickOrderPaymentNow(totals=quickOrderTotalsNow()) {
   return OrderFinance.calculatePayment(totals.total,intended||0);
 }
 
+function quickOrderLastBookDiscount(bookId) {
+  const history=[];
+  const collect=(documents=[],kind="طلب")=>documents.forEach(document=>{
+    if(document.deletedAt||["ملغاة","ملغي"].includes(document.status))return;
+    (document.lines||[]).forEach(line=>{
+      if((line.bookId||line.productId)!==bookId)return;
+      const price=OrderFinance.normalizeNumber(line.price??line.originalPrice??line.unitOriginalPrice??getBook(bookId)?.price??0);
+      const raw=OrderFinance.normalizeNumber(line.discount??line.discountPercent??line.discountAmount??0);
+      if(!Number.isFinite(price)||price<=0||!Number.isFinite(raw)||raw<0)return;
+      const type=line.discountType==="amount"&&line.discountPercent==null?"amount":"percent";
+      const percent=type==="amount"?OrderFinance.round(Math.min(100,raw*100/price)):OrderFinance.round(Math.min(100,raw));
+      history.push({percent,date:document.updatedAt||document.confirmedAt||document.createdAt||document.date||"",reference:document.id||"",kind});
+    });
+  });
+  collect(data.onlineOrders||[],"طلب");
+  collect(data.sales||[],"فاتورة");
+  history.sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.reference).localeCompare(String(a.reference)));
+  if(history.length)return {...history[0],found:true};
+  const book=getBook(bookId)||{},raw=OrderFinance.normalizeNumber(book.discount??book.saleDiscount??0);
+  const percent=book.discountType==="amount"&&Number(book.price)>0?OrderFinance.round(raw*100/Number(book.price)):OrderFinance.round(Math.min(100,raw||0));
+  return {percent:Number.isFinite(percent)?percent:0,date:"",reference:"",kind:"الصنف",found:false};
+}
+
 function quickOrderLinePriceMarkup(line) {
   const hasDiscount=line.discountAmount>0;
   return `<span><small>قبل الخصم</small>${hasDiscount?`<del>${money(line.unitOriginalPrice)}</del>`:`<strong>${money(line.unitOriginalPrice)}</strong>`}<em>للنسخة</em></span><span class="${hasDiscount?"discounted":""}"><small>بعد الخصم</small><strong>${money(line.unitFinalPrice)}</strong><em>للنسخة</em></span>`;
@@ -3037,8 +3060,14 @@ function refreshQuickOrderComputedUi() {
     const price=document.querySelector(`[data-quick-line-price="${index}"]`);
     const discount=document.querySelector(`[data-quick-line-discount-derived="${index}"]`);
     const total=document.querySelector(`[data-quick-line-total="${index}"]`);
+    const unitFinal=document.querySelector(`[data-quick-line-unit-final="${index}"]`);
+    const percentInput=document.querySelector(`[data-quick-order-discount-percent="${index}"]`);
+    const amountInput=document.querySelector(`[data-quick-order-discount-amount="${index}"]`);
     if(price)price.innerHTML=quickOrderLinePriceMarkup(line);
-    if(discount)discount.textContent=`خصم النسخة: ${money(line.unitDiscountAmount)} (${line.discountPercent}%) · إجمالي الخصم: ${money(line.lineDiscountTotal)}`;
+    if(discount)discount.textContent=`وفرت ${money(line.lineDiscountTotal)}`;
+    if(unitFinal)unitFinal.textContent=money(line.unitFinalPrice);
+    if(percentInput&&document.activeElement!==percentInput)percentInput.value=line.discountPercent;
+    if(amountInput&&document.activeElement!==amountInput)amountInput.value=line.unitDiscountAmount;
     if(total)total.textContent=money(line.lineFinalAmount??line.finalNet);
   });
   const values={
@@ -3088,9 +3117,8 @@ function quickOrderMessage(confirmed=false) {
 
 function quickOrderBookResults() {
   const term=normalizeSmartSearch(quickOrderSearch);
-  if(!term)return "";
-  const matches=(data.books||[]).filter(book=>!book.deletedAt&&normalizeSmartSearch([book.name,book.barcode,book.extraBarcode,book.sku,book.grade,book.category,book.publisher].join(" ")).includes(term)).slice(0,8);
-  return `<div class="quick-book-results">${matches.map(book=>{const available=bookAvailableStock(book);return `<button type="button" class="quick-book-result" data-action="quick-order-add-book" data-id="${book.id}" ${available<=0?"disabled":""}><span><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.sku||book.id)} · ${esc(book.grade||book.category||"")}</small></span><span><b>${money(book.price)}</b><small>${available} متاح للبيع</small>${available<=Number(book.reorder||0)?badge(available?"كمية منخفضة":"غير متاح",available?"warning":"danger"):""}</span></button>`}).join("")||`<div class="empty-state compact">لا توجد نتائج مطابقة.</div>`}</div>`;
+  const matches=term?smartBookSearch(quickOrderSearch,10):(data.books||[]).filter(book=>!book.deletedAt&&bookAvailableStock(book)>0).slice().sort((a,b)=>String(b.updatedAt||b.lastSale||"").localeCompare(String(a.updatedAt||a.lastSale||""))).slice(0,6);
+  return `<div class="quick-book-results"><div class="quick-book-results-title">${term?"نتائج البحث":"كتب مقترحة للإضافة السريعة"}</div>${matches.map(book=>{const available=bookAvailableStock(book),last=quickOrderLastBookDiscount(book.id);return `<button type="button" class="quick-book-result" data-action="quick-order-add-book" data-id="${book.id}" ${available<=0?"disabled":""}><span><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.sku||book.id)} · ${esc(book.grade||book.category||"")}</small></span><span class="quick-result-price"><small>السعر الأساسي</small><b>${money(book.price)}</b></span><span class="quick-result-discount"><small>آخر خصم</small><b>${last.percent}%</b></span><span><small>${available} متاح للبيع</small>${available<=Number(book.reorder||0)?badge(available?"كمية منخفضة":"غير متاح",available?"warning":"danger"):""}</span></button>`}).join("")||`<div class="empty-state compact">لا توجد نتائج مطابقة.</div>`}</div>`;
 }
 
 function quickGovernorateOptions() {
@@ -3154,7 +3182,7 @@ function validateQuickOrderCustomerFields() {
 function quickOrderFieldIdentity(element) {
   if(!(element instanceof HTMLElement)||!root.contains(element))return "";
   if(element.id)return `#${CSS.escape(element.id)}`;
-  for(const name of ["quickOrderQty","quickOrderDiscount","quickOrderDiscountType"]){
+  for(const name of ["quickOrderQty","quickOrderDiscountPercent","quickOrderDiscountAmount"]){
     if(element.dataset[name]!==undefined)return `[data-${name.replace(/[A-Z]/g,letter=>`-${letter.toLowerCase()}`)}="${CSS.escape(element.dataset[name])}"]`;
   }
   return "";
@@ -3209,9 +3237,10 @@ function renderQuickOrderScreen() {
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>تم العثور على عميل سابق: ${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:`<div class="quick-customer-insight new"><span class="quick-customer-check">+</span><div><strong>عميل جديد</strong><small>ستُحفظ بياناته مع الطلب بعد التأكيد.</small></div></div>`}
       <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
-    <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>ابحث ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
-      <div class="quick-book-search"><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="ابحث باسم الكتاب أو الكود أو الصف أو المادة">${quickOrderBookResults()}</div>
-      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved;return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح للبيع</small></div><label><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="decimal" min="1" max="${available}" value="${line.qty}"></label><div class="quick-line-price" data-quick-line-price="${index}">${quickOrderLinePriceMarkup(line)}</div><div class="quick-line-discount"><label><span>خصم النسخة ${helpIcon("الخصم المدخل يطبق على كل نسخة، وإجمالي الخصم يتغير تلقائيًا مع الكمية.","شرح خصم النسخة")}</span><select data-quick-order-discount-type="${index}" ${canOverride?"":"disabled"}><option value="percent" ${line.discountType==="percent"?"selected":""}>نسبة % لكل نسخة</option><option value="amount" ${line.discountType==="amount"?"selected":""}>قيمة ج.م لكل نسخة</option></select></label><input data-quick-order-discount="${index}" inputmode="decimal" value="${line.discount||0}" ${canOverride?"":"disabled"} aria-label="خصم النسخة"><small data-quick-line-discount-derived="${index}">خصم النسخة: ${money(line.unitDiscountAmount)} (${line.discountPercent}%) · إجمالي الخصم: ${money(line.lineDiscountTotal)}</small></div><div class="quick-line-total"><small>إجمالي قبل الخصم</small><span>${money(line.originalTotal)}</span><small>إجمالي الصنف بعد الخصم</small><strong data-quick-line-total="${index}">${money(line.finalNet)}</strong></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}">حذف</button></article>`}).join("")||`<div class="empty-state compact">أضف الكتب من البحث السريع.</div>`}</div>
+    <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
+      <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
+      <div class="quick-order-table-head" aria-hidden="true"><span>الكتاب</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
+      <div class="quick-order-lines">${totals.lines.map((line,index)=>{const book=getBook(line.bookId),ownReserved=quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.inventoryReservation?.status==="active"?Number(getOnlineOrder(quickOrderDraft.savedOrderId).inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0,available=bookAvailableStock(book)+ownReserved,last=quickOrderLastBookDiscount(line.bookId);return `<article class="quick-order-line"><div class="quick-line-book"><strong>${esc(book?.name||line.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · ${available} متاح</small>${last.found?`<span class="quick-last-discount">آخر خصم ${last.percent}% · ${esc(last.reference)}</span>`:""}</div><label class="quick-line-qty"><span>الكمية</span><input data-quick-order-qty="${index}" inputmode="numeric" min="1" max="${available}" value="${line.qty}"></label><div class="quick-price-cell"><small>السعر الأساسي</small><strong>${money(line.unitOriginalPrice)}</strong></div><label class="quick-discount-field"><span>خصم %</span><input data-quick-order-discount-percent="${index}" inputmode="decimal" value="${line.discountPercent}" ${canOverride?"":"disabled"} aria-label="نسبة خصم ${esc(book?.name||line.bookId)}"></label><label class="quick-discount-field"><span>خصم ج.م</span><input data-quick-order-discount-amount="${index}" inputmode="decimal" value="${line.unitDiscountAmount}" ${canOverride?"":"disabled"} aria-label="قيمة خصم ${esc(book?.name||line.bookId)}"></label><div class="quick-final-price"><small>بعد الخصم</small><strong data-quick-line-unit-final="${index}">${money(line.unitFinalPrice)}</strong></div><div class="quick-line-total"><small>إجمالي الصنف</small><strong data-quick-line-total="${index}">${money(line.finalNet)}</strong><small data-quick-line-discount-derived="${index}">وفرت ${money(line.lineDiscountTotal)}</small></div><button class="row-action text-danger" data-action="quick-order-remove-book" data-index="${index}" aria-label="حذف ${esc(book?.name||line.bookId)}">×</button></article>`}).join("")||`<div class="empty-state compact"><strong>ابدأ بالبحث عن أول كتاب</strong><span>ستظهر الأسعار وآخر خصم تلقائيًا بعد الإضافة.</span></div>`}</div>
       <div class="quick-order-level-discount"><div><strong>خصم إضافي على الطلب</strong><small>مستقل عن خصومات الكتب ولا يُحتسب مرتين.</small></div><select id="quick-order-order-discount-type" ${canOverride?"":"disabled"}><option value="percent" ${quickOrderDraft.orderDiscountType==="percent"?"selected":""}>نسبة %</option><option value="amount" ${quickOrderDraft.orderDiscountType==="amount"?"selected":""}>قيمة ج.م</option></select><input id="quick-order-order-discount" inputmode="decimal" value="${quickOrderDraft.orderDiscount||0}" ${canOverride?"":"disabled"}><span data-quick-order-discount-derived>${quickOrderDraft.orderDiscountType==="amount"?`${totals.orderDiscountPercent}%`:`${money(totals.orderDiscountAmount)}`}</span></div>
     </article>
     <article class="card quick-shipping-card"><div class="card-header"><div><h3>3. الشحن للعميل</h3><p>القيمة التي ستظهر للعميل وتدخل في إجمالي الطلب والتحصيل.</p></div>${badge(quickOrderDraft.shippingManual?"قيمة يدوية":"حسب المحافظة",quickOrderDraft.shippingManual?"warning":"gray")}</div>
@@ -6503,7 +6532,7 @@ root.addEventListener("click", async event => {
     const available=bookAvailableStock(book)+ownReserved;
     if(existing){if(existing.qty>=available)return toast(`المتاح للبيع من ${book.name} هو ${available}.`,"error");existing.qty++;}
     else if(available<=0)return toast(`لا توجد كمية متاحة للبيع من ${book.name}.`,"error");
-    else quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:Number(book.discount??book.saleDiscount??0),discountType:book.discountType==="amount"?"amount":"percent",discountScope:"unit"});
+    else {const lastDiscount=quickOrderLastBookDiscount(book.id);quickOrderDraft.lines.push({bookId:book.id,qty:1,price:Number(book.price||0),discount:lastDiscount.percent,discountType:"percent",discountScope:"unit"});}
     quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderQuickOrderPreservingContext({focusSelector:"#quick-order-book-search"});
   }
   if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderQuickOrderPreservingContext(); }
@@ -6917,9 +6946,9 @@ root.addEventListener("input", event => {
     const order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,ownReserved=order?.inventoryReservation?.status==="active"?Number(order.inventoryReservation.lines?.find(item=>item.bookId===line.bookId)?.qty||0):0;
     const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=1){line.qty=Math.max(1,Math.min(bookAvailableStock(book)+ownReserved,Math.trunc(parsed)));refreshQuickOrderComputedUi();}return;
   }
-  if(event.target.matches("[data-quick-order-discount]")){
+  if(event.target.matches("[data-quick-order-discount-percent], [data-quick-order-discount-amount]")){
     event.target.value=normalizeArabicNumericText(event.target.value);
-    const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscount)],parsed=OrderFinance.normalizeNumber(event.target.value);if(line&&Number.isFinite(parsed)&&parsed>=0){const previous=line.discount;line.discount=parsed;try{if(!refreshQuickOrderComputedUi())line.discount=previous;}catch(error){line.discount=previous;}}return;
+    const isAmount=event.target.dataset.quickOrderDiscountAmount!==undefined,index=Number(isAmount?event.target.dataset.quickOrderDiscountAmount:event.target.dataset.quickOrderDiscountPercent),line=quickOrderDraft.lines[index],parsed=OrderFinance.normalizeNumber(event.target.value);if(line&&Number.isFinite(parsed)&&parsed>=0){const previous={discount:line.discount,discountType:line.discountType};line.discount=parsed;line.discountType=isAmount?"amount":"percent";try{if(!refreshQuickOrderComputedUi())Object.assign(line,previous);}catch(error){Object.assign(line,previous);}}return;
   }
   if(event.target.id==="quick-order-paid-amount"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.paidAmount;quickOrderDraft.paidAmount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.paidAmount=previous;}return;}
   if(event.target.id==="quick-order-order-discount"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.orderDiscount;quickOrderDraft.orderDiscount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.orderDiscount=previous;}return;}
@@ -7001,7 +7030,6 @@ root.addEventListener("change", event => {
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
   if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
-  if(event.target.matches("[data-quick-order-discount-type]")){const line=quickOrderDraft.lines[Number(event.target.dataset.quickOrderDiscountType)];if(line){line.discountType=event.target.value==="amount"?"amount":"percent";line.discount=0;renderQuickOrderPreservingContext();}return;}
   if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderQuickOrderPreservingContext();return;}
   if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderQuickOrderPreservingContext();return;}
   if(event.target.id==="quick-order-payment-confirmed"){quickOrderDraft.paymentConfirmed=event.target.checked;renderQuickOrderPreservingContext();return;}
