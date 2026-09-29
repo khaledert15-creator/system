@@ -17,10 +17,10 @@ const checks=[
   ["mobile layout is responsive",/@media\(max-width:760px\)\{\.quick-order-line\{grid-template-columns:repeat\(2/],
   ["book selection closes results and focuses quantity",/selectedIndex=quickOrderDraft\.lines\.findIndex[\s\S]*focusSelector:`\[data-quick-order-qty=/],
   ["book rows have visual hierarchy",/quick-book-avatar[\s\S]*quick-price-cell[\s\S]*quick-final-price/],
-  ["shipping and payment cards are compact",/\.quick-shipping-card,.quick-payment-card\{padding:14px 16px\}[\s\S]*\.quick-shipping-preview\{display:grid;grid-template-columns:auto 1fr/],
+  ["shipping is edited directly in the accounting strip",/shipping-edit[\s\S]*id="quick-order-shipping-cost"[\s\S]*quick-order-reset-shipping/],
   ["wide screens use a sticky fulfilment rail",/@media\(min-width:1200px\)[\s\S]*grid-template-areas:"customer customer" "products side"[\s\S]*\.quick-order-side\{grid-area:side;position:sticky/],
   ["accounting strip replaces the large summary tiles",/quick-accounting-strip[\s\S]*إجمالي الفاتورة[\s\S]*data-quick-summary="remaining"/],
-  ["accounting values stay connected to live summary fields",/data-quick-summary="subtotal"[\s\S]*data-quick-summary="discountTotal"[\s\S]*data-quick-summary="goods"[\s\S]*data-quick-summary="shipping"[\s\S]*data-quick-summary="total"[\s\S]*data-quick-summary="paid"/],
+  ["accounting values stay connected to live summary fields",/data-quick-summary="subtotal"[\s\S]*data-quick-summary="discountTotal"[\s\S]*data-quick-summary="goods"[\s\S]*id="quick-order-shipping-cost"[\s\S]*data-quick-summary="total"[\s\S]*data-quick-summary="paid"/],
   ["review message contains only requested accounting content",/(?=[\s\S]*الكتب المطلوبة:)(?=[\s\S]*قبل الخصم:)(?=[\s\S]*بعد الخصم:)(?=[\s\S]*الإجمالي بعد الخصم:)(?=[\s\S]*المدفوع:)(?=[\s\S]*المتبقي:)/],
   ["review panel sits in the fulfilment rail",/quick-order-side[\s\S]*quick-order-summary card[\s\S]*<\/aside>\s*<\/div>\s*<\/div><\/div>/]
 ];
