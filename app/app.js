@@ -5194,7 +5194,7 @@ function showSeasons() {
 
 function shippingPricesSettingsMarkup(){
   const rules=OrderFinance.normalizeShippingRules(data.settings?.shippingRules||data.settings?.shippingRates||{});
-  return `<article class="card" style="margin-top:18px"><div class="card-header"><div><h3>أسعار الشحن للمحافظات</h3><p>السعر يطبق تلقائيًا على الطلب ويمكن للمستخدم المخول استبداله يدويًا.</p></div></div><div class="form-grid"><div class="form-field"><label>السعر الافتراضي عند عدم وجود سعر</label><input id="shipping-default-cost" inputmode="decimal" min="0" value="${rules.defaultCost}"></div><div class="form-field"><label>شحن مجاني بداية من</label><input id="shipping-free-above" inputmode="decimal" min="0" value="${rules.freeShippingAbove}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>سعر الشحن</th><th>مفعّل</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-shipping-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="shipping-governorate-price" inputmode="decimal" min="0" value="${rules.byGovernorate[name]??rules.defaultCost}"></td><td><input class="shipping-governorate-active" type="checkbox" ${rules.activeByGovernorate[name]!==false?"checked":""}></td></tr>`).join("")}</tbody></table></div></article>`;
+  return `<article class="card shipping-prices-card" style="margin-top:18px"><div class="card-header"><div><h3>أسعار الشحن للمحافظات</h3><p>عدّل السعر ثم اضغط حفظ؛ سيظهر السعر الجديد مباشرة في الفواتير.</p></div><div class="shipping-prices-save"><span id="shipping-prices-save-state">لا توجد تعديلات</span><button id="save-shipping-prices" class="btn" type="button" data-action="save-settings">حفظ أسعار الشحن</button></div></div><div class="form-grid"><div class="form-field"><label>السعر الافتراضي عند عدم وجود سعر</label><input id="shipping-default-cost" inputmode="decimal" min="0" value="${rules.defaultCost}"></div><div class="form-field"><label>شحن مجاني بداية من</label><input id="shipping-free-above" inputmode="decimal" min="0" value="${rules.freeShippingAbove}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>سعر الشحن</th><th>مفعّل</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-shipping-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="shipping-governorate-price" inputmode="decimal" min="0" value="${rules.byGovernorate[name]??rules.defaultCost}"></td><td><input class="shipping-governorate-active" type="checkbox" ${rules.activeByGovernorate[name]!==false?"checked":""}></td></tr>`).join("")}</tbody></table></div></article>`;
 }
 
 function renderSettings() {
@@ -6926,6 +6926,12 @@ root.addEventListener("submit", async event => {
 });
 
 root.addEventListener("input", event => {
+  if(event.target.matches(".shipping-governorate-price, #shipping-default-cost, #shipping-free-above")){
+    event.target.value=normalizeArabicNumericText(event.target.value);
+    const save=document.querySelector(".shipping-prices-save"),state=document.getElementById("shipping-prices-save-state");
+    save?.classList.add("dirty");if(state)state.textContent="تعديلات غير محفوظة";
+    return;
+  }
   if(event.target.id==="quick-order-phone"){
     event.target.value=normalizeArabicDigits(event.target.value);
     const previousCustomerId=quickOrderDraft.customerId;
@@ -7028,6 +7034,11 @@ root.addEventListener("input", event => {
 });
 
 root.addEventListener("change", event => {
+  if(event.target.matches(".shipping-governorate-active")){
+    const save=document.querySelector(".shipping-prices-save"),state=document.getElementById("shipping-prices-save-state");
+    save?.classList.add("dirty");if(state)state.textContent="تعديلات غير محفوظة";
+    return;
+  }
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
   if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
@@ -11460,14 +11471,15 @@ function exportAuditLogCsv() {
   URL.revokeObjectURL(link.href);
 }
 
-function saveSettings() {
+async function saveSettings() {
+  const snapshot=snapshotClientData();
   data.settings.companyName = document.getElementById("setting-name").value;
   data.settings.currency = document.getElementById("setting-currency").value;
   data.settings.seasonStart = Number(document.getElementById("setting-season").value);
   data.settings.staleDays = Number(document.getElementById("setting-stale").value);
   data.settings.approvalDiscount = Number(document.getElementById("setting-discount").value);
   data.settings.allowNegativeStock = document.getElementById("setting-negative").value === "true";
-  try{const byGovernorate={},activeByGovernorate={};document.querySelectorAll("[data-shipping-rate]").forEach(row=>{const name=row.dataset.shippingRate,value=OrderFinance.normalizeNumber(row.querySelector(".shipping-governorate-price")?.value||0);if(!Number.isFinite(value)||value<0)throw new Error(`سعر الشحن لمحافظة ${name} غير صالح.`);byGovernorate[name]=value;activeByGovernorate[name]=Boolean(row.querySelector(".shipping-governorate-active")?.checked);});data.settings.shippingRules=OrderFinance.normalizeShippingRules({byGovernorate,activeByGovernorate,defaultCost:document.getElementById("shipping-default-cost")?.value||0,freeShippingAbove:document.getElementById("shipping-free-above")?.value||0});}catch(error){return toast(error.message,"error");}
+  try{const byGovernorate={},activeByGovernorate={};document.querySelectorAll("[data-shipping-rate]").forEach(row=>{const name=row.dataset.shippingRate,value=OrderFinance.normalizeNumber(row.querySelector(".shipping-governorate-price")?.value||0);if(!Number.isFinite(value)||value<0)throw new Error(`سعر الشحن لمحافظة ${name} غير صالح.`);byGovernorate[name]=value;activeByGovernorate[name]=Boolean(row.querySelector(".shipping-governorate-active")?.checked);});data.settings.shippingRules=OrderFinance.normalizeShippingRules({byGovernorate,activeByGovernorate,defaultCost:document.getElementById("shipping-default-cost")?.value||0,freeShippingAbove:document.getElementById("shipping-free-above")?.value||0});}catch(error){restoreClientData(snapshot);return toast(error.message,"error");}
   data.settings.tracking.intervalHours = [1, 3, 6, 12, 24].includes(Number(document.getElementById("tracking-interval")?.value)) ? Number(document.getElementById("tracking-interval")?.value) : 6;
   data.settings.tracking.minIntervalHours = [1, 3, 6, 12, 24].includes(Number(document.getElementById("tracking-min-interval")?.value)) ? Number(document.getElementById("tracking-min-interval")?.value) : data.settings.tracking.intervalHours;
   data.settings.tracking.maxConcurrent = 1;
@@ -11487,8 +11499,11 @@ function saveSettings() {
   data.settings.tracking.apiKeyRequired = false;
   data.settings.tracking.timeoutMs = 45000;
   data.settings.tracking.rateLimitMs = 15000;
-  saveData("تعديل إعدادات النظام", "الإعدادات", "SYSTEM");
-  toast("تم حفظ إعدادات النشاط وسياسات الموافقة.");
+  const saved=await saveData("تعديل إعدادات النظام", "الإعدادات", "SYSTEM");
+  if(!saved){restoreClientData(snapshot);return;}
+  const state=document.getElementById("shipping-prices-save-state");
+  if(state)state.textContent="تم حفظ الأسعار";
+  toast("تم حفظ إعدادات النشاط وأسعار الشحن.");
 }
 
 async function runSelfTest() {

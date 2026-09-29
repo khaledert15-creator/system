@@ -20,6 +20,8 @@ const checks=[
   ["shipping is edited directly in the accounting strip",/shipping-edit[\s\S]*id="quick-order-shipping-cost"[\s\S]*quick-order-reset-shipping/],
   ["governorate selection applies its configured shipping immediately",/function selectQuickGovernorate[\s\S]*shippingManual=false[\s\S]*shippingCost=quickOrderShipping\(value,quickOrderDraft\.lines\)[\s\S]*refreshQuickOrderComputedUi/],
   ["governorate choices show their configured shipping",/function quickGovernorateOptions[\s\S]*quickOrderShipping\(value,quickOrderDraft\.lines\)[\s\S]*fee\?money\(fee\):"مجاني"/],
+  ["shipping settings have a visible save action",/shipping-prices-card[\s\S]*id="save-shipping-prices"[\s\S]*حفظ أسعار الشحن/],
+  ["settings success waits for server persistence",/async function saveSettings[\s\S]*const saved=await saveData[\s\S]*if\(!saved\)[\s\S]*تم حفظ إعدادات النشاط وأسعار الشحن/],
   ["wide screens use a sticky fulfilment rail",/@media\(min-width:1200px\)[\s\S]*grid-template-areas:"customer customer" "products side"[\s\S]*\.quick-order-side\{grid-area:side;position:sticky/],
   ["accounting strip replaces the large summary tiles",/quick-accounting-strip[\s\S]*إجمالي الفاتورة[\s\S]*data-quick-summary="remaining"/],
   ["accounting values stay connected to live summary fields",/data-quick-summary="subtotal"[\s\S]*data-quick-summary="discountTotal"[\s\S]*data-quick-summary="goods"[\s\S]*id="quick-order-shipping-cost"[\s\S]*data-quick-summary="total"[\s\S]*data-quick-summary="paid"/],
