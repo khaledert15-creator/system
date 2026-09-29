@@ -3123,7 +3123,7 @@ function quickOrderBookResults() {
 }
 
 function quickGovernorateOptions() {
-  return EGYPT_GOVERNORATES.map((value,index)=>`<button type="button" role="option" id="quick-governorate-option-${index}" data-action="quick-order-select-governorate" data-value="${esc(value)}" aria-selected="${quickOrderDraft.governorate===value}">${esc(value)}</button>`).join("");
+  return EGYPT_GOVERNORATES.map((value,index)=>{const fee=quickOrderShipping(value,quickOrderDraft.lines);return `<button type="button" role="option" id="quick-governorate-option-${index}" data-action="quick-order-select-governorate" data-value="${esc(value)}" aria-selected="${quickOrderDraft.governorate===value}"><span>${esc(value)}</span><b>${fee?money(fee):"مجاني"}</b></button>`}).join("");
 }
 
 function openQuickGovernorateList(open=true) {
@@ -3144,15 +3144,14 @@ function filterQuickGovernorates(query="") {
 function selectQuickGovernorate(value) {
   if(!EGYPT_GOVERNORATES.includes(value))return;
   quickOrderDraft.governorate=value;
+  quickOrderDraft.shippingManual=false;
+  quickOrderDraft.shippingCost=quickOrderShipping(value,quickOrderDraft.lines);
   const input=document.getElementById("quick-order-governorate-search");
   if(input)input.value=value;
   clearQuickOrderFieldError("governorate");
   openQuickGovernorateList(false);
-  if(!quickOrderDraft.shippingManual){
-    quickOrderDraft.shippingCost=quickOrderShipping(value,quickOrderDraft.lines);
-    const shipping=document.getElementById("quick-order-shipping-cost");
-    if(shipping)shipping.value=quickOrderDraft.shippingCost||0;
-  }
+  const shipping=document.getElementById("quick-order-shipping-cost");
+  if(shipping)shipping.value=quickOrderDraft.shippingCost||0;
   refreshQuickOrderComputedUi();
 }
 
