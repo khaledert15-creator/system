@@ -1723,6 +1723,21 @@ function money(value) {
   return `${Number(value || 0).toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ${data.settings.currency}`;
 }
 
+function documentDisplayName(value = "", kind = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "—";
+  const normalizedKind = String(kind || "").toLowerCase();
+  const prefix = raw.match(/^([A-Za-z]+)[-_]/)?.[1]?.toUpperCase() || "";
+  const label = normalizedKind.includes("return") || prefix === "RET" ? "مرتجع"
+    : normalizedKind.includes("purchase") || prefix === "PUR" ? "مشتريات"
+      : normalizedKind.includes("order") || prefix === "ORD" ? "طلب"
+        : normalizedKind.includes("sale") || normalizedKind.includes("invoice") || ["INV", "SAL"].includes(prefix) ? "مبيعات"
+          : "مستند";
+  const numeric = raw.match(/(\d+)$/)?.[1];
+  const number = numeric ? Number(numeric).toLocaleString("ar-EG", { useGrouping: false }) : raw.replace(/^([A-Za-z]+)[-_]?/, "").replaceAll(/[-_]+/g, " ").trim();
+  return `${label} ${number || raw}`;
+}
+
 function fmtDate(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("ar-EG", { day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
@@ -2358,7 +2373,7 @@ function renderDashboard() {
         <div class="card-header"><div><h3>أحدث الفواتير</h3><p>آخر عمليات البيع المسجلة</p></div><button class="btn secondary small" data-view-jump="sales">فاتورة جديدة</button></div>
         <div class="table-wrap">
           <table><thead><tr><th>رقم الفاتورة</th><th>العميل</th><th>القناة</th><th>الإجمالي</th><th>الحالة</th></tr></thead>
-          <tbody>${data.sales.slice().reverse().slice(0, 5).map(sale => `<tr><td><strong>${sale.id}</strong><br><span class="muted">${fmtDate(sale.date)}</span></td><td>${esc(getCustomer(sale.customerId)?.name || "عميل نقدي")}</td><td>${esc(sale.channel)}</td><td class="money">${money(sale.total)}</td><td>${badge(sale.status, sale.status === "معتمدة" ? "" : "warning")}</td></tr>`).join("")}</tbody></table>
+          <tbody>${data.sales.slice().reverse().slice(0, 5).map(sale => `<tr><td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong><br><span class="muted">${fmtDate(sale.date)}</span></td><td>${esc(getCustomer(sale.customerId)?.name || "عميل نقدي")}</td><td>${esc(sale.channel)}</td><td class="money">${money(sale.total)}</td><td>${badge(sale.status, sale.status === "معتمدة" ? "" : "warning")}</td></tr>`).join("")}</tbody></table>
         </div>
       </article>
       <article class="card" id="dashboard-shipments-card">
@@ -2673,7 +2688,7 @@ function salesMainInvoicesTable(list) {
       const shipment = shipmentForSale(sale.id);
       const itemCount = (sale.lines || []).reduce((sum, line) => sum + Number(line.qty || line.quantity || 0), 0);
       return `<tr data-record-type="invoice" data-record-id="${esc(sale.id)}">
-        <td><strong>${esc(sale.id)}</strong></td>
+        <td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong></td>
         <td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td>
         <td>${esc(customer?.name || snapshot.name || "عميل غير محدد")}</td>
         <td><span dir="ltr">${esc(customer?.phone || snapshot.phone || "—")}</span></td>
@@ -2730,7 +2745,7 @@ function cashRowsForSalesSummary(summary, type) {
 function showSalesStatDetails(stat) {
   const key = String(stat || "").replace("sales:", "");
   const summary = salesDailySummary();
-  const saleRows = summary.sales.map(sale => `<tr><td>${esc(sale.id)}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`);
+  const saleRows = summary.sales.map(sale => `<tr><td>${esc(documentDisplayName(sale.id, "sale"))}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`);
   const saleColumns = ["الفاتورة", "الوقت", "العميل", "الدفع", "البائع", "الصافي", ""];
   let title = "تفاصيل مركز المبيعات";
   let content = "";
@@ -2740,14 +2755,14 @@ function showSalesStatDetails(stat) {
       : key === "cod" ? summary.sales.filter(s => salesPaymentBucket(s) === "cod")
       : summary.sales;
     title = ({ "sales-total":"إجمالي مبيعات اليوم", "invoice-count":"عدد فواتير اليوم", "net-sales":"صافي المبيعات", cash:"إجمالي النقدية", transfers:"إجمالي التحويلات", cod:"الدفع عند الاستلام" })[key];
-    content = simpleRowsTable(title, saleColumns, filtered.map(sale => `<tr><td>${esc(sale.id)}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`));
+    content = simpleRowsTable(title, saleColumns, filtered.map(sale => `<tr><td>${esc(documentDisplayName(sale.id, "sale"))}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`));
   } else if (key === "discounts") {
     title = "إجمالي الخصومات";
-    content = simpleRowsTable(title, ["الفاتورة", "العميل", "خصم الفاتورة/الأصناف", "الصافي", ""], summary.sales.filter(s => Number(s.discount || 0) > 0).map(sale => `<tr><td>${esc(sale.id)}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td class="money">${money(sale.discount || 0)}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`));
+    content = simpleRowsTable(title, ["الفاتورة", "العميل", "خصم الفاتورة/الأصناف", "الصافي", ""], summary.sales.filter(s => Number(s.discount || 0) > 0).map(sale => `<tr><td>${esc(documentDisplayName(sale.id, "sale"))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td class="money">${money(sale.discount || 0)}</td><td class="money">${money(sale.total || 0)}</td><td><button class="row-action" data-modal-action="view-sale" data-id="${esc(sale.id)}">عرض</button></td></tr>`));
   } else if (["returns", "cash-returns"].includes(key)) {
     title = key === "cash-returns" ? "المرتجعات النقدية" : "إجمالي المرتجعات";
     const rows = (data.returns || []).filter(item => !item.deletedAt && returnKind(item.type) === "sale" && String(item.date || item.createdAt || "").slice(0, 10) >= summary.range.from && String(item.date || item.createdAt || "").slice(0, 10) <= summary.range.to);
-    content = simpleRowsTable(title, ["المرتجع", "الحساب", "التاريخ", "الإجمالي", "المدفوع نقدًا", ""], rows.map(item => `<tr><td>${esc(returnNo(item))}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${fmtDate(item.date)}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td class="money">${money(item.paidAmount || 0)}</td><td><button class="row-action" data-modal-action="view-return" data-id="${esc(item.id)}">عرض</button></td></tr>`));
+    content = simpleRowsTable(title, ["المرتجع", "الحساب", "التاريخ", "الإجمالي", "المدفوع نقدًا", ""], rows.map(item => `<tr><td>${esc(documentDisplayName(returnNo(item), "return"))}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${fmtDate(item.date)}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td class="money">${money(item.paidAmount || 0)}</td><td><button class="row-action" data-modal-action="view-return" data-id="${esc(item.id)}">عرض</button></td></tr>`));
   } else if (key === "purchases") {
     title = "مشتريات اليوم";
     const rows = (data.purchases || []).filter(item => !item.deletedAt && item.status !== "ملغاة" && String(item.date || item.createdAt || "").slice(0, 10) >= summary.range.from && String(item.date || item.createdAt || "").slice(0, 10) <= summary.range.to);
@@ -4050,7 +4065,7 @@ function purchaseHistoryTable(purchases = sortedPurchases(), actionAttribute = "
     const cancelAction = p.status === "ملغاة" ? "delete-purchase" : "cancel-purchase";
     const cancelLabel = p.status === "ملغاة" ? "حذف" : "إلغاء";
     return `<tr data-record-type="purchase" data-record-id="${esc(p.id)}">
-      <td><strong>${esc(p.id)}</strong><br><span class="muted">${esc(p.createdAt ? new Date(p.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" }) : "—")}</span></td>
+      <td><strong>${esc(documentDisplayName(p.id, "purchase"))}</strong><br><span class="muted">${esc(p.createdAt ? new Date(p.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" }) : "—")}</span></td>
       <td>${esc(p.supplierInvoiceNumber || "—")}</td>
       <td>${fmtDate(p.date)}</td>
       <td>${esc(supplier?.name || "—")}</td>
@@ -4202,20 +4217,20 @@ function renderReturns() {
       <article class="card">
         <div class="card-header"><div><h3>فواتير عملاء متاحة للمرتجع</h3><p>يتم عرض فواتير العملاء المسجلين فقط، ثم تختار الأصناف والكميات من مشتريات هذا العميل.</p></div><button class="btn secondary small" data-action="open-sale-return-list">عرض الكل</button></div>
         <div class="table-wrap"><table><thead><tr><th>الفاتورة</th><th>العميل</th><th>المتاح</th><th>الحالة</th><th></th></tr></thead><tbody>
-          ${saleDocs.slice(0, 8).map(sale => `<tr><td><strong>${esc(sale.id)}</strong><br><span class="muted">${fmtDate(sale.date)}</span></td><td>${esc(getCustomer(sale.customerId)?.name || "عميل")}</td><td>${saleReturnableLines(sale).reduce((sum, line) => sum + Number(line.remaining || 0), 0)}</td><td>${badge(sale.status || "معتمدة", sale.status === "مرتجع جزئي" ? "warning" : "")}</td><td><button class="row-action" data-action="start-sale-return" data-id="${sale.id}">تسجيل مرتجع</button></td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">لا توجد فواتير بيع متاحة للمرتجع.</td></tr>`}
+          ${saleDocs.slice(0, 8).map(sale => `<tr><td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong><br><span class="muted">${fmtDate(sale.date)}</span></td><td>${esc(getCustomer(sale.customerId)?.name || "عميل")}</td><td>${saleReturnableLines(sale).reduce((sum, line) => sum + Number(line.remaining || 0), 0)}</td><td>${badge(sale.status || "معتمدة", sale.status === "مرتجع جزئي" ? "warning" : "")}</td><td><button class="row-action" data-action="start-sale-return" data-id="${sale.id}">تسجيل مرتجع</button></td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">لا توجد فواتير بيع متاحة للمرتجع.</td></tr>`}
         </tbody></table></div>
       </article>
       <article class="card">
         <div class="card-header"><div><h3>مشتريات متاحة للمرتجع</h3><p>اختر المستند ثم حدد الأصناف والكميات المرجعة للمورد.</p></div><button class="btn secondary small" data-action="open-purchase-return-list">عرض الكل</button></div>
         <div class="table-wrap"><table><thead><tr><th>المستند</th><th>فاتورة المورد</th><th>المورد</th><th>المتاح</th><th>الحالة</th><th></th></tr></thead><tbody>
-          ${purchaseDocs.slice(0, 8).map(purchase => `<tr><td><strong>${esc(purchase.id)}</strong><br><span class="muted">${fmtDate(purchase.date)}</span></td><td>${esc(purchase.supplierInvoiceNumber || "—")}</td><td>${esc(getSupplier(purchase.supplierId)?.name || "مورد")}</td><td>${purchaseReturnableLines(purchase).reduce((sum, line) => sum + Number(line.remaining || 0), 0)}</td><td>${badge(purchase.status || "مستلمة", purchase.status === "مرتجع جزئي" ? "warning" : "")}</td><td><button class="row-action" data-action="start-purchase-return" data-id="${purchase.id}">تسجيل مرتجع</button></td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد مستندات شراء متاحة للمرتجع.</td></tr>`}
+          ${purchaseDocs.slice(0, 8).map(purchase => `<tr><td><strong>${esc(documentDisplayName(purchase.id, "purchase"))}</strong><br><span class="muted">${fmtDate(purchase.date)}</span></td><td>${esc(purchase.supplierInvoiceNumber || "—")}</td><td>${esc(getSupplier(purchase.supplierId)?.name || "مورد")}</td><td>${purchaseReturnableLines(purchase).reduce((sum, line) => sum + Number(line.remaining || 0), 0)}</td><td>${badge(purchase.status || "مستلمة", purchase.status === "مرتجع جزئي" ? "warning" : "")}</td><td><button class="row-action" data-action="start-purchase-return" data-id="${purchase.id}">تسجيل مرتجع</button></td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد مستندات شراء متاحة للمرتجع.</td></tr>`}
         </tbody></table></div>
       </article>
     </div>
     <article class="card" style="margin-top:18px">
       <div class="card-header"><div><h3>سجل فواتير المرتجع</h3><p>كل عملية مرتجع لها رقم فاتورة مستقل وقيمة تسوية واضحة.</p></div></div>
       <div class="table-wrap"><table><thead><tr><th>رقم المرتجع</th><th>النوع</th><th>الحساب</th><th>عدد الأصناف</th><th>الإجمالي</th><th>طريقة التسوية</th><th>التاريخ</th><th>المستخدم</th><th>الحالة</th><th>عرض / طباعة</th></tr></thead><tbody>
-        ${returnRows.map(item => `<tr data-record-type="return" data-record-id="${esc(item.id)}"><td><strong>${esc(returnNo(item))}</strong><br><span class="muted">${esc(item.id)}</span></td><td>${badge(returnTypeLabel(item.type), returnKind(item.type) === "purchase" ? "blue" : "")}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${Number(returnItems(item).reduce((sum, line) => sum + Number(line.qty || 0), 0) || 0).toLocaleString("ar-EG")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${esc(returnSettlementLabel(item))}</td><td>${fmtDate(item.date)}</td><td>${esc(item.createdBy || "النظام")}</td><td>${badge(item.status || "معتمد")}</td><td><div class="row-actions"><button class="row-action" data-action="view-return" data-id="${esc(item.id)}">عرض</button><button class="row-action" data-action="print-return" data-id="${esc(item.id)}">طباعة</button></div></td></tr>`).join("") || `<tr><td colspan="10" class="text-center muted">لم يتم تسجيل مرتجعات بعد.</td></tr>`}
+        ${returnRows.map(item => `<tr data-record-type="return" data-record-id="${esc(item.id)}"><td><strong>${esc(documentDisplayName(returnNo(item), "return"))}</strong></td><td>${badge(returnTypeLabel(item.type), returnKind(item.type) === "purchase" ? "blue" : "")}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${Number(returnItems(item).reduce((sum, line) => sum + Number(line.qty || 0), 0) || 0).toLocaleString("ar-EG")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${esc(returnSettlementLabel(item))}</td><td>${fmtDate(item.date)}</td><td>${esc(item.createdBy || "النظام")}</td><td>${badge(item.status || "معتمد")}</td><td><div class="row-actions"><button class="row-action" data-action="view-return" data-id="${esc(item.id)}">عرض</button><button class="row-action" data-action="print-return" data-id="${esc(item.id)}">طباعة</button></div></td></tr>`).join("") || `<tr><td colspan="10" class="text-center muted">لم يتم تسجيل مرتجعات بعد.</td></tr>`}
       </tbody></table></div>
     </article>`;
 }
@@ -8690,7 +8705,7 @@ function postInvoiceShippingChoice(orderId, saleId) {
   if (!order || !sale || order.shipmentId) return;
   openModal("هل تم الشحن؟", "ما بعد تسجيل الفاتورة", `
     <form id="post-invoice-shipping-choice" data-order-id="${order.id}" data-sale-id="${sale.id}">
-      <div class="workflow-strip"><strong>الربط:</strong><span>${esc(order.id)}</span><b>→</b><span>${esc(sale.id)}</span><b>→</b><span>قرار الشحن</span></div>
+      <div class="workflow-strip"><strong>الربط:</strong><span>${esc(documentDisplayName(order.id, "order"))}</span><b>→</b><span>${esc(documentDisplayName(sale.id, "sale"))}</span><b>→</b><span>قرار الشحن</span></div>
       <div class="shipping-choice-grid" dir="rtl">
         <label class="choice-card shipping-choice-card"><input type="radio" name="shippingChoice" value="no" checked><span><strong>لا، لم يتم الشحن بعد</strong><small>تبقى الفاتورة موجودة ويظهر زر إنشاء شحنة لاحقًا.</small></span></label>
         <label class="choice-card shipping-choice-card"><input type="radio" name="shippingChoice" value="yes"><span><strong>نعم، تم إنشاء الشحنة</strong><small>سيتم فتح نموذج الشحنة لاختيار شركة الشحن ورقم التتبع.</small></span></label>
@@ -8747,9 +8762,9 @@ function shipmentFromOrderModal(order, sale) {
   const snapshot = sale.customerSnapshot || customerSnapshot(customer, order);
   openModal(`إنشاء شحنة للفاتورة ${sale.id}`, "الشحن بعد الفاتورة", `
     <form id="order-shipment-form" data-order-id="${order.id}">
-      <div class="workflow-strip"><strong>الربط:</strong><span>${esc(order.id)}</span><b>→</b><span>${esc(sale.id)}</span><b>→</b><span>الشحنة الجديدة</span></div>
+      <div class="workflow-strip"><strong>الربط:</strong><span>${esc(documentDisplayName(order.id, "order"))}</span><b>→</b><span>${esc(documentDisplayName(sale.id, "sale"))}</span><b>→</b><span>الشحنة الجديدة</span></div>
       <div class="form-grid">
-        <div class="form-field"><label>رقم الفاتورة</label><input value="${esc(sale.id)}" readonly></div>
+        <div class="form-field"><label>الفاتورة</label><input value="${esc(documentDisplayName(sale.id, "sale"))}" readonly></div>
         <div class="form-field"><label>رقم الطلب</label><input value="${esc(order.id)}" readonly></div>
         <div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions()}</select></div>
         <div class="form-field"><label>رقم التتبع</label><input name="tracking" value="${esc(order.tracking || "")}" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا"></div>
@@ -9125,7 +9140,7 @@ function salesHistoryTable(list) {
       const customer = getCustomer(sale.customerId);
       const shipment = shipmentForSale(sale.id);
       return `<tr data-record-type="invoice" data-record-id="${sale.id}">
-        <td><strong>${esc(sale.id)}</strong><br><span class="muted">${fmtDate(sale.date)}</span>${sale.onlineOrderId ? `<br><span class="muted">طلب أونلاين ${esc(sale.onlineOrderId)}</span>` : ""}</td>
+        <td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong><br><span class="muted">${fmtDate(sale.date)}</span>${sale.onlineOrderId ? `<br><span class="muted">${esc(documentDisplayName(sale.onlineOrderId, "order"))}</span>` : ""}</td>
         <td>${esc(customer?.name || "عميل غير مسجل")}</td>
         <td><span dir="ltr">${esc(customer?.phone || "—")}</span></td>
         <td>${shipment ? `<strong>${esc(shipment.tracking)}</strong><br><span class="muted">${esc(shipment.company)} · ${esc(shipment.status)}</span>` : `<span class="muted">بدون شحنة</span>`}</td>
@@ -9185,7 +9200,7 @@ function printSalesDay() {
       <div class="mini-metric"><span>صافي حركة اليوم</span><strong>${money(summary.netMovement)}</strong></div>
     </div>
     <table><thead><tr><th>الفاتورة</th><th>الوقت</th><th>العميل</th><th>الدفع</th><th>البائع</th><th>الصافي</th></tr></thead><tbody>
-      ${summary.sales.map(sale => `<tr><td>${esc(sale.id)}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td>${money(sale.total || 0)}</td></tr>`).join("") || `<tr><td colspan="6">لا توجد فواتير اليوم.</td></tr>`}
+      ${summary.sales.map(sale => `<tr><td>${esc(documentDisplayName(sale.id, "sale"))}</td><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td><td>${esc(getCustomer(sale.customerId)?.name || sale.customerSnapshot?.name || "—")}</td><td>${esc(sale.payment || "—")}</td><td>${esc(saleCreatedByName(sale))}</td><td>${money(sale.total || 0)}</td></tr>`).join("") || `<tr><td colspan="6">لا توجد فواتير اليوم.</td></tr>`}
     </tbody></table>
     <div class="total">التحصيلات الفعلية: ${money(summary.actualCollections)} — المرتجعات النقدية: ${money(summary.cashReturns)} — المصروفات: ${money(summary.expenses)}</div>
   `);
@@ -9196,7 +9211,7 @@ function limitedEditSale(id) {
   const sale = data.sales.find(item => item.id === id);
   if (!sale) return toast("لم يتم العثور على الفاتورة.", "error");
   if (!saleCanBeModified(sale)) return toast("هذه اليومية مقفولة. التعديل يحتاج صلاحية مدير.", "error");
-  openModal(`تعديل محدود ${sale.id}`, "المبيعات", `
+  openModal(`تعديل محدود — ${documentDisplayName(sale.id, "sale")}`, "المبيعات", `
     <form id="limited-sale-edit-form" data-id="${esc(sale.id)}">
       <div class="form-grid">
         <div class="form-field"><label>قناة البيع</label><select name="channel">${["تجزئة","جملة","متجر إلكتروني"].map(value => `<option ${sale.channel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
@@ -9377,7 +9392,8 @@ function showStatement(id, kind) {
       ${movements.map(row => {
         const referenceAction = statementRecordAction(row.reference);
         const linkedInvoice = row.links?.invoiceId && row.links.invoiceId !== row.reference ? row.links.invoiceId : "";
-        return `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td>${referenceAction ? `<button class="statement-document-link" type="button" data-action="open-statement-record" data-reference="${esc(row.reference)}" title="فتح المستند ${esc(row.reference)}">${esc(row.reference)} <span aria-hidden="true">↗</span></button>` : `<strong>${esc(row.reference)}</strong>`}</td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(row.links.orderId)}</button>`:""}${linkedInvoice?`<button class="row-action" data-action="open-statement-record" data-reference="${esc(linkedInvoice)}">${esc(linkedInvoice)}</button>`:""}</td></tr>`;
+        const displayReference = row.type === "invoice" ? documentDisplayName(row.reference, kind === "supplier" ? "purchase" : "sale") : row.type === "cancelled_order" ? documentDisplayName(row.reference, "order") : row.reference;
+        return `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td>${referenceAction ? `<button class="statement-document-link" type="button" data-action="open-statement-record" data-reference="${esc(row.reference)}" title="فتح ${esc(displayReference)}">${esc(displayReference)} <span aria-hidden="true">↗</span></button>` : `<strong>${esc(displayReference)}</strong>`}</td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(documentDisplayName(row.links.orderId,"order"))}</button>`:""}${linkedInvoice?`<button class="row-action" data-action="open-statement-record" data-reference="${esc(linkedInvoice)}">${esc(documentDisplayName(linkedInvoice,"sale"))}</button>`:""}</td></tr>`;
       }).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-statement" data-id="${id}" data-kind="${kind}">طباعة كشف الحساب</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
@@ -9448,9 +9464,9 @@ function printSale(id, format = "a4") {
     const net = saleLineNet(line, line.qty || line.quantity || 0);
     return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || line.quantity || 0).toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(net)}</td></tr>`;
   }).join("");
-  printHtml(`فاتورة بيع ${sale.id}`, `
+  printHtml(documentDisplayName(sale.id, "sale"), `
     <div class="table-wrap"><table><tbody>
-      <tr><th>رقم الفاتورة</th><td>${esc(sale.id)}</td><th>تاريخ ووقت البيع</th><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td></tr>
+      <tr><th>الفاتورة</th><td>${esc(documentDisplayName(sale.id, "sale"))}</td><th>تاريخ ووقت البيع</th><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td></tr>
       <tr><th>العميل</th><td>${esc(customer?.name || snapshot.name || "عميل نقدي")}</td><th>الهاتف</th><td dir="ltr">${esc(customer?.phone || snapshot.phone || "—")}</td></tr>
       <tr><th>قناة البيع</th><td>${esc(sale.channel || "—")}</td><th>نوع العملية</th><td>${esc(sale.saleOperationType || "بيع مباشر")}</td></tr>
       <tr><th>طريقة الدفع</th><td>${esc(sale.payment || "—")}</td><th>اسم البائع</th><td>${esc(saleCreatedByName(sale))}</td></tr>
@@ -9479,9 +9495,9 @@ function printPurchase(id, format = "a4") {
     const totalCost = Number(line.totalCost ?? purchaseLineNet(line, qty) ?? pricing.after * qty);
     return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${qty.toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(totalCost)}</td></tr>`;
   }).join("");
-  printHtml(`فاتورة مشتريات ${purchase.id}`, `
+  printHtml(documentDisplayName(purchase.id, "purchase"), `
     <table><tbody>
-      <tr><th>رقم المستند</th><td dir="ltr">${esc(purchase.id)}</td><th>فاتورة المورد</th><td>${esc(purchase.supplierInvoiceNumber || "—")}</td></tr>
+      <tr><th>المستند</th><td>${esc(documentDisplayName(purchase.id, "purchase"))}</td><th>فاتورة المورد</th><td>${esc(purchase.supplierInvoiceNumber || "—")}</td></tr>
       <tr><th>المورد</th><td>${esc(supplier?.name || "—")}</td><th>التاريخ</th><td>${esc(dateTimeLabel(purchase.createdAt || purchase.date))}</td></tr>
       <tr><th>نوع المستند</th><td>${esc(purchase.type || "شراء")}</td><th>الحالة</th><td>${esc(purchase.status || "—")}</td></tr>
     </tbody></table>
@@ -9507,13 +9523,13 @@ function printReturn(id, format = "a4") {
   if (!item) return toast("لم يتم العثور على المرتجع.", "error");
   const party = returnAccountName(item) || "—";
   const items = returnItems(item);
-  printHtml(`مستند مرتجع ${returnNo(item)}`, `
-    <p><strong>رقم المرتجع:</strong> ${esc(returnNo(item))}</p>
+  printHtml(documentDisplayName(returnNo(item), "return"), `
+    <p><strong>المرتجع:</strong> ${esc(documentDisplayName(returnNo(item), "return"))}</p>
     <p><strong>نوع المرتجع:</strong> ${esc(returnTypeLabel(item.type))} ${item.mode === "by_account" ? "— مستقل حسب الحساب" : ""}</p>
     <p><strong>الحساب:</strong> ${esc(party)}</p>
     <p><strong>التاريخ:</strong> ${fmtDate(item.date)}</p>
     <table><thead><tr><th>الصنف</th><th>الفاتورة الأصلية</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>الإجمالي</th></tr></thead><tbody>
-      ${items.map(line => { const pricing=returnLinePricing(item,line); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(line.total || line.amount || 0)}</td></tr>`; }).join("")}
+      ${items.map(line => { const pricing=returnLinePricing(item,line); const source=line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || ""; return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${esc(source ? documentDisplayName(source, returnKind(item.type)) : "—")}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(line.total || line.amount || 0)}</td></tr>`; }).join("")}
     </tbody></table>
     <div class="total">الإجمالي: ${money(item.subtotal ?? item.amount ?? 0)}</div>
     <p><strong>طريقة التسوية:</strong> ${esc(returnSettlementLabel(item))}</p>
@@ -10293,7 +10309,7 @@ function viewSale(id) {
   const lines = sale.lines || [];
   const customer = getCustomer(sale.customerId);
   const shipment = shipmentForSale(sale.id);
-  openModal(`فاتورة ${sale.id}`, "تفاصيل فاتورة البيع", `
+  openModal(documentDisplayName(sale.id, "sale"), "تفاصيل فاتورة البيع", `
     <div class="metric-strip">
       <div class="mini-metric"><span>الإجمالي</span><strong>${money(sale.total)}</strong></div>
       <div class="mini-metric"><span>المدفوع</span><strong>${money(sale.paid ?? sale.total)}</strong></div>
@@ -10669,7 +10685,7 @@ function showReturnSearch() {
     <div class="table-wrap"><table><thead><tr><th>رقم المرتجع</th><th>النوع</th><th>الحساب</th><th>الإجمالي</th><th>التاريخ</th><th></th></tr></thead><tbody>
       ${rows.map(item => {
         const search = normalizeReturnSearch(`${returnNo(item)} ${returnAccountName(item) || ""} ${item.sourceDocuments?.join(" ") || ""} ${returnItems(item).map(line => `${line.documentId || ""} ${line.sourceInvoiceNo || ""} ${getBook(line.bookId)?.name || ""}`).join(" ")}`);
-        return `<tr data-return-search-row data-search="${esc(search)}"><td><strong>${esc(returnNo(item))}</strong></td><td>${returnTypeLabel(item.type)}</td><td>${esc(returnAccountName(item) || "—")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${fmtDate(item.date)}</td><td><button class="row-action" data-action="view-return" data-id="${esc(item.id)}">عرض</button></td></tr>`;
+        return `<tr data-return-search-row data-search="${esc(search)}"><td><strong>${esc(documentDisplayName(returnNo(item), "return"))}</strong></td><td>${returnTypeLabel(item.type)}</td><td>${esc(returnAccountName(item) || "—")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${fmtDate(item.date)}</td><td><button class="row-action" data-action="view-return" data-id="${esc(item.id)}">عرض</button></td></tr>`;
       }).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد مرتجعات مسجلة.</td></tr>`}
     </tbody></table></div>`);
 }
@@ -10680,7 +10696,7 @@ function viewReturn(id) {
   const isSale = returnKind(item.type) === "sale";
   const party = returnAccountName(item);
   const items = returnItems(item);
-  openModal(`مستند مرتجع ${returnNo(item)}`, returnTypeLabel(item.type), `
+  openModal(documentDisplayName(returnNo(item), "return"), returnTypeLabel(item.type), `
     <div class="metric-strip">
       <div class="mini-metric"><span>أصل المستند</span><strong>${esc(item.sourceDocuments?.length ? item.sourceDocuments.join("، ") : item.documentId || "—")}</strong></div>
       <div class="mini-metric"><span>قيمة المرتجع</span><strong>${money(item.subtotal ?? item.amount ?? 0)}</strong></div>
@@ -10691,7 +10707,7 @@ function viewReturn(id) {
     <div class="metric-strip" style="margin-bottom:14px">
       <div class="mini-metric"><span>خصم مديونية</span><strong>${money(item.debtReduction || 0)}</strong></div>
       <div class="mini-metric"><span>أصناف/قيمة بديلة</span><strong>${money(item.replacementDeduction || 0)}</strong></div>
-      <div class="mini-metric"><span>رقم المرتجع</span><strong>${esc(returnNo(item))}</strong></div>
+      <div class="mini-metric"><span>المرتجع</span><strong>${esc(documentDisplayName(returnNo(item), "return"))}</strong></div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>الفاتورة الأصلية</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>الإجمالي</th></tr></thead><tbody>
       ${items.map(line => { const pricing=returnLinePricing(item,line); return `<tr><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td class="money">${money(line.total || line.amount || 0)}</td></tr>`; }).join("") || `<tr><td colspan="8" class="text-center muted">مرتجع قديم بدون تفاصيل أصناف.</td></tr>`}
@@ -10990,7 +11006,7 @@ function deleteSale(id) {
 function viewPurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase) return;
-  openModal(`مستند ${purchase.id}`, "تفاصيل المشتريات", `
+  openModal(documentDisplayName(purchase.id, "purchase"), "تفاصيل المشتريات", `
     <div class="metric-strip">
       <div class="mini-metric"><span>الإجمالي</span><strong>${money(purchase.total)}</strong></div>
       <div class="mini-metric"><span>المدفوع</span><strong>${money(purchase.paid || 0)}</strong></div>
@@ -11259,7 +11275,7 @@ function openReport(index) {
   const activeReturns = (data.returns || []).filter(item => !item.deletedAt);
   const salesReturns = activeReturns.filter(item => returnKind(item.type) === "sale");
   const purchaseReturns = activeReturns.filter(item => returnKind(item.type) === "purchase");
-  const returnRowsTable = rows => `<div class="table-wrap"><table><thead><tr><th>رقم المرتجع</th><th>الحساب</th><th>التاريخ</th><th>الأصناف</th><th>الإجمالي</th><th>التسوية</th></tr></thead><tbody>${rows.map(item => `<tr><td>${esc(returnNo(item))}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${fmtDate(item.date)}</td><td>${Number(returnItems(item).reduce((sum, line) => sum + Number(line.qty || 0), 0)).toLocaleString("ar-EG")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${esc(returnSettlementLabel(item))}</td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد بيانات.</td></tr>`}</tbody></table></div>`;
+  const returnRowsTable = rows => `<div class="table-wrap"><table><thead><tr><th>المرتجع</th><th>الحساب</th><th>التاريخ</th><th>الأصناف</th><th>الإجمالي</th><th>التسوية</th></tr></thead><tbody>${rows.map(item => `<tr><td>${esc(documentDisplayName(returnNo(item), "return"))}</td><td>${esc(returnAccountName(item) || "—")}</td><td>${fmtDate(item.date)}</td><td>${Number(returnItems(item).reduce((sum, line) => sum + Number(line.qty || 0), 0)).toLocaleString("ar-EG")}</td><td class="money">${money(item.subtotal ?? item.amount ?? 0)}</td><td>${esc(returnSettlementLabel(item))}</td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد بيانات.</td></tr>`}</tbody></table></div>`;
   const groupedReturnRows = (rows, kind) => {
     const map = new Map();
     rows.forEach(item => {
