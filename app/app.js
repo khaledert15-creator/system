@@ -3901,7 +3901,7 @@ function renderPurchases() {
       <input class="purchase-discount-amount" data-index="${index}" type="number" min="0" max="${cover}" step="0.01" value="${OrderFinance.round(unitDiscount)}" title="خصم النسخة بالجنيه">
       <input class="purchase-cost" data-index="${index}" type="number" min="0" step="0.01" value="${line.cost}" title="سعر شراء النسخة">
       <span class="muted discount-field text-center purchase-line-net">${money(computed.finalNet || 0)}</span>
-      <button class="row-action purchase-remove" data-index="${index}">×</button>
+      <button class="row-action purchase-remove" type="button" data-action="remove-purchase-line" data-index="${index}" title="حذف البند" aria-label="حذف ${esc(book?.name || "البند")}">×</button>
     </div>`;
   }).join("");
 
@@ -3912,28 +3912,6 @@ function renderPurchases() {
     </div>
     ${purchaseOtherTabDetected ? `<div class="notice warning"><strong>يوجد تبويب آخر مفتوح للنظام</strong><span>لتجنب تعارض الحفظ، استخدم تبويبًا واحدًا أثناء إدخال الفواتير.</span></div>` : ""}
     ${purchaseRetryState ? `<div class="notice danger purchase-stale-notice"><strong>تم تحديث بيانات النظام أثناء إدخال الفاتورة</strong><span>${purchaseRetryState.conflicts?.length ? "توجد تغييرات في المورد أو الأصناف وتحتاج مراجعة قبل الاعتماد." : "اضغط تحديث وإعادة المحاولة للاحتفاظ بالمسودة وإعادة الحفظ."}</span><div class="form-actions"><button class="btn" data-action="retry-stale-purchase" ${purchaseRetryState.conflicts?.length ? "disabled" : ""}>تحديث وإعادة المحاولة</button></div></div>` : `<div class="notice success purchase-revision-status"><strong>البيانات محدثة</strong><span>سيتم فحص أحدث نسخة من الخادم قبل اعتماد الفاتورة.</span></div>`}
-    <div class="purchase-command-grid">
-      <button class="purchase-command-card" type="button" data-action="new-purchase-document">
-        <span class="stat-icon blue">＋</span>
-        <strong>تسجيل مشتريات</strong>
-        <small>افتح نموذج توريد جديد وسجل فاتورة المورد.</small>
-      </button>
-      <button class="purchase-command-card" type="button" data-action="new-purchase-return-supplier">
-        <span class="stat-icon red">↩</span>
-        <strong>مرتجع مشتريات مستقل</strong>
-        <small>مرتجع مرتبط بحساب المورد حتى من أكثر من مستند.</small>
-      </button>
-      <button class="purchase-command-card" type="button" data-action="open-purchase-return-list">
-        <span class="stat-icon gold">▤</span>
-        <strong>مرتجع من مستند شراء</strong>
-        <small>اختر مستند شراء محدد ثم حدد الأصناف المرتجعة.</small>
-      </button>
-      <button class="purchase-command-card" type="button" data-action="show-purchases-list">
-        <span class="stat-icon">⌕</span>
-        <strong>السجل الكامل</strong>
-        <small>عرض كل مستندات الشراء والأمانة في نافذة منفصلة.</small>
-      </button>
-    </div>
     <div class="invoice-layout purchase-workspace">
       <article class="card">
         <div class="invoice-meta">
@@ -3968,8 +3946,7 @@ function renderPurchases() {
         <button class="btn gold" data-action="save-purchase" style="width:100%;margin-top:12px">اعتماد إذن الاستلام</button>
         <p class="muted" style="font-size:8px;line-height:1.8">في الأمانة تظل ملكية الأصناف للمورد، ولا تتحول إلى مديونية إلا عند البيع.</p>
       </aside>
-    </div>
-    ${purchasesHistoryPanel()}`;
+    </div>`;
 }
 
 function updatePurchaseSummary() {
@@ -6886,7 +6863,7 @@ root.addEventListener("click", async event => {
     if (!draftSale.lines.length) draftSale.lines.push({ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" });
     renderSales();
   }
-  if (target.classList.contains("purchase-remove")) {
+  if (action === "remove-purchase-line") {
     draftPurchase.lines.splice(Number(target.dataset.index), 1);
     if (!draftPurchase.lines.length) draftPurchase.lines.push({ bookId: "", qty: 1, cost: 0, discount: 0, discountType: "percent" });
     renderPurchases();

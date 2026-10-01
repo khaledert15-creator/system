@@ -29,5 +29,8 @@ check("line editor has safe horizontal overflow", css.includes(".invoice-lines {
 check("mobile sale fields have explicit grid positions", css.includes(".sale-discount-percent { grid-column: 6 / 8; }") && css.includes(".sale-discount-amount { grid-column: 8 / 10; }"));
 check("sale card layout keeps all eight columns visible", css.includes(".invoice-lines .sale-line-head,.invoice-lines .quick-sale-line{grid-template-columns:minmax(145px,1.55fr) 48px 66px 56px 66px 76px 84px 30px"));
 check("sale card remove button is wired to delegated action", /class="row-action sale-remove"[^>]*data-action="remove-sale-line"/.test(app) && app.includes('if (action === "remove-sale-line")'));
+check("purchase line remove button is wired to delegated action", /class="row-action purchase-remove"[^>]*data-action="remove-purchase-line"/.test(app) && app.includes('if (action === "remove-purchase-line")'));
+const purchaseRender = app.slice(app.indexOf("function renderPurchases()"), app.indexOf("function updatePurchaseSummary()"));
+check("purchase workspace omits duplicate command cards and history panel", !purchaseRender.includes("purchase-command-grid") && !purchaseRender.includes("purchasesHistoryPanel()"));
 
 console.log(`${passed}/${passed} unified commercial line pricing tests passed`);
