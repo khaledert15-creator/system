@@ -2855,18 +2855,21 @@ function renderSaleInvoice() {
     const listId = `sale-book-options-${index}`;
     const availableStock = book ? productInventorySummary(book.id).currentStockQty : 0;
     const stockWarning = book && Number(line.qty || 0) > availableStock;
-    return `<div class="invoice-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
-      <input class="sale-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود...">
-      ${bookPickerDatalist(listId)}
-      <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
-      <input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}">
-      <input class="sale-discount-percent discount-field" data-index="${index}" inputmode="decimal" min="0" max="100" value="${commercialUnitPricing(line,"sale").discountPercent}" aria-label="نسبة الخصم">
-      <input class="sale-discount-amount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${commercialUnitPricing(line,"sale").discountAmount}" aria-label="قيمة الخصم بالجنيه للنسخة">
-      <span class="sale-unit-after">${money(commercialUnitPricing(line,"sale").after)}</span>
-      <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
+    return `<article class="quick-order-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
+      <div class="quick-line-book sale-book-cell"><span class="quick-book-avatar" aria-hidden="true">${esc((book?.name || "ك").trim().charAt(0))}</span><div>
+        <input class="sale-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود..." aria-label="الصنف">
+        ${bookPickerDatalist(listId)}
+        <small>${book ? `${esc(book.barcode || book.sku || book.id)} · ${availableStock} متاح` : "اختر الصنف"}</small>
+        ${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}
+      </div></div>
+      <label class="quick-line-qty"><span>الكمية</span><input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}"></label>
+      <label class="quick-price-cell sale-price-cell"><small>السعر الأساسي</small><input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}"></label>
+      <label class="quick-discount-field"><span>خصم %</span><input class="sale-discount-percent discount-field" data-index="${index}" inputmode="decimal" min="0" max="100" value="${commercialUnitPricing(line,"sale").discountPercent}" aria-label="نسبة الخصم"></label>
+      <label class="quick-discount-field"><span>خصم ج.م</span><input class="sale-discount-amount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${commercialUnitPricing(line,"sale").discountAmount}" aria-label="قيمة الخصم بالجنيه للنسخة"></label>
+      <div class="quick-final-price"><small>بعد الخصم</small><strong class="sale-unit-after">${money(commercialUnitPricing(line,"sale").after)}</strong></div>
+      <div class="quick-line-total"><small>إجمالي الصنف</small><strong class="sale-line-net">${money(computed.finalNet || 0)}</strong><small>بعد الخصم</small></div>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
-      ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
-    </div>`;
+    </article>`;
   }).join("");
 
   root.innerHTML = `
@@ -2879,8 +2882,8 @@ function renderSaleInvoice() {
         <div class="invoice-lines">
           <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
           <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
-          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
-          <div id="sale-lines">${lines}</div>
+          <div class="quick-order-table-head sale-line-head"><span>الكتاب</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
+          <div id="sale-lines" class="quick-order-lines">${lines}</div>
         </div>
       </article>
       <aside class="card invoice-summary">

@@ -83,14 +83,14 @@ test("notes are visible outside collapsed extra options", () => {
 });
 
 test("discount value and type have separate labelled columns", () => {
-  assert.match(app, /<span class="discount-head">الخصم<\/span><span>نوع الخصم<\/span>/);
-  assert.match(app, /aria-label="قيمة الخصم"/);
-  assert.match(app, /aria-label="نوع الخصم"/);
+  assert.match(app, /class="quick-order-table-head sale-line-head"[\s\S]*?<span>السعر الأساسي<\/span><span>خصم %<\/span><span>خصم ج\.م<\/span><span>بعد الخصم<\/span><span>إجمالي الصنف<\/span>/);
+  assert.match(app, /aria-label="نسبة الخصم"/);
+  assert.match(app, /aria-label="قيمة الخصم بالجنيه للنسخة"/);
 });
 
 test("mobile layout keeps discount and type visible", () => {
-  assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.quick-sale-line \.discount-field \{ grid-column: 6 \/ 9; display: grid; \}/);
-  assert.match(css, /\.quick-sale-line \.sale-discount-type \{ grid-column: 9 \/ 11; \}/);
+  assert.match(css, /@media\(max-width:760px\)[\s\S]*\.invoice-lines \.quick-sale-line \.quick-discount-field\{grid-column:auto\}/);
+  assert.match(css, /\.invoice-lines \.quick-sale-line\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/);
 });
 
 test("summary distinguishes free automatic and manual shipping", () => {
