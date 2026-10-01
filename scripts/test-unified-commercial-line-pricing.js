@@ -32,5 +32,6 @@ check("sale card remove button is wired to delegated action", /class="row-action
 check("purchase line remove button is wired to delegated action", /class="row-action purchase-remove"[^>]*data-action="remove-purchase-line"/.test(app) && app.includes('if (action === "remove-purchase-line")'));
 const purchaseRender = app.slice(app.indexOf("function renderPurchases()"), app.indexOf("function updatePurchaseSummary()"));
 check("purchase workspace omits duplicate command cards and history panel", !purchaseRender.includes("purchase-command-grid") && !purchaseRender.includes("purchasesHistoryPanel()"));
+check("purchase register uses a dedicated wide modal", app.includes('class="purchase-list-modal"') && css.includes('.modal:has(.purchase-list-modal)') && css.includes('width: min(1600px, calc(100vw - 32px))'));
 
 console.log(`${passed}/${passed} unified commercial line pricing tests passed`);

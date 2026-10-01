@@ -494,6 +494,14 @@ nav { display: grid; gap: 12px; overflow-y: auto; padding-inline: 0; }
   background: #fff;
 }
 .purchase-history-searchbar-modal { padding: 0 0 14px; }
+.modal:has(.purchase-list-modal) { width: min(1600px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+#modal-body:has(.purchase-list-modal) { padding: 18px 20px 20px; }
+.purchase-list-modal { min-height: 0; display: flex; flex-direction: column; }
+.purchase-list-modal #purchase-list-results { max-height: calc(100vh - 300px); border: 1px solid var(--line); border-radius: 14px; overflow: auto; }
+.purchase-list-modal #purchase-list-results table { min-width: 1180px; }
+.purchase-list-modal #purchase-list-results thead { position: sticky; top: 0; z-index: 3; background: #f7faff; }
+.purchase-list-modal #purchase-list-results th,
+.purchase-list-modal #purchase-list-results td { padding: 11px 12px; }
 .purchase-history-search {
   min-width: 0;
   flex: 1;

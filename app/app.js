@@ -9210,6 +9210,7 @@ function limitedEditSale(id) {
 function showPurchasesList() {
   const purchases = sortedPurchases();
   openModal("سجل المشتريات والأمانة", "التوريد", `
+    <div class="purchase-list-modal">
     <div class="alert-item" style="margin-bottom:14px">
       <div class="alert-badge blue">▤</div>
       <div><strong>سجل موحد للمشتريات والأمانة</strong><span>يمكنك عرض المستند، اعتماد الاستلام، أو تسجيل مرتجع مشتريات من نفس السجل.</span></div>
@@ -9221,7 +9222,8 @@ function showPurchasesList() {
       </label>
       <span class="purchase-search-count" id="purchase-list-search-count">${purchases.length.toLocaleString("ar-EG")} مستند</span>
     </div>
-    <div class="table-wrap" id="purchase-list-results">${purchaseHistoryTable(purchases, "data-modal-action")}</div>`);
+    <div class="table-wrap" id="purchase-list-results">${purchaseHistoryTable(purchases, "data-modal-action")}</div>
+    </div>`);
 }
 
 function preparePurchaseForBook(id) {
