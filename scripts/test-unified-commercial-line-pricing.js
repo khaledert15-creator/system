@@ -28,5 +28,6 @@ check("purchase rows have eight aligned columns", css.includes("minmax(130px, 1.
 check("line editor has safe horizontal overflow", css.includes(".invoice-lines { padding: 16px; overflow-x: auto; }"));
 check("mobile sale fields have explicit grid positions", css.includes(".sale-discount-percent { grid-column: 6 / 8; }") && css.includes(".sale-discount-amount { grid-column: 8 / 10; }"));
 check("sale card layout keeps all eight columns visible", css.includes(".invoice-lines .sale-line-head,.invoice-lines .quick-sale-line{grid-template-columns:minmax(145px,1.55fr) 48px 66px 56px 66px 76px 84px 30px"));
+check("sale card remove button is wired to delegated action", /class="row-action sale-remove"[^>]*data-action="remove-sale-line"/.test(app) && app.includes('if (action === "remove-sale-line")'));
 
 console.log(`${passed}/${passed} unified commercial line pricing tests passed`);

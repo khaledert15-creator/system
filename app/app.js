@@ -2868,7 +2868,7 @@ function renderSaleInvoice() {
       <label class="quick-discount-field"><span>خصم ج.م</span><input class="sale-discount-amount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${commercialUnitPricing(line,"sale").discountAmount}" aria-label="قيمة الخصم بالجنيه للنسخة"></label>
       <div class="quick-final-price"><small>بعد الخصم</small><strong class="sale-unit-after">${money(commercialUnitPricing(line,"sale").after)}</strong></div>
       <div class="quick-line-total"><small>إجمالي الصنف</small><strong class="sale-line-net">${money(computed.finalNet || 0)}</strong><small>بعد الخصم</small></div>
-      <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
+      <button class="row-action sale-remove" type="button" data-action="remove-sale-line" data-index="${index}" title="حذف الصنف" aria-label="حذف ${esc(book?.name || "الصنف")}">×</button>
     </article>`;
   }).join("");
 
@@ -6881,7 +6881,7 @@ root.addEventListener("click", async event => {
   if (action === "omni-account-activate") omniAccountAction("activate", target.dataset.id).catch(error => toast(`تعذر التفعيل: ${error.message}`, "error"));
   if (action === "omni-account-deactivate" && confirm("تأكيد تعطيل حساب القناة؟")) omniAccountAction("deactivate", target.dataset.id).catch(error => toast(`تعذر التعطيل: ${error.message}`, "error"));
   if (action === "omni-account-delete" && confirm("حذف ناعم لحساب القناة؟ لن يتم حذف المحادثات القديمة.")) omniAccountAction("delete", target.dataset.id).catch(error => toast(`تعذر الحذف: ${error.message}`, "error"));
-  if (target.classList.contains("sale-remove")) {
+  if (action === "remove-sale-line") {
     draftSale.lines.splice(Number(target.dataset.index), 1);
     if (!draftSale.lines.length) draftSale.lines.push({ bookId: "", qty: 1, price: 0, discount: 0, discountType: "percent" });
     renderSales();
