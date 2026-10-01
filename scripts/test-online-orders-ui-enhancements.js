@@ -2,7 +2,7 @@
 "use strict";
 const assert=require("assert"),fs=require("fs"),path=require("path"),app=fs.readFileSync(path.join(__dirname,"../app/app.js"),"utf8"),server=fs.readFileSync(path.join(__dirname,"../server-node.js"),"utf8");
 const pass=(name,fn)=>{fn();console.log(`PASS ${name}`);};
-pass("sale line has percent and amount selector",()=>assert.match(app,/class="sale-discount-type"[\s\S]*value="percent"[\s\S]*value="amount"/));
+pass("sale line shows synchronized percent and amount inputs",()=>{assert.ok(app.includes("sale-discount-percent"));assert.ok(app.includes("sale-discount-amount"));assert.match(app,/function setSaleLineDiscount/);});
 pass("sale summary includes goods shipping and final total",()=>{for(const id of ["sale-goods-total","sale-shipping-total","sale-total"])assert.ok(app.includes(id));});
 pass("changing customer preserves draft and applies shipping",()=>assert.match(app,/choose-sale-customer[\s\S]*applySaleCustomerShipping/));
 pass("sale persists shipping aliases source override and notes",()=>{for(const field of ["shippingFee:totals.shipping","shippingFeeOverride:Boolean","shippingPriceSource:","notes:OrderFinance.normalizeNote"])assert.ok(app.includes(field));});

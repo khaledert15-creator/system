@@ -2860,8 +2860,9 @@ function renderSaleInvoice() {
       ${bookPickerDatalist(listId)}
       <input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
       <input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}">
-      <input class="sale-discount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${line.discount || 0}" aria-label="قيمة الخصم">
-      <select class="sale-discount-type" data-index="${index}" aria-label="نوع الخصم"><option value="percent" ${line.discountType!=="amount"?"selected":""}>%</option><option value="amount" ${line.discountType==="amount"?"selected":""}>ج.م</option></select>
+      <input class="sale-discount-percent discount-field" data-index="${index}" inputmode="decimal" min="0" max="100" value="${commercialUnitPricing(line,"sale").discountPercent}" aria-label="نسبة الخصم">
+      <input class="sale-discount-amount discount-field" data-index="${index}" inputmode="decimal" min="0" value="${commercialUnitPricing(line,"sale").discountAmount}" aria-label="قيمة الخصم بالجنيه للنسخة">
+      <span class="sale-unit-after">${money(commercialUnitPricing(line,"sale").after)}</span>
       <span class="muted discount-field text-center sale-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action sale-remove" data-index="${index}" title="حذف">×</button>
       ${book ? `<small class="sale-book-info"><b>الرصيد: ${availableStock}</b> · سعر البيع ${money(productDefaultSellingPrice(book))}${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}</small>` : ""}
@@ -2878,7 +2879,7 @@ function renderSaleInvoice() {
         <div class="invoice-lines">
           <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
           <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
-          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر</span><span class="discount-head">الخصم</span><span>نوع الخصم</span><span>الإجمالي</span><span></span></div>
+          <div class="line-head"><span>الصنف</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
           <div id="sale-lines">${lines}</div>
         </div>
       </article>
@@ -3557,6 +3558,40 @@ function discountAmount(base, value, type) {
   return base * Math.min(100, v) / 100;
 }
 
+function commercialUnitPricing(line = {}, kind = "sale") {
+  const qty = Math.max(1, Number(line.qty || line.quantity || 1));
+  const isPurchase = kind === "purchase";
+  const base = Math.max(0, Number(isPurchase
+    ? (line.coverPriceAtPurchase ?? line.basePrice ?? productCoverPrice(getBook(line.bookId)) ?? line.cost ?? 0)
+    : (line.unitOriginalPrice ?? line.originalPrice ?? line.price ?? line.unitSellingPrice ?? 0)));
+  let after = Number(isPurchase ? (line.unitPurchaseCost ?? line.cost) : (line.unitFinalPrice ?? line.finalUnitPrice ?? line.unitSellingPrice));
+  if (!Number.isFinite(after)) {
+    const total = isPurchase ? purchaseLineNet(line, qty) : saleLineNet(line, qty);
+    after = qty ? total / qty : base;
+  }
+  after = Math.max(0, Math.min(base || after, Number(after || 0)));
+  const amount = Math.max(0, base - after);
+  const percent = base > 0 ? amount * 100 / base : 0;
+  return { base, discountPercent: OrderFinance.round(percent), discountAmount: OrderFinance.round(amount), after: OrderFinance.round(after) };
+}
+
+function setSaleLineDiscount(index, value, type) {
+  const line = draftSale.lines[index];
+  if (!line) return;
+  const parsed = OrderFinance.normalizeNumber(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return;
+  const qty = Math.max(1, Number(line.qty || 1));
+  const baseUnit = Math.max(0, Number(line.price || 0));
+  line.discountType = type === "amount" ? "amount" : "percent";
+  if (line.discountType === "amount") {
+    line.unitDiscountAmount = Math.min(baseUnit, parsed);
+    line.discount = line.unitDiscountAmount * qty;
+  } else {
+    delete line.unitDiscountAmount;
+    line.discount = Math.min(100, parsed);
+  }
+}
+
 // حساب إجماليات طلب الأونلاين: مجموع، خصم أصناف، خصم فاتورة، إجمالي. مصدر واحد للعرض والحفظ والتحويل.
 function onlineOrderTotals(lines, orderDiscount, orderDiscountType, shippingCost) {
   return OrderFinance.calculateOrder(lines,{orderDiscount,orderDiscountType,shippingCost});
@@ -3738,14 +3773,13 @@ function viewOnlineOrder(id) {
   const order = getOnlineOrder(id);
   if (!order) return toast("الطلب غير موجود.", "error");
   const totals = onlineOrderTotals(order.lines, order.orderDiscount, order.orderDiscountType, orderShippingFee(order));
-  const lineDisc = line => Number(line.discount || 0) ? `${esc(String(line.discount))}${line.discountType === "amount" ? " ج.م" : "%"}` : "—";
   const invoiceButton = order.saleId
     ? `<button class="btn ghost" data-modal-action="view-sale" data-id="${order.saleId}">عرض الفاتورة</button>`
     : `<button class="btn" data-action="convert-order-sale" data-id="${order.id}">إنشاء فاتورة من الطلب</button>`;
   const shipmentButton = order.shipmentId
     ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>`
     : `<button class="btn secondary" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`;
-  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${order.status}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || "—")}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.price)}</td><td>${lineDisc(line)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div><div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${order.status}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || "—")}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div><div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
 }
 
 function saleTotals() {
@@ -3816,6 +3850,13 @@ function updateSaleSummary() {
   totals.lines.forEach((line, index) => {
     const row = document.querySelector(`.invoice-line[data-line="${index}"] .sale-line-net`);
     if (row) row.textContent = money(line.finalNet || 0);
+    const pricing = commercialUnitPricing(line, "sale");
+    const percent = document.querySelector(`.sale-discount-percent[data-index="${index}"]`);
+    const amount = document.querySelector(`.sale-discount-amount[data-index="${index}"]`);
+    const after = document.querySelector(`.invoice-line[data-line="${index}"] .sale-unit-after`);
+    if (percent && document.activeElement !== percent) percent.value = pricing.discountPercent;
+    if (amount && document.activeElement !== amount) amount.value = pricing.discountAmount;
+    if (after) after.textContent = money(pricing.after);
   });
   el("sale-subtotal").textContent = money(totals.subtotal);
   if (el("sale-line-discount-total")) el("sale-line-discount-total").textContent = money(totals.lineDiscountTotal);
@@ -3847,12 +3888,14 @@ function renderPurchases() {
     const listId = `purchase-book-options-${index}`;
     const cover = Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0);
     const supplierDiscount = Number(line.supplierDiscountPercent ?? line.discount ?? 0);
+    const unitDiscount = Math.max(0, cover - Number(line.cost || 0));
     return `<div class="invoice-line" data-line="${index}">
       <input class="purchase-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود...">
       ${bookPickerDatalist(listId)}
       <input class="purchase-qty" data-index="${index}" type="number" min="1" value="${line.qty}">
       <input class="purchase-cover" data-index="${index}" type="number" min="0" step="0.01" value="${cover}" title="سعر الغلاف">
       <input class="purchase-supplier-discount" data-index="${index}" type="number" min="0" max="100" step="0.01" value="${supplierDiscount}" title="خصم المورد %">
+      <input class="purchase-discount-amount" data-index="${index}" type="number" min="0" max="${cover}" step="0.01" value="${OrderFinance.round(unitDiscount)}" title="خصم النسخة بالجنيه">
       <input class="purchase-cost" data-index="${index}" type="number" min="0" step="0.01" value="${line.cost}" title="سعر شراء النسخة">
       <span class="muted discount-field text-center purchase-line-net">${money(computed.finalNet || 0)}</span>
       <button class="row-action purchase-remove" data-index="${index}">×</button>
@@ -3903,7 +3946,7 @@ function renderPurchases() {
         </div>
         <div class="invoice-lines">
           <div class="sale-quick-add purchase-quick-add"><div class="search"><input id="purchase-book-search" autocomplete="off" placeholder="بحث ذكي في الأصناف: اسم، باركود، ناشر، تصنيف أو صف"></div><input id="purchase-quick-qty" type="number" min="1" value="1" title="الكمية"><div id="purchase-book-suggestions"></div></div>
-          <div class="line-head purchase-line-head"><span>الصنف</span><span>الكمية</span><span>سعر الغلاف</span><span>خصم المورد %</span><span>سعر شراء النسخة</span><span>إجمالي التكلفة</span><span></span></div>
+          <div class="line-head purchase-line-head"><span>الصنف</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
           ${lines}
           <button class="btn secondary small" data-action="add-purchase-line">＋ إضافة بند</button>
         </div>
@@ -3931,6 +3974,11 @@ function updatePurchaseSummary() {
   totals.lines.forEach((line, index) => {
     const row = document.querySelector(`.invoice-line[data-line="${index}"] .purchase-line-net`);
     if (row) row.textContent = money(line.finalNet || 0);
+    const pricing = commercialUnitPricing(line, "purchase");
+    const percent = document.querySelector(`.purchase-supplier-discount[data-index="${index}"]`);
+    const amount = document.querySelector(`.purchase-discount-amount[data-index="${index}"]`);
+    if (percent && document.activeElement !== percent) percent.value = pricing.discountPercent;
+    if (amount && document.activeElement !== amount) amount.value = pricing.discountAmount;
   });
   const values = {
     "purchase-books-total": money(totals.subtotal),
@@ -4133,6 +4181,20 @@ function returnAccountName(item = {}) {
 
 function returnItems(item = {}) {
   return item.items || item.lines || [];
+}
+
+function returnLinePricing(item = {}, line = {}) {
+  const kind = returnKind(item.type);
+  const sourceId = line.sourceInvoiceId || line.documentId || item.documentId;
+  const documents = kind === "purchase" ? data.purchases : data.sales;
+  const source = documents.find(document => document.id === sourceId);
+  const sourceLine = (source?.lines || [])[Number(line.lineIndex)]
+    || (source?.lines || []).find(candidate => (candidate.bookId || candidate.productId) === (line.bookId || line.productId));
+  if (sourceLine) return commercialUnitPricing(sourceLine, kind);
+  const after = Math.max(0, Number(line.unitPrice ?? line.unitValue ?? 0));
+  const base = Math.max(after, Number(line.basePrice ?? line.originalPrice ?? after));
+  const discountAmountValue = Math.max(0, base - after);
+  return { base, discountAmount: OrderFinance.round(discountAmountValue), discountPercent: base ? OrderFinance.round(discountAmountValue * 100 / base) : 0, after };
 }
 
 function renderReturns() {
@@ -6987,9 +7049,16 @@ root.addEventListener("input", event => {
     }
   }
   const index = Number(event.target.dataset.index);
-  if (event.target.classList.contains("sale-qty")) draftSale.lines[index].qty = Math.max(1, Number(event.target.value));
+  if (event.target.classList.contains("sale-qty")) {
+    const line = draftSale.lines[index];
+    line.qty = Math.max(1, Number(event.target.value));
+    if (line.discountType === "amount" && Number.isFinite(Number(line.unitDiscountAmount))) line.discount = Number(line.unitDiscountAmount) * line.qty;
+  }
   if (event.target.classList.contains("sale-price")) draftSale.lines[index].price = Number(event.target.value);
-  if (event.target.classList.contains("sale-discount")){event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0)draftSale.lines[index].discount=value;}
+  if (event.target.classList.contains("sale-discount-percent") || event.target.classList.contains("sale-discount-amount")) {
+    event.target.value = normalizeArabicNumericText(event.target.value);
+    setSaleLineDiscount(index, event.target.value, event.target.classList.contains("sale-discount-amount") ? "amount" : "percent");
+  }
   if (event.target.id === "sale-paid") draftSale.paid = Math.max(0, Number(event.target.value || 0));
   if (event.target.id === "sale-invoice-discount"){event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0)draftSale.invoiceDiscount=value;}
   if(event.target.id==="sale-shipping-cost"){
@@ -6997,7 +7066,7 @@ root.addEventListener("input", event => {
     event.target.value=normalizeArabicNumericText(event.target.value);const value=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(value)&&value>=0){draftSale.shippingCost=value;draftSale.shippingFeeOverride=true;draftSale.shippingPriceSource="manual";}
   }
   if(event.target.id==="sale-notes")draftSale.notes=event.target.value;
-  if (event.target.classList.contains("sale-qty") || event.target.classList.contains("sale-price") || event.target.classList.contains("sale-discount") || event.target.id === "sale-invoice-discount" || event.target.id==="sale-shipping-cost") updateSaleSummary();
+  if (event.target.classList.contains("sale-qty") || event.target.classList.contains("sale-price") || event.target.classList.contains("sale-discount-percent") || event.target.classList.contains("sale-discount-amount") || event.target.id === "sale-invoice-discount" || event.target.id==="sale-shipping-cost") updateSaleSummary();
   if (event.target.id === "sale-paid") updateSaleSummary();
   if (event.target.classList.contains("purchase-qty")) draftPurchase.lines[index].qty = Math.max(1, Number(event.target.value));
   if (event.target.classList.contains("purchase-cover")) {
@@ -7018,6 +7087,20 @@ root.addEventListener("input", event => {
     persistPurchaseDraft();
     return;
   }
+  if (event.target.classList.contains("purchase-discount-amount")) {
+    const line = draftPurchase.lines[index];
+    const cover = Math.max(0, Number(line.coverPriceAtPurchase || 0));
+    const amount = Math.max(0, Math.min(cover, OrderFinance.normalizeNumber(normalizeArabicNumericText(event.target.value)) || 0));
+    line.cost = OrderFinance.round(cover - amount);
+    syncPurchaseLineCost(index, "cost");
+    const percentInput = document.querySelector(`.purchase-supplier-discount[data-index="${index}"]`);
+    const costInput = document.querySelector(`.purchase-cost[data-index="${index}"]`);
+    if (percentInput) percentInput.value = line.supplierDiscountPercent;
+    if (costInput) costInput.value = line.cost;
+    updatePurchaseSummary();
+    persistPurchaseDraft();
+    return;
+  }
   if (event.target.classList.contains("purchase-cost")) {
     draftPurchase.lines[index].cost = Number(event.target.value);
     syncPurchaseLineCost(index, "cost");
@@ -7029,7 +7112,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "purchase-shipping") draftPurchase.shipping = Math.max(0, Number(event.target.value || 0));
   if (event.target.id === "purchase-invoice-discount") draftPurchase.invoiceDiscount = Math.max(0, Number(event.target.value || 0));
   if (event.target.id === "supplier-invoice-number") draftPurchase.supplierInvoiceNumber = event.target.value;
-  if (event.target.classList.contains("purchase-qty") || event.target.classList.contains("purchase-cost") || event.target.classList.contains("purchase-cover") || event.target.classList.contains("purchase-supplier-discount") || event.target.id === "purchase-paid" || event.target.id === "purchase-shipping" || event.target.id === "purchase-invoice-discount") updatePurchaseSummary();
+  if (event.target.classList.contains("purchase-qty") || event.target.classList.contains("purchase-cost") || event.target.classList.contains("purchase-cover") || event.target.classList.contains("purchase-supplier-discount") || event.target.classList.contains("purchase-discount-amount") || event.target.id === "purchase-paid" || event.target.id === "purchase-shipping" || event.target.id === "purchase-invoice-discount") updatePurchaseSummary();
   if (event.target.closest(".purchase-workspace")) persistPurchaseDraft();
 });
 
@@ -9379,10 +9462,9 @@ function printSale(id, format = "a4") {
   const snapshot = sale.customerSnapshot || {};
   const lines = sale.lines || [];
   const linesMarkup = lines.map((line, index) => {
-    const base = Number(line.qty || line.quantity || 0) * Number(line.price || line.unitSellingPrice || 0);
+    const pricing = commercialUnitPricing(line, "sale");
     const net = saleLineNet(line, line.qty || line.quantity || 0);
-    const discount = Math.max(0, base - net);
-    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || line.quantity || 0).toLocaleString("ar-EG")}</td><td>${money(line.price || line.unitSellingPrice || 0)}</td><td>${esc(lineDiscountLabel(line))} (${money(discount)})</td><td>${money(net)}</td></tr>`;
+    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || line.quantity || 0).toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(net)}</td></tr>`;
   }).join("");
   printHtml(`فاتورة بيع ${sale.id}`, `
     <div class="table-wrap"><table><tbody>
@@ -9391,7 +9473,7 @@ function printSale(id, format = "a4") {
       <tr><th>قناة البيع</th><td>${esc(sale.channel || "—")}</td><th>نوع العملية</th><td>${esc(sale.saleOperationType || "بيع مباشر")}</td></tr>
       <tr><th>طريقة الدفع</th><td>${esc(sale.payment || "—")}</td><th>اسم البائع</th><td>${esc(saleCreatedByName(sale))}</td></tr>
     </tbody></table></div>
-    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="6">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
+    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="8">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
     <div class="table-wrap"><table><tbody>
       <tr><th>إجمالي قبل الخصم</th><td>${money(sale.subtotal || 0)}</td><th>إجمالي الخصم</th><td>${esc(sale.invoiceDiscountType === "amount" ? "مبلغ" : "نسبة")} — ${money(sale.discount || 0)}</td></tr>
       <tr><th>الشحن</th><td>${money(sale.shipping || 0)}</td><th>الصافي</th><td>${money(sale.total || 0)}</td></tr>
@@ -9411,11 +9493,9 @@ function printPurchase(id, format = "a4") {
   const lines = purchase.lines || [];
   const linesMarkup = lines.map((line, index) => {
     const qty = Number(line.qty || line.quantity || 0);
-    const coverPrice = Number(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)) ?? 0);
-    const discount = Number(line.supplierDiscountPercent ?? line.discount ?? 0);
-    const unitCost = Number(line.unitPurchaseCost ?? line.cost ?? 0);
-    const totalCost = Number(line.totalCost ?? purchaseLineNet(line, qty) ?? unitCost * qty);
-    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${qty.toLocaleString("ar-EG")}</td><td>${money(coverPrice)}</td><td>${discount.toLocaleString("ar-EG")}%</td><td>${money(unitCost)}</td><td>${money(totalCost)}</td></tr>`;
+    const pricing = commercialUnitPricing(line, "purchase");
+    const totalCost = Number(line.totalCost ?? purchaseLineNet(line, qty) ?? pricing.after * qty);
+    return `<tr><td>${index + 1}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${qty.toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(totalCost)}</td></tr>`;
   }).join("");
   printHtml(`فاتورة مشتريات ${purchase.id}`, `
     <table><tbody>
@@ -9423,7 +9503,7 @@ function printPurchase(id, format = "a4") {
       <tr><th>المورد</th><td>${esc(supplier?.name || "—")}</td><th>التاريخ</th><td>${esc(dateTimeLabel(purchase.createdAt || purchase.date))}</td></tr>
       <tr><th>نوع المستند</th><td>${esc(purchase.type || "شراء")}</td><th>الحالة</th><td>${esc(purchase.status || "—")}</td></tr>
     </tbody></table>
-    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="7">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
+    <table><thead><tr><th>م</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${linesMarkup || `<tr><td colspan="8">لا توجد بنود تفصيلية.</td></tr>`}</tbody></table>
     <table><tbody>
       <tr><th>الإجمالي</th><td>${money(purchase.total || 0)}</td><th>المدفوع</th><td>${money(purchase.paid || 0)}</td></tr>
       <tr><th>المتبقي</th><td>${money(purchase.remaining || 0)}</td><th>الشحن / مصروفات إضافية</th><td>${money(purchase.shipping || 0)}</td></tr>
@@ -9450,8 +9530,8 @@ function printReturn(id, format = "a4") {
     <p><strong>نوع المرتجع:</strong> ${esc(returnTypeLabel(item.type))} ${item.mode === "by_account" ? "— مستقل حسب الحساب" : ""}</p>
     <p><strong>الحساب:</strong> ${esc(party)}</p>
     <p><strong>التاريخ:</strong> ${fmtDate(item.date)}</p>
-    <table><thead><tr><th>الصنف</th><th>الفاتورة الأصلية</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead><tbody>
-      ${items.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${money(line.unitPrice || line.unitValue || 0)}</td><td>${money(line.total || line.amount || 0)}</td></tr>`).join("")}
+    <table><thead><tr><th>الصنف</th><th>الفاتورة الأصلية</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>الإجمالي</th></tr></thead><tbody>
+      ${items.map(line => { const pricing=returnLinePricing(item,line); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(line.total || line.amount || 0)}</td></tr>`; }).join("")}
     </tbody></table>
     <div class="total">الإجمالي: ${money(item.subtotal ?? item.amount ?? 0)}</div>
     <p><strong>طريقة التسوية:</strong> ${esc(returnSettlementLabel(item))}</p>
@@ -9467,7 +9547,7 @@ function printOnlineOrder(id, format = "a4") {
     if(!order.confirmedAt||order.inventoryReservation?.status!=="active")return toast("يجب تأكيد الطلب وحجز المخزون أولًا قبل إصدار أمر التجهيز.","error");
   }
   const totals=onlineOrderTotals(order.lines||[],order.orderDiscount||0,order.orderDiscountType||"percent",orderShippingFee(order));
-  printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>نوع الخصم</th><th>قيمة الخصم</th><th>بعد الخصم</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${esc(line.discountType==="amount"?"مبلغ":"نسبة")}</td><td>${money(line.discountAmount||0)}</td><td>${money(line.lineTotal||0)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
+  printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td>${money(line.finalNet)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
 }
 
 function printStatement(id, kind) {
@@ -10244,8 +10324,8 @@ function viewSale(id) {
       <tr><th>حالة الدفع</th><td>${esc(paymentStatusLabel(sale))}</td><th>ملاحظات</th><td>${esc(sale.notes || "—")}</td></tr>
     </tbody></table></div>
     <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge blue">👤</div><div><strong>${esc(customer?.name || "عميل غير مسجل")}</strong><span>${esc(customer?.phone || "لا يوجد رقم موبايل")}${sale.onlineOrderId ? ` · طلب أونلاين ${esc(sale.onlineOrderId)}` : ""}${shipment ? ` · كود التتبع ${esc(shipment.tracking)}` : ""}</span></div>${shipment ? `<button class="btn ghost small" data-action="view-shipment-from-sale" data-id="${shipment.id}">عرض الشحنة</button>` : ""}</div>
-    <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>بعد الخصم</th></tr></thead><tbody>
-      ${lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty}</td><td>${money(line.price)}</td><td>${lineDiscountLabel(line)}</td><td>${money(saleLineNet(line, line.qty))}</td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">فاتورة تجريبية قديمة بدون بنود تفصيلية.</td></tr>`}
+    <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>
+      ${lines.map(line => { const pricing=commercialUnitPricing(line,"sale"); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty}</td><td>${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td>${money(pricing.discountAmount)}</td><td>${money(pricing.after)}</td><td>${money(saleLineNet(line, line.qty))}</td></tr>`; }).join("") || `<tr><td colspan="7" class="text-center muted">فاتورة تجريبية قديمة بدون بنود تفصيلية.</td></tr>`}
     </tbody></table></div>
     <div class="invoice-totals-grid"><span>قبل الخصم <b>${money(sale.subtotalBeforeDiscount??sale.subtotal??sale.total)}</b></span><span>إجمالي الخصم <b>${money(sale.discount||0)}</b></span><span>بعد الخصم <b>${money(sale.subtotalAfterDiscount??Math.max(0,Number(sale.total||0)-Number(sale.shipping||0)))}</b></span><span>الشحن <b>${money(sale.shipping||0)}</b></span><span class="grand">الإجمالي <b>${money(sale.total)}</b></span><span>المدفوع <b>${money(sale.paidAmount??sale.paid??0)}</b></span><span>المتبقي <b>${money(sale.remainingAmount??sale.remaining??0)}</b></span></div>
     <div class="form-actions"><button class="btn" data-action="print-sale" data-id="${sale.id}" data-format="a4">طباعة A4</button><button class="btn secondary" data-action="print-sale" data-id="${sale.id}" data-format="thermal">طباعة حرارية</button>${!["ملغاة","مرتجع"].includes(sale.status) ? `<button class="btn ghost" data-action="return-sale" data-id="${sale.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
@@ -10528,13 +10608,14 @@ function saleReturnByCustomerModal(customerId = "") {
     <form id="sale-customer-return-form" data-customer-id="${customer.id}">
       <div class="alert-item" style="margin-bottom:15px"><div class="alert-badge red">↶</div><div><strong>${esc(customer.name)} — ${esc(customer.id)}</strong><span>اختر الأصناف من مبيعات هذا العميل فقط. لا تحتاج لفتح الفاتورة الأصلية.</span></div><button class="btn ghost small" type="button" data-action="statement" data-kind="customer" data-id="${customer.id}">كشف الحساب</button></div>
       <div class="toolbar" style="padding:0 0 15px;border-bottom:0"><div class="search"><input id="customer-return-line-search" autocomplete="off" placeholder="ابحث داخل فواتير العميل: رقم فاتورة أو اسم صنف..."></div></div>
-      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الفاتورة</th><th>الصنف</th><th>المباع</th><th>تم إرجاعه</th><th>المتاح</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
+      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الفاتورة</th><th>الصنف</th><th>المباع</th><th>المتاح</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
         ${lines.map(line => {
           const key = `${line.saleId}__${line.lineIndex}`;
           const unitValue = Number(line.qty || 0) ? saleLineNet(line, Number(line.qty || 0)) / Number(line.qty || 1) : Number(line.price || 0);
           const book = getBook(line.bookId);
           const searchText = normalizeReturnSearch(`${line.saleId} ${fmtDate(line.saleDate)} ${book?.name || line.bookId} ${book?.barcode || ""} ${book?.extraBarcode || ""}`);
-          return `<tr data-customer-return-row data-search="${esc(searchText)}"><td><strong>${esc(line.saleId)}</strong><br><span class="muted">${fmtDate(line.saleDate)}</span></td><td>${esc(book?.name || line.bookId)}<br><span class="muted">${esc(book?.barcode || "")}</span></td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.returnedQty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td><input class="customer-return-qty" name="returnQty-${key}" type="number" min="0" max="${line.remaining}" data-sale-id="${esc(line.saleId)}" data-line-index="${line.lineIndex}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(saleLineNet(line, line.remaining))}</td></tr>`;
+          const pricing=commercialUnitPricing(line,"sale");
+          return `<tr data-customer-return-row data-search="${esc(searchText)}"><td><strong>${esc(line.saleId)}</strong><br><span class="muted">${fmtDate(line.saleDate)}</span></td><td>${esc(book?.name || line.bookId)}<br><span class="muted">${esc(book?.barcode || "")}</span></td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td><input class="customer-return-qty" name="returnQty-${key}" type="number" min="0" max="${line.remaining}" data-sale-id="${esc(line.saleId)}" data-line-index="${line.lineIndex}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(saleLineNet(line, line.remaining))}</td></tr>`;
         }).join("")}
       </tbody></table></div>
       <div class="metric-strip" style="margin-bottom:14px">
@@ -10572,13 +10653,14 @@ function purchaseReturnBySupplierModal(supplierId = "") {
     <form id="purchase-supplier-return-form" data-supplier-id="${supplier.id}">
       <div class="alert-item" style="margin-bottom:15px"><div class="alert-badge red">↶</div><div><strong>${esc(supplier.name)} — ${esc(supplier.id)}</strong><span>اختر أصنافًا من مستندات شراء مختلفة في نفس فاتورة المرتجع.</span></div><button class="btn ghost small" type="button" data-action="statement" data-kind="supplier" data-id="${supplier.id}">كشف الحساب</button></div>
       <div class="toolbar" style="padding:0 0 15px;border-bottom:0"><div class="search"><input id="supplier-return-line-search" autocomplete="off" placeholder="ابحث باسم الصنف أو الباركود أو رقم مستند الشراء..."></div></div>
-      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>مستند الشراء</th><th>فاتورة المورد</th><th>الصنف</th><th>المشتراة</th><th>تم إرجاعه</th><th>المتاح</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
+      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>مستند الشراء</th><th>الصنف</th><th>المشتراة</th><th>المتاح</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
         ${lines.map(line => {
           const key = `${line.purchaseId}__${line.lineIndex}`;
           const book = getBook(line.bookId);
           const unitValue = Number(line.qty || 0) ? purchaseLineNet(line, Number(line.qty || 0)) / Number(line.qty || 1) : Number(line.cost || 0);
           const searchText = normalizeReturnSearch(`${line.purchaseId} ${line.supplierInvoiceNumber || ""} ${book?.name || line.bookId} ${book?.barcode || ""} ${book?.extraBarcode || ""}`);
-          return `<tr data-supplier-return-row data-search="${esc(searchText)}"><td><strong>${esc(line.purchaseId)}</strong><br><span class="muted">${fmtDate(line.purchaseDate)}</span></td><td>${esc(line.supplierInvoiceNumber || "—")}</td><td>${esc(book?.name || line.bookId)}<br><span class="muted">${esc(book?.barcode || "")}</span></td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.returnedQty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td><input class="supplier-return-qty" name="returnQty-${key}" type="number" min="0" max="${line.remaining}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(purchaseLineNet(line, line.remaining))}</td></tr>`;
+          const pricing=commercialUnitPricing(line,"purchase");
+          return `<tr data-supplier-return-row data-search="${esc(searchText)}"><td><strong>${esc(line.purchaseId)}</strong><br><span class="muted">${fmtDate(line.purchaseDate)}</span><br><small>${esc(line.supplierInvoiceNumber || "—")}</small></td><td>${esc(book?.name || line.bookId)}<br><span class="muted">${esc(book?.barcode || "")}</span></td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td><input class="supplier-return-qty" name="returnQty-${key}" type="number" min="0" max="${line.remaining}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(purchaseLineNet(line, line.remaining))}</td></tr>`;
         }).join("")}
       </tbody></table></div>
       <div class="metric-strip" style="margin-bottom:14px">
@@ -10629,8 +10711,8 @@ function viewReturn(id) {
       <div class="mini-metric"><span>أصناف/قيمة بديلة</span><strong>${money(item.replacementDeduction || 0)}</strong></div>
       <div class="mini-metric"><span>رقم المرتجع</span><strong>${esc(returnNo(item))}</strong></div>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>الفاتورة الأصلية</th><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead><tbody>
-      ${items.map(line => `<tr><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td class="money">${money(line.unitPrice || line.unitValue || 0)}</td><td class="money">${money(line.total || line.amount || 0)}</td></tr>`).join("") || `<tr><td colspan="5" class="text-center muted">مرتجع قديم بدون تفاصيل أصناف.</td></tr>`}
+    <div class="table-wrap"><table><thead><tr><th>الفاتورة الأصلية</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>الإجمالي</th></tr></thead><tbody>
+      ${items.map(line => { const pricing=returnLinePricing(item,line); return `<tr><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td class="money">${money(line.total || line.amount || 0)}</td></tr>`; }).join("") || `<tr><td colspan="8" class="text-center muted">مرتجع قديم بدون تفاصيل أصناف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" type="button" data-action="print-return" data-id="${esc(item.id)}">طباعة</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
@@ -10645,10 +10727,11 @@ function saleReturnModal(id) {
   openModal(`فاتورة مرتجع جديدة من ${id}`, "مرتجعات المبيعات", `
     <form id="sale-return-form" data-id="${id}" data-sale-total="${Number(sale.total || 0)}" data-sale-remaining="${Number(sale.remaining || 0)}" data-returned-remaining="${Number(sale.returnedRemaining || 0)}">
       <div class="alert-item" style="margin-bottom:15px"><div class="alert-badge red">↶</div><div><strong>${esc(customer.name)} — ${esc(customer.id)}</strong><span>فاتورة مرتجع مرتبطة بحساب العميل. يتم اختيار أصناف من فواتير العميل فقط.</span></div><button class="btn ghost small" type="button" data-action="statement" data-kind="customer" data-id="${customer.id}">كشف الحساب</button></div>
-      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الصنف</th><th>المباع</th><th>تم إرجاعه</th><th>المتاح</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
+      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الصنف</th><th>المباع</th><th>المتاح</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
         ${returnableLines.map(line => {
           const unitValue = Number(line.qty || 0) ? saleLineNet(line, Number(line.qty || 0)) / Number(line.qty || 1) : Number(line.price || 0);
-          return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.returnedQty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td><input class="sale-return-qty" name="returnQty-${line.lineIndex}" type="number" min="0" max="${line.remaining}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(saleLineNet(line, line.remaining))}</td></tr>`;
+          const pricing=commercialUnitPricing(line,"sale");
+          return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td><input class="sale-return-qty" name="returnQty-${line.lineIndex}" type="number" min="0" max="${line.remaining}" data-unit-value="${unitValue}" value="0"></td><td class="money">${money(saleLineNet(line, line.remaining))}</td></tr>`;
         }).join("")}
       </tbody></table></div>
       <div class="metric-strip" style="margin-bottom:14px">
@@ -10932,8 +11015,8 @@ function viewPurchase(id) {
       <div class="mini-metric"><span>المتبقي</span><strong>${money(purchase.remaining || 0)}</strong></div>
       <div class="mini-metric"><span>فاتورة المورد</span><strong>${esc(purchase.supplierInvoiceNumber || "—")}</strong></div>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الغلاف</th><th>خصم المورد</th><th>سعر شراء النسخة</th><th>إجمالي التكلفة</th><th>Batch</th></tr></thead><tbody>
-    ${(purchase.lines || []).map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty || line.quantity}</td><td class="money">${money(line.coverPriceAtPurchase ?? productCoverPrice(getBook(line.bookId)))}</td><td>${Number(line.supplierDiscountPercent ?? line.discount ?? 0)}%</td><td class="money">${money(line.unitPurchaseCost ?? line.cost)}</td><td class="money">${money(line.totalCost ?? purchaseLineNet(line, line.qty))}</td><td>${esc(line.batchId || "—")}</td></tr>`).join("") || `<tr><td colspan="7" class="text-center muted">مستند تجريبي قديم بدون بنود تفصيلية.</td></tr>`}
+    <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th><th>Batch</th></tr></thead><tbody>
+    ${(purchase.lines || []).map(line => { const pricing=commercialUnitPricing(line,"purchase"); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty || line.quantity}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td class="money">${money(line.totalCost ?? purchaseLineNet(line, line.qty))}</td><td>${esc(line.batchId || "—")}</td></tr>`; }).join("") || `<tr><td colspan="8" class="text-center muted">مستند تجريبي قديم بدون بنود تفصيلية.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-purchase" data-id="${purchase.id}" data-format="a4">طباعة A4</button><button class="btn secondary" data-action="print-purchase" data-id="${purchase.id}" data-format="thermal">طباعة حرارية</button>${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
@@ -10982,8 +11065,8 @@ function purchaseReturnModal(id) {
   openModal(`مرتجع مستند ${id}`, "مرتجعات المشتريات", `
     <form id="purchase-return-form" data-id="${id}">
       <div class="alert-item" style="margin-bottom:15px"><div class="alert-badge red">↶</div><div><strong>${esc(getSupplier(purchase.supplierId)?.name || "مورد")}</strong><span>اختر الأصناف والكميات المراد إرجاعها للمورد فقط.</span></div></div>
-      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الصنف</th><th>المستلم</th><th>تم إرجاعه</th><th>المتاح</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
-        ${returnableLines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.returnedQty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td><input name="returnQty-${line.lineIndex}" type="number" min="0" max="${line.remaining}" value="0"></td><td class="money">${money(purchaseLineNet(line, line.remaining))}</td></tr>`).join("")}
+      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الصنف</th><th>المستلم</th><th>المتاح</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>كمية المرتجع</th><th>قيمة المتاح</th></tr></thead><tbody>
+        ${returnableLines.map(line => { const pricing=commercialUnitPricing(line,"purchase"); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.discountPercent}%</td><td class="money">${money(pricing.discountAmount)}</td><td class="money">${money(pricing.after)}</td><td><input name="returnQty-${line.lineIndex}" type="number" min="0" max="${line.remaining}" value="0"></td><td class="money">${money(purchaseLineNet(line, line.remaining))}</td></tr>`; }).join("")}
       </tbody></table></div>
       <div class="form-grid">
         <div class="form-field"><label>رقم فاتورة المورد</label><input name="supplierInvoiceNumber" value="${esc(purchase.supplierInvoiceNumber || "")}" placeholder="رقم فاتورة المورد الأصلية"></div>
