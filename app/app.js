@@ -3340,11 +3340,11 @@ function renderPreparationQueue() {
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>يحتاج تغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
 
-async function orderWorkflowRequest(path,{method="POST",body}={}) {
+async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision}={}) {
   const requestKey=`${method}:${path}`;
   if(orderWorkflowRequests.has(requestKey))return orderWorkflowRequests.get(requestKey);
   const request=(async()=>{
-    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders({...(body?{"Content-Type":"application/json"}:{}),...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:body?JSON.stringify(body):undefined});
+    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders({...(body?{"Content-Type":"application/json"}:{}),...(revision!==""&&revision!=null?{"X-DB-Revision":String(revision)}:{})}),body:body?JSON.stringify(body):undefined});
     const result=await response.json().catch(()=>({}));
     const authError=orderAuthenticationError(response.status,result);
     if(authError)throw authError;
@@ -3466,8 +3466,61 @@ async function openPreparationOrder(id,start=false) {
     if(start)await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/start`);
     const order=getOnlineOrder(id);if(!order)return;
     const doneMap=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)])),checklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneMap.get(line.bookId)||false}));
-    openModal(`تجهيز ${order.id}`,"قائمة التجهيز",`<div class="preparation-owner"><strong>${esc(order.customerName)}</strong><span>${order.source==="whatsapp"?"واتساب":"الموقع"} · بدأ ${esc(order.preparingBy||currentUser?.name||"")}</span></div><div class="preparation-source-note">الكتب والكميات معروضة مباشرة من الطلب الأصلي · آخر تحديث ${arabicDateTimeLabel(order.updatedAt||order.createdAt)}</div><div class="preparation-checklist">${checklist.map(item=>{const book=getBook(item.bookId);return `<label class="choice-card"><input type="checkbox" data-preparation-book="${item.bookId}" ${item.done?"checked":""}><span><strong>${esc(book?.name||item.bookId)}</strong><small>${esc(book?.barcode||book?.sku||"")} · الكمية ${item.qty}</small></span></label>`}).join("")}</div>${order.preparationIssue?`<div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>${esc(order.preparationIssue.reason)}</strong><span>${esc(order.preparationIssue.notes||"")}</span></div></div>`:""}<div class="form-actions"><button class="btn" data-action="prepare-order-finish-choice" data-id="${order.id}" ${(checklist.length&&!checklist.some(item=>!item.done))?"":"disabled"}>إنهاء التجهيز</button><button class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${order.id}">مشكلة في التجهيز</button></div>`);
+    const totals=onlineOrderTotals(order.lines,order.orderDiscount,order.orderDiscountType,orderShippingFee(order));
+    openModal(`تجهيز ${order.id}`,"تغليف الطلب",`
+      <div class="packing-sheet" data-packing-order="${esc(order.id)}">
+        <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc(order.phone||"")} · ${esc(order.governorate||"")}</span><small>${esc(order.address||"")}</small></div>
+        ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
+        <div class="packing-progress">تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
+        <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكتاب</span><span>الكمية</span><span>إجمالي الصنف</span></div>
+        <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-qty"><small>الكمية</small><b>${item.qty}</b></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
+        <div class="packing-totals"><span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(order.paidAmount||0)}</b></span><span>المتبقي <b>${money(Math.max(0,totals.total-Number(order.paidAmount||0)))}</b></span></div>
+        ${order.preparationIssue?`<div class="text-danger">${esc(order.preparationIssue.reason)}</div>`:""}
+        <div class="packing-footer"><small>عند الإكمال تُصدر الفاتورة تلقائيًا، ويُنتظر كود التتبع دون إنشاء شحنة.</small><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-complete" data-id="${esc(order.id)}" ${checklist.length&&checklist.every(item=>item.done)?"":"disabled"}>إتمام التغليف وإصدار الفاتورة</button><button type="button" class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${esc(order.id)}">تعذر التغليف</button></div></div>
+      </div>`);
   }catch(error){toast(error.message,"error");}
+}
+
+let packingEditDraft=null;
+
+function openPackingEditor(id) {
+  const order=getOnlineOrder(id);
+  if(!order||!canAction("order.quick.edit"))return toast("ليس لديك صلاحية تعديل الطلب.","error");
+  if(order.saleId)return toast("لا يمكن تعديل الأصناف بعد إصدار الفاتورة.","error");
+  packingEditDraft={id,revision:dbRevision,order:structuredClone(order),lines:structuredClone(order.lines||[]),pending:false};
+  openModal(`تعديل أصناف ${order.id}`,"التغليف",`<form id="packing-edit-form"><p class="muted">التعديلات تخص هذا الطلب فقط، ولا تغيّر أسعار الكتب الأساسية. يُلغى تأكيد تغليف البنود المتغيرة بعد الحفظ.</p><label for="packing-edit-search">إضافة كتاب</label><input id="packing-edit-search" type="search" placeholder="ابحث باسم الكتاب أو الباركود" autocomplete="off"><div id="packing-edit-results" class="packing-edit-results"></div><div id="packing-edit-lines" class="packing-edit-lines"></div><div id="packing-edit-totals" class="packing-totals" aria-live="polite"></div><p id="packing-edit-error" class="text-danger" role="alert"></p><div class="form-actions"><button type="submit" class="btn">حفظ التعديلات والعودة للتغليف</button><button type="button" class="btn ghost" data-action="packing-edit-cancel">رجوع بدون حفظ</button></div></form>`);
+  renderPackingEditLines();
+}
+
+function renderPackingEditLines() {
+  const host=document.getElementById("packing-edit-lines");if(!host||!packingEditDraft)return;
+  host.innerHTML=packingEditDraft.lines.map((line,index)=>`<div class="packing-edit-row"><div class="packing-book"><strong>${esc(getBook(line.bookId)?.name||line.bookId)}</strong><small>${esc(line.bookId)} · الخصم محفوظ كما هو</small></div><label>الكمية<input data-packing-field="qty" data-index="${index}" inputmode="numeric" value="${esc(line.qty)}" required></label><label>السعر الأساسي للنسخة<input data-packing-field="price" data-index="${index}" inputmode="decimal" value="${esc(line.price)}" required></label><span class="packing-edit-net" data-packing-net="${index}"></span><button class="btn ghost text-danger" type="button" data-action="packing-edit-remove" data-index="${index}" aria-label="حذف ${esc(getBook(line.bookId)?.name||line.bookId)} من الطلب">حذف</button></div>`).join("")||`<p class="muted">أضف كتابًا واحدًا على الأقل قبل الحفظ.</p>`;
+  updatePackingEditTotals();
+}
+
+function updatePackingEditTotals() {
+  const draft=packingEditDraft,form=document.getElementById("packing-edit-form");if(!draft||!form)return;
+  let valid=false;
+  try{
+    if(!draft.lines.length)throw new Error("أضف صنفًا واحدًا على الأقل.");
+    for(const line of draft.lines){const qty=OrderFinance.normalizeNumber(line.qty),price=OrderFinance.normalizeNumber(line.price);if(!Number.isInteger(qty)||qty<=0||!Number.isFinite(price)||price<0||String(line.price).trim()==="")throw new Error("أدخل كمية صحيحة أكبر من صفر وسعرًا صالحًا.");}
+    const totals=onlineOrderTotals(draft.lines,draft.order.orderDiscount,draft.order.orderDiscountType,orderShippingFee(draft.order));
+    const payment=OrderFinance.calculatePayment(totals.total,Number(draft.order.paidAmount||0));
+    totals.lines.forEach((line,index)=>{const cell=form.querySelector(`[data-packing-net="${index}"]`);if(cell)cell.textContent=`بعد الخصم: ${money(line.finalNet)}`;});
+    document.getElementById("packing-edit-totals").innerHTML=`<span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(payment.paidAmount)}</b></span><span>المتبقي <b>${money(payment.remainingAmount)}</b></span>`;
+    document.getElementById("packing-edit-error").textContent="";valid=true;
+  }catch(error){document.getElementById("packing-edit-error").textContent=error.message;document.getElementById("packing-edit-totals").innerHTML="";form.querySelectorAll("[data-packing-net]").forEach(cell=>{cell.textContent="—";});}
+  form.querySelector('button[type="submit"]').disabled=!valid||draft.pending;
+  return valid;
+}
+
+async function savePackingEdit(form) {
+  const draft=packingEditDraft;if(!draft||draft.pending||!updatePackingEditTotals())return;
+  draft.pending=true;form.querySelectorAll("input,button").forEach(control=>{control.disabled=true;});
+  try{
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(draft.id)}/prepare/items`,{method:"PATCH",revision:draft.revision,body:{lines:draft.lines.map(({bookId,qty,price})=>({bookId,qty,price}))}});
+    packingEditDraft=null;await openPreparationOrder(draft.id);toast("تم حفظ الأصناف وتحديث الإجمالي وحجز المخزون. راجع علامات التغليف.");
+  }catch(error){draft.pending=false;if(form.isConnected){form.querySelectorAll("input,button").forEach(control=>{control.disabled=false;});updatePackingEditTotals();document.getElementById("packing-edit-error").textContent=error.message;}toast(error.message,"error");}
 }
 
 function finishPreparationModal(id) {
@@ -6457,9 +6510,19 @@ document.addEventListener("click", event => {
     callback?.();
   }
   if(action==="approve-settlement")financeConfirmation({title:"اعتماد التسوية؟",description:"سيتم تسجيل المبلغ في الخزنة وإنشاء مصروفات الشحن وعمولة التحصيل تلقائيًا. تأكد من المبالغ قبل المتابعة.",confirmLabel:"اعتماد التسوية",onConfirm:()=>approveCarrierSettlement(target.dataset.id)});
+  if(action==="packing-edit-open")openPackingEditor(target.dataset.id);
+  if(action==="packing-edit-cancel"&&packingEditDraft&&!packingEditDraft.pending){const id=packingEditDraft.id;packingEditDraft=null;openPreparationOrder(id);}
+  if(action==="packing-edit-remove"&&packingEditDraft&&!packingEditDraft.pending){packingEditDraft.lines.splice(Number(target.dataset.index),1);renderPackingEditLines();}
+  if(action==="packing-edit-add"&&packingEditDraft&&!packingEditDraft.pending){
+    const book=getBook(target.dataset.id);if(!book||book.deletedAt)return;
+    const existing=packingEditDraft.lines.find(line=>line.bookId===book.id);
+    if(existing)existing.qty=OrderFinance.normalizeNumber(existing.qty)+1;
+    else packingEditDraft.lines.push({bookId:book.id,qty:1,price:book.price||0,discount:book.discount??book.saleDiscount??0,discountType:book.discountType==="amount"?"amount":"percent",discountScope:"unit"});
+    document.getElementById("packing-edit-search").value="";document.getElementById("packing-edit-results").innerHTML="";renderPackingEditLines();document.getElementById("packing-edit-search").focus();
+  }
   if(action==="prepare-order-issue")preparationIssueModal(target.dataset.id);
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
-  if(action==="prepare-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/complete`);closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast("تم التجهيز — الطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
+  if(action==="prepare-order-complete")(async()=>{if(target.disabled)return;target.disabled=true;try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/complete`);closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast("تم التغليف وربط الفاتورة — الطلب ينتظر كود التتبع.");}catch(error){target.disabled=false;toast(error.message,"error");}})();
   if(action==="pack-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/pack/complete`);closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم التغليف والطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
 });
 document.addEventListener("submit", event => {
@@ -7594,8 +7657,11 @@ modalBody.addEventListener("click", event => {
 modalBody.addEventListener("change", event => {
   if(event.target.matches("[data-statement-date]")){applyStatementFilters();return;}
   if(event.target.matches("[data-preparation-book]")){
-    const orderId=modalTitle.textContent.replace(/^تجهيز\s+/,""),doneBookIds=[...modalBody.querySelectorAll("[data-preparation-book]:checked")].map(input=>input.dataset.preparationBook);
-    orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/prepare/checklist`,{method:"PATCH",body:{doneBookIds}}).then(()=>openPreparationOrder(orderId)).catch(error=>toast(error.message,"error"));
+    const sheet=event.target.closest("[data-packing-order]"),orderId=sheet?.dataset.packingOrder;
+    if(!orderId)return;
+    const controls=[...sheet.querySelectorAll("input,button")],doneBookIds=[...sheet.querySelectorAll("[data-preparation-book]:checked")].map(input=>input.dataset.preparationBook);
+    controls.forEach(control=>{control.disabled=true;});
+    orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/prepare/checklist`,{method:"PATCH",body:{doneBookIds}}).then(()=>{if(sheet.isConnected)openPreparationOrder(orderId);}).catch(error=>{if(sheet.isConnected)openPreparationOrder(orderId);toast(error.message,"error");});
     return;
   }
   if (event.target.closest("#sale-customer-return-form") && event.target.matches("[name='settlement']")) {
@@ -7671,6 +7737,15 @@ modalBody.addEventListener("change", event => {
 });
 
 modalBody.addEventListener("input", event => {
+  if(event.target.id==="packing-edit-search"){
+    const query=normalizeArabicDigits(event.target.value).trim().toLowerCase();
+    const matches=query?(data.books||[]).filter(book=>!book.deletedAt&&normalizeArabicDigits([book.name,book.barcode,book.sku,book.id].join(" ")).toLowerCase().includes(query)).slice(0,15):[];
+    document.getElementById("packing-edit-results").innerHTML=matches.map(book=>`<button type="button" class="btn ghost" data-action="packing-edit-add" data-id="${esc(book.id)}"><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.id)} · ${money(book.price||0)} · إضافة +</small></button>`).join("")||(query?"<p class=\"muted\">لا توجد نتائج مطابقة.</p>":"");return;
+  }
+  if(event.target.matches("[data-packing-field]")&&packingEditDraft&&!packingEditDraft.pending){
+    const line=packingEditDraft.lines[Number(event.target.dataset.index)],field=event.target.dataset.packingField;
+    if(line&&["qty","price"].includes(field)){line[field]=event.target.value;updatePackingEditTotals();}return;
+  }
   if (event.target.id === "sale-customer-modal-search") {
     const suggestions = document.getElementById("sale-customer-modal-suggestions");
     const matches = event.target.value.trim() ? searchCustomers(event.target.value) : (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);
@@ -7801,6 +7876,7 @@ modalBody.addEventListener("change", event => {
 modalBody.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){
     const payment=(data.orderPayments||[]).find(item=>item.id===formData.paymentId),originalCashMovement=(data.cash||[]).find(item=>item.paymentId===formData.paymentId||item.receiptId===formData.paymentId);

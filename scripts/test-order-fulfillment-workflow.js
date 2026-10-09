@@ -24,6 +24,18 @@ function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true,withSale=
   db.onlineOrders.push(order);if(withSale)db.sales.push(sale);else order.saleId=null;return order;
 }
 const prep=fixture(0,{stage:"awaiting_preparation",prepared:false});
+db.books.push({id:"B-PACK-QA",name:"كتاب تغليف QA",stock:10,reservedStock:2,price:100});
+db.inventoryBatches ||= [];
+db.inventoryBatches.push({id:"BAT-PACK-QA",productId:"B-PACK-QA",receivedQty:10,remainingQty:10,unitCost:10});
+const autoPrep=fixture(20,{stage:"awaiting_preparation",prepared:false,withSale:false});
+autoPrep.lines=[{bookId:"B-PACK-QA",qty:2,price:100,discount:10,discountType:"percent"}];
+autoPrep.total=250;autoPrep.paidAmount=50;
+autoPrep.inventoryReservation={status:"active",lines:[{bookId:"B-PACK-QA",qty:2}]};
+db.books.push({id:"B-EDIT-QA",name:"كتاب تعديل QA",stock:20,reservedStock:0,price:100});
+db.inventoryBatches.push({id:"BAT-EDIT-QA",productId:"B-EDIT-QA",receivedQty:20,remainingQty:20,unitCost:10});
+const editablePacking=fixture(21,{paid:100,stage:"preparing",prepared:false,withSale:false});
+editablePacking.preparingByUsername="owner";editablePacking.lines=[{bookId:"B-PACK-QA",qty:1,price:100,discount:0,discountType:"percent"}];
+editablePacking.preparationChecklist=[{bookId:"B-PACK-QA",qty:1,done:true}];
 for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
 const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
 const settledCancellable=fixture(12,{paid:670,stage:"awaiting_preparation",prepared:false,withSale:false});
@@ -37,8 +49,8 @@ const port=8935,child=spawn(process.execPath,["server-node.js"],{cwd:qa,env:{...
 let output="";child.stdout.on("data",d=>output+=d);child.stderr.on("data",d=>output+=d);
 const base=`http://127.0.0.1:${port}`;let token="";
 const pass=(ok,label)=>{if(!ok)throw new Error(label);console.log(`PASS ${label}`);};
-async function call(route,{method="GET",body,authToken=token}={}){
-  const response=await fetch(base+route,{method,headers:{...(authToken?{"X-Session-Token":authToken}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
+async function call(route,{method="GET",body,authToken=token,revision}={}){
+  const response=await fetch(base+route,{method,headers:{...(authToken?{"X-Session-Token":authToken}:{}),...(revision!==undefined?{"X-DB-Revision":String(revision)}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
   return {status:response.status,body:await response.json().catch(()=>({}))};
 }
 async function wait(){
@@ -61,6 +73,28 @@ async function wait(){
   pass(denied.status===403&&denied.body.code==="PERMISSION_DENIED","restricted user gets a clear 403 for reopen");
   pass(fs.readFileSync(dbPath,"utf8")===beforeAuthFailures,"403 order actions do not change data");
   const login=await call("/api/login",{method:"POST",body:{username:"owner",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"}});token=login.body.token;pass(login.status===200,"owner login");
+  const editRoute=`/api/orders/${editablePacking.id}/prepare/items`,readPacking=()=>JSON.parse(fs.readFileSync(dbPath,"utf8"));
+  const editLines=[{bookId:"B-PACK-QA",qty:2,price:100},{bookId:"B-EDIT-QA",qty:2,price:60}];
+  const beforeEdit=fs.readFileSync(dbPath,"utf8");
+  pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},authToken:"expired"})).status===401,"packing edit requires authentication");
+  pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},authToken:accountantLogin.body.token})).status===403,"packing edit requires existing order edit permission");
+  pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},revision:-1})).status===409,"packing edit rejects stale revision");
+  pass(fs.readFileSync(dbPath,"utf8")===beforeEdit,"unauthorized and stale edits leave snapshot unchanged");
+  const editedPacking=await call(editRoute,{method:"PATCH",body:{lines:editLines},revision:readPacking().meta?.dataRevision||0});
+  pass(editedPacking.status===200&&editedPacking.body.order.lines.length===2&&editedPacking.body.order.total===390,"packing editor adds book and updates quantities, prices and totals");
+  pass(editedPacking.body.order.preparationChecklist.every(row=>!row.done),"changed and added items need packing confirmation again");
+  const afterEdit=readPacking();
+  pass(afterEdit.books.find(row=>row.id==="B-PACK-QA").stock===10&&afterEdit.books.find(row=>row.id==="B-PACK-QA").reservedStock===4&&afterEdit.books.find(row=>row.id==="B-EDIT-QA").price===100,"edit changes reservation but not physical stock or catalog price");
+  pass(JSON.stringify(afterEdit.inventoryBatches)===JSON.stringify(JSON.parse(beforeEdit).inventoryBatches)&&JSON.stringify(afterEdit.sales)===JSON.stringify(JSON.parse(beforeEdit).sales)&&JSON.stringify(afterEdit.orderPayments)===JSON.stringify(JSON.parse(beforeEdit).orderPayments),"editing creates no invoice, payment or batch consumption");
+  await call(`/api/orders/${editablePacking.id}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:editLines.map(row=>row.bookId)}});
+  const changedPrice=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:[editLines[0],{...editLines[1],price:70}]}});
+  pass(changedPrice.body.order.preparationChecklist[0].done&&!changedPrice.body.order.preparationChecklist[1].done,"only the changed price resets its packing check");
+  const deletedLine=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:[{...editLines[1],price:70}]}});
+  pass(deletedLine.status===200&&deletedLine.body.order.lines.length===1&&readPacking().books.find(row=>row.id==="B-PACK-QA").reservedStock===2,"removing a line releases only that order reservation");
+  for(const lines of [[],[{bookId:"B-EDIT-QA",qty:0,price:70}],[{bookId:"B-EDIT-QA",qty:99,price:70}],[{bookId:"B-EDIT-QA",qty:1,price:0}],editLines.concat(editLines[0])]){
+    const snapshot=fs.readFileSync(dbPath,"utf8");
+    pass((await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines}})).status===409&&fs.readFileSync(dbPath,"utf8")===snapshot,"invalid, empty, duplicate, oversold or underpaid edit is blocked atomically");
+  }
   const cancelled=await call(`/api/orders/${cancellable.id}/cancel`,{method:"POST",body:{reason:"QA auth action"}});
   pass(cancelled.status===200&&cancelled.body.order.status==="ملغي"&&cancelled.body.order.workflowStage==="cancelled"&&cancelled.body.order.cancelledAt,"owner can cancel an order with terminal workflow state");
   const afterFirstCancel=JSON.parse(fs.readFileSync(dbPath,"utf8")),cancelAuditCount=(afterFirstCancel.audit||[]).filter(row=>row.entityId===cancellable.id&&row.action==="إلغاء الطلب وتحرير الحجز").length;
@@ -87,6 +121,27 @@ async function wait(){
   pass((await call(`/api/orders/${prep.id}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}})).status===200,"checklist reads current order item");
   const completed=await call(`/api/orders/${prep.id}/prepare/complete`,{method:"POST"});
   pass(completed.status===200&&completed.body.order.workflowStage==="awaiting_shipping"&&completed.body.order.preparedAt,"complete moves directly to ready shipping");
+  await call(`/api/orders/${autoPrep.id}/prepare/start`,{method:"POST"});
+  const uncheckedSnapshot=fs.readFileSync(dbPath,"utf8");
+  pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST"})).status===409,"unchecked books block packing and invoice");
+  pass(fs.readFileSync(dbPath,"utf8")===uncheckedSnapshot,"blocked packing leaves database unchanged");
+  await call(`/api/orders/${autoPrep.id}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:["B-PACK-QA"]}});
+  const beforePacking=fs.readFileSync(dbPath,"utf8");
+  pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",authToken:"expired-session-token"})).status===401,"packing requires authenticated session");
+  pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",authToken:accountantLogin.body.token})).status===403,"packing denies unauthorized users");
+  pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",revision:-1})).status>=400,"stale packing cannot commit its invoice");
+  pass(fs.readFileSync(dbPath,"utf8")===beforePacking,"401, 403 and stale revision preserve all data");
+  const autoCompleted=await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST"});
+  pass(autoCompleted.status===200&&autoCompleted.body.order.saleId&&autoCompleted.body.order.workflowStage==="awaiting_shipping","packing atomically creates invoice and moves to waiting tracking");
+  const packedDb=JSON.parse(fs.readFileSync(dbPath,"utf8")),invoice=packedDb.sales.find(row=>row.id===autoCompleted.body.order.saleId);
+  pass(invoice.total===250&&invoice.paidAmount===50&&invoice.remainingAmount===200,"automatic invoice preserves discounts, shipping and paid amount");
+  pass(packedDb.books.find(row=>row.id==="B-PACK-QA").stock===8&&packedDb.books.find(row=>row.id==="B-PACK-QA").reservedStock===0&&packedDb.inventoryBatches.find(row=>row.id==="BAT-PACK-QA").remainingQty===8,"stock, reservation and FIFO batches consumed once");
+  pass(!packedDb.shipments.some(row=>row.onlineOrderId===autoPrep.id),"packing never creates a shipment before tracking");
+  const packedSnapshot=fs.readFileSync(dbPath,"utf8");
+  const invoiceEdit=await call(`/api/orders/${autoPrep.id}/prepare/items`,{method:"PATCH",revision:packedDb.meta.dataRevision,body:{lines:[{bookId:"B-PACK-QA",qty:1,price:100}]}});
+  pass(invoiceEdit.status===409&&fs.readFileSync(dbPath,"utf8")===packedSnapshot,"issued invoice blocks packing edits without changing data");
+  const retry=await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST"});
+  pass(retry.body.existing===true&&fs.readFileSync(dbPath,"utf8")===packedSnapshot,"packing retry does not duplicate invoice, stock, balance or audit");
   pass((await call(`/api/orders/${prep.id}/prepare/start`,{method:"POST"})).status===409,"prepared order cannot start preparation again");
   const reopened=await call(`/api/orders/${prep.id}/prepare/reopen`,{method:"POST"});
   pass(reopened.status===200&&reopened.body.order.workflowStage==="awaiting_preparation"&&!reopened.body.order.preparedAt,"explicit reopen returns order to preparation");

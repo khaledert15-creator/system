@@ -13,6 +13,7 @@ const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
 const OrderRefunds = require("./app/order-refund.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
+const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
@@ -2783,6 +2784,45 @@ const server = http.createServer(async (req, res) => {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());if(user.username!=="owner"&&orderRole(user)!=="مالك")return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"هذه المعاينة متاحة للمالك فقط."});return send(res,200,{ok:true,preview:OrderRefunds.repairPreview(db),revision:dbRevision()});
     }
 
+    if (/^\/api\/orders\/[^/]+\/prepare\/items$/.test(route) && req.method === "PATCH") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const payload=JSON.parse(await readBody(req)||"{}"),db=ensureTrackingDb(readDb());
+      if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تعديل أصناف وأسعار الطلب."});
+      const expected=Number(req.headers["x-db-revision"]);
+      if(!Number.isInteger(expected)||expected!==dbRevision()*1)return send(res,409,{ok:false,code:"STALE_REVISION",message:"تغيرت البيانات. احتفظ بتعديلاتك وراجع أحدث نسخة قبل المحاولة مرة أخرى."});
+      const order=(db.onlineOrders||[]).find(item=>item.id===route.split("/")[3]&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.saleId||(db.sales||[]).some(sale=>sale.onlineOrderId===order.id||sale.operationKey===`order-invoice:${order.id}`)||order.shipmentId)return send(res,409,{ok:false,message:"صدرت فاتورة أو شحنة لهذا الطلب؛ لا يمكن تعديل الأصناف من التغليف."});
+      if(order.workflowStage!=="preparing"||order.preparedAt)return send(res,409,{ok:false,message:"يمكن تعديل الأصناف أثناء التغليف فقط."});
+      if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب قيد التغليف لدى موظف آخر."});
+      try{
+        if(!Array.isArray(payload.lines)||!payload.lines.length)throw new Error("أضف صنفًا واحدًا على الأقل.");
+        const seen=new Set(),beforeLines=order.lines||[],beforeMap=new Map(beforeLines.map(line=>[line.bookId,line]));
+        const lines=payload.lines.map(input=>{
+          const book=(db.books||[]).find(row=>row.id===input.bookId&&!row.deletedAt);
+          if(!book||seen.has(input.bookId))throw new Error("يوجد صنف غير صالح أو مكرر؛ عدّل كمية البند الموجود.");
+          seen.add(input.bookId);
+          const qty=OrderFinance.normalizeNumber(input.qty),price=OrderFinance.normalizeNumber(input.price);
+          if(!Number.isInteger(qty)||qty<=0||!Number.isFinite(price)||price<0||String(input.price??"").trim()==="")throw new Error("أدخل كمية صحيحة أكبر من صفر وسعرًا صالحًا.");
+          const previous=beforeMap.get(book.id);
+          const line=previous?{...previous}:{...quickOrderBookLine(db,book,{qty,discount:book.discount??book.saleDiscount??0,discountType:book.discountType==="amount"?"amount":"percent"},user)};
+          return {...line,bookId:book.id,qty,price};
+        });
+        const totals=quickOrderTotals(lines,requestedShippingFee(order),order.orderDiscount,order.orderDiscountType);
+        const paid=Math.max(Number(order.paidAmount||0),confirmedOrderPayments(db,order.id).reduce((sum,row)=>sum+Number(row.amount||0),0));
+        const payment=OrderFinance.calculatePayment(totals.total,paid);
+        const unchanged=lines.length===beforeLines.length&&lines.every((line,i)=>line.bookId===beforeLines[i].bookId&&line.qty===Number(beforeLines[i].qty)&&line.price===Number(beforeLines[i].price));
+        if(unchanged)return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+        reserveOrderInventory(db,order,user,lines);
+        const checked=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,item]));
+        const checklist=lines.map(line=>{const previous=beforeMap.get(line.bookId),check=checked.get(line.bookId);return {bookId:line.bookId,qty:line.qty,done:Boolean(check?.done&&Number(check.qty)===line.qty&&previous&&Number(previous.qty)===line.qty&&Number(previous.price)===line.price)};});
+        Object.assign(order,{lines:totals.lines,preparationChecklist:checklist,subtotal:totals.subtotal,subtotalBeforeDiscount:totals.subtotalBeforeDiscount,productDiscountTotal:totals.productDiscountTotal,discountTotal:totals.discountTotal,subtotalAfterDiscount:totals.goods,total:totals.total,paidAmount:payment.paidAmount,paymentStatus:payment.paymentStatus,remainingAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,updatedAt:new Date().toISOString()});
+        appendOrderAudit(db,user,order,"تعديل أصناف الطلب أثناء التغليف",JSON.stringify({before:beforeLines.map(({bookId,qty,price})=>({bookId,qty,price})),after:lines.map(({bookId,qty,price})=>({bookId,qty,price}))}));
+        writeDb(db,{expectedRevision:expected,operationType:"PACKING_ITEMS_EDIT",performedBy:user.username});
+        return send(res,200,{ok:true,order,revision:dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_EDIT_FAILED",message:error.message});}
+    }
+
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/start") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية بدء التجهيز."});
@@ -2822,21 +2862,25 @@ const server = http.createServer(async (req, res) => {
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إكمال التجهيز."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب محجوز لموظف آخر."});
-      if(!(order.preparationChecklist||[]).length||(order.preparationChecklist||[]).some(item=>!item.done))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
-      if(order.preparedAt&&order.workflowStage==="awaiting_shipping")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(!order.lines?.length||order.lines.some(line=>!(order.preparationChecklist||[]).some(item=>item.bookId===line.bookId&&Number(item.qty)===Number(line.qty)&&item.done)))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
+      if(order.preparedAt&&order.workflowStage==="awaiting_shipping"&&shippingOrderInvoice(db,order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(!["preparing","awaiting_shipping"].includes(order.workflowStage)||order.shipmentId)return send(res,409,{ok:false,message:"الطلب غير متاح لإكمال التغليف."});
+      try{ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",status:"تم التجهيز",preparedAt:order.preparedAt||now,preparedBy:order.preparedBy||user.name||user.username,preparedByUsername:order.preparedByUsername||user.username,packedAt:order.packedAt||now,packedBy:order.packedBy||user.name||user.username,updatedAt:now});
       db.notifications=db.notifications||[];if(!db.notifications.some(item=>item.key===`order-shipping-${order.id}`))db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} تم تجهيزه وتغليفه وهو جاهز للشحن`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
-      appendOrderAudit(db,user,order,"تم التجهيز — جاهز للشحن");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+      appendOrderAudit(db,user,order,"تم التغليف وإصدار الفاتورة",order.saleId);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKING_WITH_INVOICE",performedBy:user.username});return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/pack/complete") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تغليف الطلب."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.workflowStage==="awaiting_shipping"&&order.packedAt&&shippingOrderInvoice(db,order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       if(order.workflowStage!=="awaiting_packing")return send(res,409,{ok:false,message:"يجب إكمال التجهيز أولًا."});
+      try{ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",packedAt:now,packedBy:user.name||user.username,updatedAt:now});
       db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} جاهز لإنشاء الشحنة`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
-      appendOrderAudit(db,user,order,"اكتمال تغليف الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+      appendOrderAudit(db,user,order,"اكتمال تغليف الطلب",order.saleId);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKING_WITH_INVOICE",performedBy:user.username});return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/reopen") && req.method === "POST") {

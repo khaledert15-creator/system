@@ -1,0 +1,43 @@
+"use strict";
+const assert=require("assert/strict"),fs=require("fs"),vm=require("vm");
+const {ensurePackingInvoice}=require("../app/order-packing-invoice.js");
+const Finance=require("../app/order-finance.js");
+function fixture(){return {books:[{id:"B",name:"كتاب",stock:5,reservedStock:2}],inventoryBatches:[{id:"BAT",productId:"B",remainingQty:5,unitCost:10}],customers:[{id:"C",balance:0}],sales:[],stockMovements:[],orderPayments:[{id:"PAY",orderId:"O",amount:20}],onlineOrders:[{id:"O",customerId:"C",lines:[{bookId:"B",qty:2,price:100,discount:10,discountType:"amount",discountScope:"unit"}],shippingFee:30,orderDiscount:10,orderDiscountType:"amount",paidAmount:20,inventoryReservation:{status:"active",lines:[{bookId:"B",qty:2}]}}]};}
+const actor={username:"packer",name:"موظف التغليف"},id=()=>"INV-QA";
+const db=fixture(),sale=ensurePackingInvoice(db,db.onlineOrders[0],actor,id);
+assert.equal(sale.total,200);assert.equal(sale.remaining,180);assert.equal(db.customers[0].balance,180);assert.equal(db.orderPayments[0].invoiceId,sale.id);
+const snapshot=JSON.stringify(db);ensurePackingInvoice(db,db.onlineOrders[0],actor,id);assert.equal(JSON.stringify(db),snapshot);
+for(const modify of [d=>d.books[0].stock=1,d=>d.inventoryBatches[0].remainingQty=1,d=>d.onlineOrders[0].lines[0].price=1,d=>d.onlineOrders[0].lines[0].qty=0,d=>d.customers=[]]){
+  const source=fixture();modify(source);const before=JSON.stringify(source),candidate=structuredClone(source);
+  assert.throws(()=>ensurePackingInvoice(candidate,candidate.onlineOrders[0],actor,id));assert.equal(JSON.stringify(source),before);
+}
+const source=fs.readFileSync(require.resolve("../app/app.js"),"utf8"),start=source.indexOf("async function openPreparationOrder("),end=source.indexOf("\nfunction finishPreparationModal",start);
+const uiDb=fixture(),uiSnapshot=JSON.stringify(uiDb);let html="";
+const context={canAction:()=>true,getOnlineOrder:()=>uiDb.onlineOrders[0],getBook:()=>uiDb.books[0],currentUser:actor,onlineOrderTotals:(lines,orderDiscount,orderDiscountType,shippingCost)=>Finance.calculateOrder(lines,{orderDiscount,orderDiscountType,shippingCost}),orderShippingFee:()=>30,esc:value=>String(value??""),money:value=>String(value),openModal:(_title,_sub,body)=>{html=body;},toast:message=>{throw new Error(message);}};
+vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+(async()=>{
+  await context.openPreparationOrder("O");
+  assert.match(html,/data-preparation-book="B"/);assert.match(html,/packing-columns/);assert.match(html,/إتمام التغليف وإصدار الفاتورة/);assert.match(html,/data-action="prepare-order-complete"[^>]*disabled/);
+  assert.equal(JSON.stringify(uiDb),uiSnapshot);
+  uiDb.onlineOrders[0].preparationChecklist=[{bookId:"B",qty:2,done:true}];await context.openPreparationOrder("O");
+  assert.match(html,/packing-line is-packed/);assert.doesNotMatch(html,/data-action="prepare-order-complete"[^>]*disabled/);
+  const elements=new Map(),submit={disabled:false},controls=[submit,{disabled:false}];
+  const form={isConnected:true,querySelector:()=>submit,querySelectorAll:()=>controls};
+  elements.set("packing-edit-form",form);
+  context.document={getElementById:id=>{if(!elements.has(id))elements.set(id,{innerHTML:"",textContent:""});return elements.get(id);}};
+  context.structuredClone=structuredClone;context.dbRevision=42;context.OrderFinance=Finance;
+  let requests=0,submitted;const notices=[];
+  context.toast=(message,type)=>notices.push({message,type});
+  context.orderWorkflowRequest=async(path,options)=>{requests++;submitted={path,...options};throw new Error("اختبار فشل الحفظ");};
+  const editSnapshot=JSON.stringify(uiDb);
+  context.openPackingEditor("O");assert.equal(requests,0);
+  vm.runInContext('packingEditDraft.lines[0].qty="3";packingEditDraft.lines[0].price="120";',context);
+  assert.equal(context.updatePackingEditTotals(),true);assert.equal(JSON.stringify(uiDb),editSnapshot);
+  await context.savePackingEdit(form);
+  assert.equal(requests,1);assert.equal(submitted.revision,42);assert.equal(submitted.body.lines[0].qty,"3");
+  assert.equal(vm.runInContext('packingEditDraft.lines[0].price',context),"120");
+  assert.equal(vm.runInContext('packingEditDraft.pending',context),false);
+  assert.equal(JSON.stringify(uiDb),editSnapshot);assert.ok(notices.every(row=>row.type==="error"));
+  console.log("PASS editor keeps source untouched, uses captured revision and retains draft without success on save failure");
+  console.log("PASS packing invoice totals, payment linking, idempotency, validation failures, checklist rendering and read-only modal");
+})().catch(error=>{console.error(error);process.exitCode=1;});
