@@ -933,8 +933,29 @@ function startShipmentAutoRefresh() {
 }
 
 async function initializeDatabase() {
+  const retryDelays = [0, 350, 900];
   try {
-    const response = await fetch("/api/db", { headers: authHeaders(), cache: "no-store" });
+    let response;
+    let lastError;
+    for (const delay of retryDelays) {
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      try {
+        response = await fetch("/api/db", { headers: authHeaders(), cache: "no-store" });
+        if (response.status !== 502 && response.status !== 503 && response.status !== 504) break;
+        lastError = new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!response) throw lastError || new Error("تعذر الاتصال بالخادم.");
+    if (response.status === 401) {
+      sessionStorage.removeItem(SESSION_KEY);
+      sessionToken = "";
+      currentUser = null;
+      serverConnected = false;
+      showLogin("تم تحديث النظام وانتهت جلسة الدخول. سجّل الدخول مرة أخرى للمتابعة بأمان.");
+      return;
+    }
     if (response.ok) {
       dbRevision = response.headers.get("X-DB-Revision") || "";
       const remote = await response.json();
@@ -976,7 +997,7 @@ async function initializeDatabase() {
     updateDashboardShipmentCard(false);
     startShipmentAutoRefresh();
     openRequestedDialog();
-    toast("تعذر الاتصال بقاعدة البيانات المحلية؛ تم تفعيل الحفظ الاحتياطي داخل المتصفح.", "error");
+    toast("تعذر الاتصال بالخادم بعد عدة محاولات؛ لم يتم حفظ أو تغيير أي بيانات. حدّث الصفحة ثم سجّل الدخول مرة أخرى.", "error");
     scheduleSelfTest();
   }
 }
