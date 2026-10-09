@@ -12,6 +12,7 @@ const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
 const OrderRefunds = require("./app/order-refund.js");
+const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
@@ -464,7 +465,7 @@ function shippingOrderInvoice(db, order) {
 }
 
 function shipmentForOnlineOrder(db, order) {
-  return (db.shipments||[]).find(shipment=>!shipment.deletedAt&&(shipment.id===order.shipmentId||shipment.onlineOrderId===order.id))||null;
+  return (db.shipments||[]).find(shipment=>!shipment.deletedAt&&!shipment.cancelledAt&&shipment.shippingStatus!=="cancelled"&&(shipment.id===order.shipmentId||shipment.onlineOrderId===order.id))||null;
 }
 
 function createReadyOrderShipment(db,order,payload,user) {
@@ -501,6 +502,32 @@ function createReadyOrderShipment(db,order,payload,user) {
   Object.assign(order,{shipmentId:shipment.id,tracking:trackingNumber,trackingNumber,status:"تم الشحن",workflowStage:"shipped",shippedAt:shipment.shippedAt,shippedBy:user.name||user.username,shippedByUsername:user.username,amountDueAtDelivery:payment.remainingAmount,updatedAt:now});
   appendOrderAudit(db,user,order,"تأكيد شحن الطلب",`${company} · ${trackingNumber}`);
   return shipment;
+}
+
+function shipmentImportPreview(db, packageRows=[]) {
+  const ready=(db.onlineOrders||[]).filter(order=>!order.deletedAt&&order.workflowStage==="awaiting_shipping"&&order.preparedAt&&!order.shipmentId);
+  const usedOrders=new Set(),usedTracking=new Set();
+  return packageRows.map((row,index)=>{
+    let order=row.orderId?(db.onlineOrders||[]).find(item=>String(item.id).toUpperCase()===row.orderId):null;
+    let matchedBy=order?"order-reference":"";
+    if(!order){
+      const candidates=ready.filter(item=>ShippingBatchXlsx.normalizePhone(item.phone)===row.phone&&Math.abs(Math.max(0,Number(item.total||0)-Number(item.paidAmount||0))-Number(row.cod||0))<0.01);
+      if(candidates.length===1){order=candidates[0];matchedBy="phone-and-cod";}
+      else if(candidates.length>1)return {...row,rowNumber:index+5,ok:false,code:"AMBIGUOUS_MATCH",message:"يوجد أكثر من طلب بنفس الهاتف ومبلغ التحصيل."};
+    }
+    let message="",code="",ok=true;
+    if(!row.trackingNumber){ok=false;code="TRACKING_MISSING";message="كود التتبع غير موجود.";}
+    else if(!order){ok=false;code="ORDER_NOT_FOUND";message="تعذر ربط السجل بطلب منتظر.";}
+    else if(order.deletedAt||order.workflowStage!=="awaiting_shipping"||!order.preparedAt){ok=false;code="ORDER_NOT_READY";message="الطلب غير موجود في قائمة انتظار كود التتبع.";}
+    else if(!order.saleId){ok=false;code="INVOICE_REQUIRED";message="يجب إنشاء فاتورة الطلب أولًا.";}
+    else if(order.shipmentId){ok=false;code="ORDER_ALREADY_SHIPPED";message="الطلب مشحون بالفعل.";}
+    else if(usedOrders.has(order.id)){ok=false;code="DUPLICATE_ORDER";message="الطلب مكرر داخل الملف.";}
+    else if(usedTracking.has(row.trackingNumber)||(db.shipments||[]).some(item=>!item.deletedAt&&normalizeTrackingNumber(item.trackingNumber||item.tracking)===row.trackingNumber)){ok=false;code="TRACKING_ALREADY_USED";message="كود التتبع مستخدم من قبل.";}
+    else if(ShippingBatchXlsx.normalizePhone(order.phone)!==row.phone){ok=false;code="PHONE_MISMATCH";message="رقم الهاتف لا يطابق الطلب.";}
+    else if(Math.abs(Math.max(0,Number(order.total||0)-Number(order.paidAmount||0))-Number(row.cod||0))>=0.01){ok=false;code="COD_MISMATCH";message="مبلغ التحصيل لا يطابق الطلب.";}
+    if(order)usedOrders.add(order.id);if(row.trackingNumber)usedTracking.add(row.trackingNumber);
+    return {...row,rowNumber:index+5,orderId:order?.id||row.orderId||"",matchedBy,ok,code,message};
+  });
 }
 
 function normalizeCollectionTracking(value="") {
@@ -2764,7 +2791,9 @@ const server = http.createServer(async (req, res) => {
       if(order.preparingByUsername&&order.preparingByUsername!==user.username&&!order.preparedAt)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`بدأ ${order.preparingBy} تجهيز الطلب بالفعل.`,order});
       if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب غير متاح للتجهيز."});
       const previousDone=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)]));
-      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"preparing",preparingBy:user.name||user.username,preparingByUsername:user.username,preparingAt:order.preparingAt||now,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:previousDone.get(line.bookId)||false})),updatedAt:now});
+      const now=new Date().toISOString(),resolvedIssue=order.workflowStage==="needs_review"?order.preparationIssue:null;
+      Object.assign(order,{status:"قيد التجهيز",workflowStage:"preparing",preparingBy:user.name||user.username,preparingByUsername:user.username,preparingAt:order.preparingAt||now,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:previousDone.get(line.bookId)||false})),updatedAt:now});
+      if(resolvedIssue){order.preparationIssueHistory=[...(order.preparationIssueHistory||[]),{...resolvedIssue,resolvedAt:now,resolvedBy:user.name||user.username}];delete order.preparationIssue;}
       appendOrderAudit(db,user,order,"بدء تجهيز الطلب");writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
@@ -2830,6 +2859,29 @@ const server = http.createServer(async (req, res) => {
       catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message,shipmentId:error.shipmentId});}
     }
 
+    if (route === "/api/orders/shipping/export" && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تصدير طلبات الشحن."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),ids=[...new Set((payload.orderIds||[]).map(value=>String(value).trim()).filter(Boolean))];
+        if(!ids.length)return send(res,400,{ok:false,message:"حدد طلبًا واحدًا على الأقل."});
+        const orders=ids.map(id=>(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt));
+        const invalid=orders.map((order,index)=>!order?ids[index]:order.workflowStage!=="awaiting_shipping"||!order.preparedAt||order.shipmentId||!order.saleId?order.id:null).filter(Boolean);
+        if(invalid.length)return send(res,409,{ok:false,code:"ORDERS_NOT_EXPORTABLE",message:`هذه الطلبات غير جاهزة للتصدير: ${invalid.join("، ")}`});
+        const now=new Date().toISOString(),batchId=`SHIP-EXPORT-${now.replace(/\D/g,"").slice(0,14)}-${crypto.randomUUID().slice(0,8)}`;
+        const rows=orders.map(order=>ShippingBatchXlsx.orderToUploadRow(order,{books:db.books||[],merchantName:payload.merchantName||"مكتبة دوت كوم",warehouseName:payload.warehouseName||"المخزن الرئيسي"}));
+        for(const order of orders){order.shippingExport={batchId,exportedAt:now,exportedBy:user.name||user.username,exportedByUsername:user.username};order.updatedAt=now;appendOrderAudit(db,user,order,"تصدير الطلب لشركة الشحن",batchId);}
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SHIPPING_BATCH_EXPORTED",performedBy:user.username});
+        return send(res,200,ShippingBatchXlsx.workbookBuffer(rows),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",{"Content-Disposition":`attachment; filename="shipping-batch-${now.slice(0,10)}.xlsx"`,"X-Shipping-Batch-Id":batchId,"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPPING_EXPORT_FAILED",message:error.message});}
+    }
+
+    if (route === "/api/orders/shipping/import-preview" && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية استيراد أكواد التتبع."});
+      try{const payload=JSON.parse(await readBody(req)||"{}"),base64=String(payload.fileBase64||"");if(!base64||base64.length>20_000_000)return send(res,400,{ok:false,message:"اختر ملف Packages صالحًا وحجمه أقل من 15MB."});const rows=shipmentImportPreview(db,ShippingBatchXlsx.packageRows(Buffer.from(base64,"base64")));return send(res,200,{ok:true,rows,summary:{total:rows.length,valid:rows.filter(row=>row.ok).length,review:rows.filter(row=>!row.ok).length},revision:dbRevision()});}catch(error){return send(res,400,{ok:false,code:"PACKAGES_IMPORT_INVALID",message:error.message});}
+    }
+
     if (route === "/api/orders/shipping/batch" && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلبات."});
@@ -2841,6 +2893,34 @@ const server = http.createServer(async (req, res) => {
       }
       if(results.some(row=>row.ok))writeDb(db);
       return send(res,200,{ok:true,results,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/shipping/shipments/") && route.endsWith("/cancel") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"delete-shipment")&&!canOrderAction(db,user,"order.shipping"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية إلغاء الشحنة."});
+      const id=route.split("/")[4],shipment=(db.shipments||[]).find(item=>item.id===id&&!item.deletedAt);if(!shipment)return send(res,404,{ok:false,message:"الشحنة غير موجودة."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),reason=String(payload.reason||"").trim(),resolution=String(payload.resolution||"");
+        if(payload.carrierCancelled!==true)return send(res,409,{ok:false,code:"CARRIER_CANCELLATION_CONFIRMATION_REQUIRED",message:"ألغِ الشحنة من نظام شركة الشحن أولًا ثم فعّل مربع التأكيد."});
+        if(!reason)return send(res,400,{ok:false,message:"اكتب سبب إلغاء الشحنة."});
+        if(!["revise_shipment","cancel_order"].includes(resolution))return send(res,400,{ok:false,message:"اختر تعديل الشحنة أو إلغاء الطلب بالكامل."});
+        const order=(db.onlineOrders||[]).find(item=>item.id===shipment.onlineOrderId),sale=(db.sales||[]).find(item=>item.id===(shipment.invoiceId||shipment.orderId));
+        if(!order)return send(res,409,{ok:false,message:"تعذر العثور على الطلب المرتبط بالشحنة."});
+        if(resolution==="cancel_order"){
+          const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الطلب بالكامل قبل تسوية المبلغ المدفوع.",financial});
+          if(sale&&!sale.cancelledAt&&sale.status!=="ملغاة"){
+            const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إلغاء طلب بعد إلغاء الشحنة لدى شركة الشحن",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username,shipmentId:null,updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED_AFTER_SHIPMENT_CANCELLATION",action:"إبطال فاتورة بعد إلغاء الشحنة",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:reason});
+          }
+        }
+        const now=new Date().toISOString(),tracking=shipment.trackingNumber||shipment.tracking||"";
+        Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:resolution,updatedAt:now,updated:now});
+        order.previousTrackingNumbers=[...(order.previousTrackingNumbers||[]),{trackingNumber:tracking,shipmentId:shipment.id,cancelledAt:now,reason}];
+        if(resolution==="revise_shipment")Object.assign(order,{shipmentId:null,tracking:"",trackingNumber:"",status:"تم التجهيز",workflowStage:"awaiting_shipping",shippedAt:null,shippedBy:null,shippingExport:null,updatedAt:now});
+        else Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,updatedAt:now});
+        if(sale&&resolution==="revise_shipment"){sale.shipmentId=null;sale.updatedAt=now;}
+        appendOrderAudit(db,user,order,resolution==="revise_shipment"?"إلغاء الشحنة لإعادة التعديل":"إلغاء الشحنة والطلب",`${tracking} · ${reason}`);
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SHIPMENT_CANCELLED",performedBy:user.username});return send(res,200,{ok:true,order,shipment,resolution,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPMENT_CANCELLATION_FAILED",message:error.message,financial:error.financial});}
     }
 
     if (route.startsWith("/api/shipping/shipments/") && route.endsWith("/status") && req.method === "PATCH") {

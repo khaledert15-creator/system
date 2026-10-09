@@ -201,6 +201,8 @@ let onlineOrdersMode = "orders";
 let shippingSessionCompany = "";
 let quickShippingOrderId = "";
 let batchShippingPreviewRows = [];
+let shippingExportSelection = new Set();
+let shippingFileImportRows = [];
 const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
@@ -3291,18 +3293,17 @@ function workflowModeTabs(active="orders") {
   const tabs=[
     ["orders","كل الطلبات",true],
     ["quick","طلب واتساب سريع",canAction("order.quick.create")],
-    ["preparation","قائمة التجهيز",canAction("order.prepare")],
-    ["ready-shipping","جاهز للشحن",canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping")],
-    ["quick-shipping","الشحن السريع",canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping")]
+    ["preparation","يحتاج تغليف",canAction("order.prepare")],
+    ["ready-shipping","مغلف وينتظر كود التتبع",canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping")]
   ];
   return `<div class="online-order-mode-tabs">${tabs.filter(([, ,visible])=>visible).map(([mode,label])=>`<button class="tab ${active===mode?"active":""}" data-action="online-orders-mode" data-mode="${mode}">${label}${mode==="ready-shipping"&&readyShippingOrders().length?` <b>${readyShippingOrders().length}</b>`:""}</button>`).join("")}</div>`;
 }
 
 function renderPreparationQueue() {
   const rows=preparationOrders();
-  const awaiting=rows.filter(order=>["awaiting_preparation","needs_review"].includes(order.workflowStage)),active=rows.filter(order=>order.workflowStage==="preparing");
-  const cards=list=>list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),payText=pay.paymentStatus==="paid"?"💰 مدفوع بالكامل":pay.paidAmount>0?`💰 مقدم ${money(pay.paidAmount)} · متبقي ${money(pay.remainingAmount)}`:`💵 الدفع عند الاستلام · ${money(pay.remainingAmount)}`;return `<article class="card preparation-card"><div class="card-header"><div><span class="eyebrow">${order.source==="whatsapp"?"واتساب":"الموقع"}</span><h3>${esc(order.id)}</h3><p>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</p></div>${badge(order.workflowStage==="needs_review"?"يحتاج مراجعة":order.workflowStage==="preparing"?"قيد التجهيز":"بانتظار التجهيز",order.workflowStage==="needs_review"?"danger":"warning")}</div><p><strong>${esc(order.customerName)}</strong> · ${order.lines?.length||0} كتاب · ${units} قطعة</p><div class="preparation-payment">${payText}</div><p class="muted">${order.workflowStage==="preparing"?`يجهزه: ${esc(order.preparingBy||"—")}`:`أنشأه: ${esc(order.createdBy||"—")}`}</p><div class="form-actions"><button class="btn" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"فتح التجهيز":"بدء التجهيز"}</button></div></article>`}).join("")||`<div class="empty-state compact">لا توجد طلبات في هذه المرحلة.</div>`;
-  return `${workflowModeTabs("preparation")}<div class="section-title"><div><h2>قائمة التجهيز</h2><p>كل طلب يظهر في Queue واحدة، والكتب تُقرأ مباشرة من الطلب الأصلي.</p></div></div><section class="workflow-queue"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>بانتظار التجهيز</h3></div><b>${awaiting.length}</b></div><div class="preparation-grid">${cards(awaiting)}</div></section><section class="workflow-queue"><div class="workflow-queue-title"><div><span class="queue-dot active"></span><h3>قيد التجهيز</h3></div><b>${active.length}</b></div><div class="preparation-grid">${cards(active)}</div></section>`;
+  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}"><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${order.preparationIssue?`<small class="text-danger">${esc(order.preparationIssue.reason)}</small>`:""}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
+  const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
+  return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>يحتاج تغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
 
 async function orderWorkflowRequest(path,{method="POST",body}={}) {
@@ -3457,12 +3458,13 @@ function shippingLookupOrder(value="") {
 function readyShippingRow(order) {
   const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),units=(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0);
   const shipment=data.shipments.find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
-  return `<tr><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">الفاتورة مطلوبة</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")}</small></td><td>${units}</td><td>${money(order.total||0)}</td><td>${money(payment.paidAmount)}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"COD":"مدفوع بالكامل"}</small></td><td>${arabicDateTimeLabel(order.preparedAt)}</td><td>${shipment?`<strong>تم الشحن</strong><small dir="ltr">${esc(shipment.trackingNumber||shipment.tracking)}</small>`:`<div class="row-actions">${!order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`:`<button class="btn compact" data-action="ship-ready-order" data-id="${order.id}">تم الشحن</button>`}<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة فتح للتجهيز</button></div>`}</td></tr>`;
+  return `<tr><td><input type="checkbox" data-shipping-export="${order.id}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم إرساله للشركة</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}</td><td>${shipment?`<strong>تم الشحن</strong>`:`<div class="row-actions">${!order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`:`<button class="row-action" data-action="ship-ready-order" data-id="${order.id}">إدخال كود يدويًا</button>`}<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة للتغليف</button></div>`}</td></tr>`;
 }
 
 function renderReadyShippingQueue() {
   const rows=readyShippingOrders();
-  return `${workflowModeTabs("ready-shipping")}<div class="section-title"><div><span class="eyebrow">التشغيل اليومي</span><h2>جاهز للشحن</h2><p>طلبات تم تجميعها ومراجعتها وتغليفها، ولا تظهر مرة أخرى في التجهيز.</p></div><button class="btn" data-action="online-orders-mode" data-mode="quick-shipping">فتح الشحن السريع</button></div><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>الإجمالي</th><th>المدفوع</th><th>المطلوب COD</th><th>انتهاء التجهيز</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد طلبات جاهزة للشحن.</td></tr>`}</tbody></table></div></article>`;
+  const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId).length,validImported=shippingFileImportRows.filter(row=>row.ok).length;
+  return `${workflowModeTabs("ready-shipping")}<div class="section-title fulfillment-title"><div><span class="eyebrow">شركة الشحن</span><h2>مغلف وينتظر كود التتبع</h2><p>صدّر الطلبات، ارفعها إلى شركة الشحن، ثم استورد ملف Packages. الكود يعني أن الطلب تم شحنه.</p></div><div class="fulfillment-counters"><b>${rows.length}<small>بانتظار الكود</small></b><b class="success">${selected}<small>محدد للتصدير</small></b></div></div><article class="card shipping-batch-toolbar"><div class="shipping-step"><b>1</b><span><strong>تصدير الطلبات</strong><small>ملف مطابق لقالب شركة الشحن</small></span><button class="btn secondary" data-action="shipping-select-all">تحديد الجاهز</button><button class="btn" data-action="shipping-export-xlsx" ${selected?"":"disabled"}>تحميل أسماء الشحنات (${selected})</button></div><div class="shipping-step"><b>2</b><span><strong>استيراد الأكواد وإتمام الشحن</strong><small>اختر ملف Packages بعد رفع الشحنات</small></span><label class="btn secondary file-button">اختيار Packages.xlsx<input id="shipping-packages-file" type="file" accept=".xlsx" hidden></label><button class="btn" data-action="shipping-import-confirm" ${validImported?"":"disabled"}>اعتماد ${validImported} شحنة سليمة</button></div>${shippingFileImportRows.length?batchShippingPreviewMarkup(shippingFileImportRows):""}</article><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" data-shipping-export-all aria-label="تحديد الكل"></th><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>المطلوب تحصيله</th><th>حالة التصدير</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="7" class="text-center muted">لا توجد طلبات مغلفة تنتظر كود التتبع.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function quickShippingOrderCard(order) {
@@ -3496,6 +3498,24 @@ function renderQuickShippingScreen() {
 
 function batchShippingPreviewMarkup(rows) {
   return `<div class="batch-preview-list">${rows.map(row=>`<div class="${row.ok?"valid":"invalid"}"><b>${row.ok?"✓":"✕"}</b><span><strong>${esc(row.orderId||"—")}</strong><small dir="ltr">${esc(row.trackingNumber||"—")}</small></span><em>${esc(row.ok?"جاهز للشحن":row.message)}</em></div>`).join("")}</div>`;
+}
+
+async function exportShippingCompanyFile(){
+  const orderIds=readyShippingOrders().filter(order=>shippingExportSelection.has(order.id)&&order.saleId).map(order=>order.id);
+  if(!orderIds.length)return toast("حدد طلبًا جاهزًا وله فاتورة أولًا.","error");
+  const response=await fetch("/api/orders/shipping/export",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({orderIds})});
+  if(!response.ok){const result=await response.json().catch(()=>({}));throw new Error(result.message||"تعذر إنشاء ملف شركة الشحن.");}
+  dbRevision=response.headers.get("X-DB-Revision")||dbRevision;const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`shipping-batch-${today()}.xlsx`;document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);shippingExportSelection.clear();await reloadRemoteData();renderOnlineOrders();toast(`تم إنشاء ملف ${orderIds.length} شحنة وتسجيل دفعة التصدير.`);
+}
+
+async function previewShippingPackagesFile(file){
+  if(!file)return;const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||"").split(",")[1]||"");reader.onerror=()=>reject(new Error("تعذر قراءة الملف."));reader.readAsDataURL(file);});
+  const response=await fetch("/api/orders/shipping/import-preview",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json"}),body:JSON.stringify({fileBase64:base64})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.message||"تعذر تحليل ملف Packages.");shippingFileImportRows=result.rows||[];renderOnlineOrders();toast(`تمت مراجعة ${result.summary?.total||0} سجل: ${result.summary?.valid||0} جاهز و${result.summary?.review||0} يحتاج مراجعة.`);
+}
+
+async function confirmShippingPackagesImport(button){
+  const rows=shippingFileImportRows.filter(row=>row.ok).map(row=>({orderId:row.orderId,trackingNumber:row.trackingNumber}));if(!rows.length)return toast("لا توجد شحنات سليمة للاعتماد.","error");button.disabled=true;const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  try{const response=await fetch("/api/orders/shipping/batch",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({company,rows})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.message||"تعذر اعتماد الشحنات.");dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;await reloadRemoteData();const saved=result.results.filter(row=>row.ok).length,failed=result.results.length-saved;shippingFileImportRows=[];renderOnlineOrders();toast(`تم شحن ${saved} طلب ونقله إلى قائمة الشحن${failed?` · ${failed} يحتاج مراجعة`:""}.`);}catch(error){button.disabled=false;toast(error.message,"error");}
 }
 
 function shipReadyOrderModal(id) {
@@ -4356,7 +4376,7 @@ function shipmentsTable(list) {
     const trackingAction = isTerminalShipment(item)
       ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span><button class="row-action primary action-update" type="button" disabled aria-disabled="true"><span aria-hidden="true">✓</span> تحديث إلكتروني</button>`
       : `<button class="row-action primary action-update" data-action="update-tracking-now" data-id="${item.id}"><span aria-hidden="true">↻</span> تحديث إلكتروني</button>`;
-    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}${complaintSummary}</td><td><div class="shipping-row-actions">${trackingAction}<button class="row-action action-status" data-action="edit-shipment-status" data-id="${item.id}"><span aria-hidden="true">✎</span> تعديل الحالة</button><button class="row-action complaint-action action-complaint" data-action="add-shipment-complaint" data-id="${item.id}"><span aria-hidden="true">＋</span> إضافة شكوى</button><button class="row-action action-history" data-action="shipment-history" data-id="${item.id}"><span aria-hidden="true">◷</span> سجل التتبع</button><button class="row-action action-history" data-action="shipment-complaints" data-id="${item.id}"><span aria-hidden="true">▤</span> سجل الشكاوى${shipmentComplaints(item.id).length ? ` (${shipmentComplaints(item.id).length})` : ""}</button><details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="delete-shipment" data-id="${item.id}">حذف</button></div></details></div></td></tr>`;
+    return `<tr data-record-type="shipment" data-record-id="${item.id}"><td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><br><span class="muted">${esc(item.invoiceId || item.id)}</span></td><td><strong>${esc(item.customerName || item.customer || "—")}</strong><br><span class="muted">${esc(item.customerPhone || item.phone || "")}</span></td><td><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong></td><td>${esc(item.carrier || item.company || "—")}</td><td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td><td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error">تعذر آخر تحديث</span>` : ""}${complaintSummary}</td><td><div class="shipping-row-actions">${trackingAction}<button class="row-action action-status" data-action="edit-shipment-status" data-id="${item.id}"><span aria-hidden="true">✎</span> تعديل الحالة</button><button class="row-action complaint-action action-complaint" data-action="add-shipment-complaint" data-id="${item.id}"><span aria-hidden="true">＋</span> إضافة شكوى</button><button class="row-action action-history" data-action="shipment-history" data-id="${item.id}"><span aria-hidden="true">◷</span> سجل التتبع</button><button class="row-action action-history" data-action="shipment-complaints" data-id="${item.id}"><span aria-hidden="true">▤</span> سجل الشكاوى${shipmentComplaints(item.id).length ? ` (${shipmentComplaints(item.id).length})` : ""}</button><details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد</summary><div><button class="row-action" data-action="update-shipment" data-id="${item.id}">تعديل بيانات الشحنة</button><button class="row-action" data-action="copy-tracking-code" data-id="${item.id}">نسخ رقم التتبع</button>${debugButton}<button class="row-action text-danger" data-action="cancel-shipment-flow" data-id="${item.id}">إلغاء الشحنة</button></div></details></div></td></tr>`;
   }).join("") || `<tr><td colspan="7" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
 
@@ -6457,6 +6477,17 @@ document.addEventListener("input", event => {
 }, true);
 document.addEventListener("change", event => {
   const input = event.target;
+  if(input.matches?.("[data-shipping-export]")){
+    if(input.checked)shippingExportSelection.add(input.dataset.shippingExport);else shippingExportSelection.delete(input.dataset.shippingExport);
+    renderOnlineOrders();return;
+  }
+  if(input.matches?.("[data-shipping-export-all]")){
+    shippingExportSelection.clear();if(input.checked)for(const order of readyShippingOrders())if(order.saleId)shippingExportSelection.add(order.id);
+    renderOnlineOrders();return;
+  }
+  if(input.id==="shipping-packages-file"){
+    previewShippingPackagesFile(input.files?.[0]).catch(error=>toast(error.message,"error"));return;
+  }
   if (!configureNumericInput(input)) return;
   input.value = sanitizeNumericInputValue(input, { commit:true });
 }, true);
@@ -6564,7 +6595,16 @@ root.addEventListener("click", async event => {
   if (action === "sales-stat") showSalesStatDetails(target.dataset.stat);
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
+  if(action==="shipping-select-all"){
+    for(const order of readyShippingOrders())if(order.saleId)shippingExportSelection.add(order.id);
+    renderOnlineOrders();
+  }
+  if(action==="shipping-export-xlsx"){
+    target.disabled=true;exportShippingCompanyFile().catch(error=>{target.disabled=false;toast(error.message,"error");});
+  }
+  if(action==="shipping-import-confirm")confirmShippingPackagesImport(target);
   if (action === "ship-ready-order") shipReadyOrderModal(target.dataset.id);
+  if(action==="cancel-shipment-flow")cancelShipmentFlowModal(target.dataset.id);
   if (action === "reopen-order-preparation") {
     if(confirm("تم تجهيز هذا الطلب بالفعل. إعادة فتحه ستعيده إلى مرحلة التجهيز لمراجعة محتويات الطرد."))orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/reopen`).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast("تمت إعادة فتح الطلب للتجهيز.");}).catch(error=>toast(error.message,"error"));
   }
@@ -8037,6 +8077,12 @@ modalBody.addEventListener("submit", async event => {
       cost: Math.max(0, Number(normalizeArabicNumericText(formData.cost)) || 0)
     });
     return;
+  }
+  if(form.id==="shipment-cancellation-form"){
+    const button=form.querySelector('button[type="submit"]'),payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:formData.resolution,reason:String(formData.reason||"").trim()};
+    if(!payload.carrierCancelled)return toast("يجب تأكيد إلغاء الشحنة من نظام شركة الشحن أولًا.","error");
+    if(!payload.reason)return toast("اكتب سبب الإلغاء.","error");
+    button.disabled=true;orderWorkflowRequest(`/api/shipping/shipments/${encodeURIComponent(form.dataset.id)}/cancel`,{body:payload}).then(result=>{closeModal();renderShipping();toast(result.resolution==="revise_shipment"?"أُلغيت الشحنة وعاد الطلب لانتظار كود جديد.":"أُلغيت الشحنة والطلب بالكامل.");}).catch(error=>{button.disabled=false;if(error.code==="PAYMENT_REFUND_REQUIRED")toast("يجب تسوية المبلغ المدفوع قبل إلغاء الطلب بالكامل.","error");else toast(error.message,"error");});return;
   }
   if (form.id === "ready-order-shipment-form") {
     const button=form.querySelector('button[type="submit"]');button.disabled=true;
@@ -9871,20 +9917,12 @@ function viewShipment(id) {
   }
 */
 function deleteShipment(id) {
-  const item = data.shipments.find(row => row.id === id);
-  if (!item || !confirm(`هل تريد حذف الشحنة ${id}؟`)) return;
-  item.deletedAt = new Date().toISOString();
-  const sale = data.sales.find(row => row.id === item.invoiceId || row.id === item.orderId);
-  const order = data.onlineOrders.find(row => row.id === item.onlineOrderId);
-  if (sale?.shipmentId === id) sale.shipmentId = null;
-  if (order?.shipmentId === id) {
-    order.shipmentId = null;
-    order.status = order.saleId ? "لم يتم الشحن بعد" : "قيد التجهيز";
-    order.updatedAt = item.deletedAt;
-  }
-  saveData("حذف شحنة", "الشحن", id);
-  renderShipping();
-  toast("تم حذف الشحنة.");
+  cancelShipmentFlowModal(id);
+}
+
+function cancelShipmentFlowModal(id){
+  const shipment=data.shipments.find(item=>item.id===id&&!item.deletedAt);if(!shipment)return;
+  openModal("إلغاء الشحنة","تأكيد الإلغاء لدى شركة الشحن",`<form id="shipment-cancellation-form" data-id="${esc(id)}"><div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>ألغِ الشحنة من نظام شركة الشحن أولًا</strong><span>النظام لا يستطيع تأكيد الإلغاء لدى الشركة دون ربط API. سيبقى كود التتبع محفوظًا في سجل الطلب.</span></div></div><label class="choice-card mandatory-confirm"><input type="checkbox" name="carrierCancelled" required><span><strong>أؤكد أنني ألغيت الشحنة من نظام شركة الشحن</strong><small dir="ltr">${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label><div class="form-field"><label class="required">ماذا تريد بعد الإلغاء؟</label><div class="resolution-options"><label><input type="radio" name="resolution" value="revise_shipment" checked><span><strong>تعديل الشحنة وإعادة إرسالها</strong><small>يعود الطلب إلى انتظار كود جديد، ويمكن تعديل بيانات الشحن.</small></span></label><label><input type="radio" name="resolution" value="cancel_order"><span><strong>إلغاء الطلب بالكامل</strong><small>يتطلب اكتمال أي تسوية مالية، ويلغي الفاتورة وحركة المخزون بأمان.</small></span></label></div></div><div class="form-field"><label class="required">سبب الإلغاء</label><textarea name="reason" required placeholder="مثال: تعديل العنوان أو إلغاء العميل للطلب"></textarea></div><div class="form-actions"><button class="btn danger" type="submit">متابعة الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
 }
 
 const COMPLAINT_STATUSES = {
