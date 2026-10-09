@@ -269,6 +269,19 @@ function loadFallbackData() {
   }
 }
 
+let browserDataCacheAvailable = true;
+function cacheDataLocally(value = data) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+    browserDataCacheAvailable = true;
+    return true;
+  } catch {
+    browserDataCacheAvailable = false;
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    return false;
+  }
+}
+
 function authHeaders(extra = {}) {
   return { ...extra, ...(sessionToken ? { "X-Session-Token": sessionToken } : {}) };
 }
@@ -743,7 +756,7 @@ async function refreshDashboardShipments({ silent = false } = {}) {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const remote = normalizeData(await response.json());
       data.shipments = remote.shipments;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      cacheDataLocally();
     }
     lastShipmentRefresh = new Date();
     if (currentView === "dashboard") updateDashboardShipmentCard(false);
@@ -762,7 +775,7 @@ async function reloadRemoteData() {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   data = normalizeData(await response.json());
   dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  cacheDataLocally();
   updateNotificationBadge();
   return true;
 }
@@ -962,7 +975,7 @@ async function initializeDatabase() {
       const needsMigration = Number(remote.version || 0) < 3 || !Array.isArray(remote.users) || !Array.isArray(remote.stockMovements) || !Array.isArray(remote.onlineOrders) || !Array.isArray(remote.governorates) || !Array.isArray(remote.shippingCompanies);
       data = normalizeData(remote);
       serverConnected = true;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      cacheDataLocally();
       setStorageStatus("البيانات محفوظة", true);
       render();
       if (needsMigration) await persistToServer();
@@ -1637,7 +1650,7 @@ function saveData(action = "", entity = "", entityId = "") {
       documentNo: entityId
     }));
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  cacheDataLocally();
   if (!serverConnected) return Promise.resolve(false);
 
   setStorageStatus("جارٍ حفظ البيانات...", true);
@@ -1663,7 +1676,7 @@ function snapshotClientData() {
 
 function restoreClientData(snapshot) {
   data = snapshot;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  cacheDataLocally();
 }
 
 function saveFailureMessage() {
@@ -8066,7 +8079,7 @@ modalBody.addEventListener("submit", async event => {
     const saved = await saveData(partyOperation, isCustomer ? "العملاء" : "الموردون", item.id);
     if (!saved) {
       data = dataBeforePartySave;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      cacheDataLocally();
       return toast(`فشل حفظ ${isCustomer ? "العميل" : "المورد"} على الخادم. لم تُعتمد التغييرات.`, "error");
     }
     closeModal();
@@ -8964,7 +8977,7 @@ async function preparePurchaseRevision({ baseData = data } = {}) {
     draftPurchase = emptyPurchaseDraft();
     clearPurchaseDraft();
     purchaseRetryState = null;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    cacheDataLocally();
     renderPurchases();
     toast(`الفاتورة ${analysis.existingOperation.id} محفوظة بالفعل؛ لم يتم إنشاء نسخة مكررة.`);
     return { ok:false, alreadySaved:true };
@@ -8979,7 +8992,7 @@ async function preparePurchaseRevision({ baseData = data } = {}) {
   data = merged.data;
   draftPurchase = merged.draft;
   dbRevision = latest.revision;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  cacheDataLocally();
   setStorageStatus("البيانات محدثة", true);
   return { ok:true, refreshed:true };
 }
@@ -9122,7 +9135,7 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
   const saved = await saveData("PURCHASE_CREATED", "المشتريات", purchase.id);
   if (!saved) {
     data = dataBeforePurchase;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    cacheDataLocally();
     if (lastSaveError?.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") rememberPurchaseRetry(dataBeforePurchase, []);
     renderPurchases();
     toast(lastSaveError?.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION" ? "تم تحديث بيانات النظام أثناء إدخال الفاتورة. اضغط تحديث وإعادة المحاولة للاحتفاظ بالمسودة وإعادة الحفظ." : "فشل حفظ فاتورة الشراء على الخادم. بقيت المسودة محفوظة ولم تُعتمد الفاتورة.", "error");
@@ -9822,7 +9835,7 @@ async function deleteParty(id, kind) {
       if (!response.ok) throw new Error(result.message || "تعذر حذف المورد.");
       dbRevision = response.headers.get("X-DB-Revision") || result.revision || dbRevision;
       item.deletedAt = new Date().toISOString();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      cacheDataLocally();
       lastSuccessfulSaveAt = new Date().toISOString();
       renderParties();
       return toast("تم حذف المورد.");
@@ -9834,7 +9847,7 @@ async function deleteParty(id, kind) {
   const saved = await saveData("CUSTOMER_DELETED", "العملاء", id);
   if (!saved) {
     item.deletedAt = null;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    cacheDataLocally();
     return toast("فشل الحذف على الخادم. لم يُحذف السجل.", "error");
   }
   renderParties();
@@ -12060,7 +12073,7 @@ async function runSelfTest() {
     results.push({ name: "خطأ غير متوقع أثناء الاختبار", ok: false, detail: error.stack || error.message });
   } finally {
     data = normalizeData(JSON.parse(originalData));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    cacheDataLocally();
     if (serverConnected) {
       try { await persistToServer(); } catch {}
     }
