@@ -1889,9 +1889,10 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 #packing-edit-form{display:grid;gap:12px;min-width:0}
 .packing-edit-results{display:grid;gap:6px;max-height:180px;overflow:auto}.packing-edit-results .btn{display:flex;justify-content:space-between;gap:8px;white-space:normal;text-align:start}.packing-edit-results small{color:var(--muted)}
 .packing-edit-lines{display:grid;gap:10px;max-height:46vh;overflow:auto}
-.packing-edit-row{display:grid;grid-template-columns:minmax(120px,1fr) 70px 105px 95px auto;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px}
+.packing-edit-row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px}.packing-edit-row>.packing-book{grid-column:1/-1}.packing-edit-row>.packing-edit-net{grid-column:1/4}.packing-edit-row>.btn{grid-column:4/-1;justify-self:end}
+.packing-edit-delivery{display:grid;grid-template-columns:minmax(100px,1fr) 3fr;gap:12px;padding:12px;background:#f5f8fc;border-radius:10px}.packing-edit-delivery label{display:grid;gap:6px}.packing-edit-delivery textarea{min-height:70px;resize:vertical}
 .packing-edit-row label{display:grid;gap:5px;font-size:11px;min-width:0}.packing-edit-row input{width:100%;min-width:0;min-height:40px;text-align:center}.packing-edit-net{font-size:12px;color:#18794e;font-weight:700}
-@media(max-width:600px){.packing-edit-row{grid-template-columns:1fr 1fr}.packing-edit-row>.packing-book{grid-column:1/-1}.packing-edit-row>.btn{justify-self:end}.packing-edit-results .btn{display:grid}}
+@media(max-width:600px){.packing-edit-row{grid-template-columns:1fr 1fr}.packing-edit-row>.packing-book,.packing-edit-row>.packing-edit-net{grid-column:1/-1}.packing-edit-row>.btn{grid-column:2;justify-self:end}.packing-edit-results .btn{display:grid}.packing-edit-delivery{grid-template-columns:1fr}}
 .packing-customer{display:grid;gap:4px;background:#f5f8fc;border:1px solid var(--line);border-radius:12px;padding:12px 16px}
 .packing-customer span,.packing-customer small{color:var(--muted);overflow-wrap:anywhere}
 .packing-progress{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-weight:700;font-size:13px}

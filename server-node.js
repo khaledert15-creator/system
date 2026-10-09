@@ -2806,18 +2806,39 @@ const server = http.createServer(async (req, res) => {
           if(!Number.isInteger(qty)||qty<=0||!Number.isFinite(price)||price<0||String(input.price??"").trim()==="")throw new Error("أدخل كمية صحيحة أكبر من صفر وسعرًا صالحًا.");
           const previous=beforeMap.get(book.id);
           const line=previous?{...previous}:{...quickOrderBookLine(db,book,{qty,discount:book.discount??book.saleDiscount??0,discountType:book.discountType==="amount"?"amount":"percent"},user)};
+          if(input.discount!==undefined){
+            const discount=OrderFinance.normalizeNumber(input.discount),type=input.discountType,scope=input.discountScope;
+            if(!["amount","percent"].includes(type)||!["unit","line"].includes(scope)||!Number.isFinite(discount))throw new Error("الخصم غير صالح.");
+            const changed=discount!==Number(line.discount||0)||type!==(line.discountType||"percent")||scope!==(line.discountScope||"line");
+            if(changed&&!canOrderAction(db,user,"order.discount.override"))throw Object.assign(new Error("ليس لديك صلاحية تعديل الخصم."),{status:403});
+            Object.assign(line,{discount,discountType:type,discountScope:scope});
+          }
           return {...line,bookId:book.id,qty,price};
         });
-        const totals=quickOrderTotals(lines,requestedShippingFee(order),order.orderDiscount,order.orderDiscountType);
+        const shipping=payload.shippingFee===undefined?requestedShippingFee(order):OrderFinance.normalizeNumber(payload.shippingFee);
+        if(!Number.isFinite(shipping)||shipping<0||payload.shippingFee!==undefined&&String(payload.shippingFee).trim()==="")throw new Error("سعر الشحن غير صالح.");
+        const shippingChanged=Math.abs(shipping-requestedShippingFee(order))>.009;
+        if(shippingChanged&&!canOrderAction(db,user,"order.shipping.override"))throw Object.assign(new Error("ليس لديك صلاحية تعديل رسوم الشحن."),{status:403});
+        const address=payload.address===undefined?String(order.address||""):String(payload.address).trim();
+        if(payload.address!==undefined&&(!address||address.length>1000))throw new Error("أدخل عنوانًا صالحًا لا يتجاوز 1000 حرف.");
+        const addressChanged=address!==String(order.address||"");
+        const notes=payload.notes===undefined?String(order.notes||""):OrderFinance.normalizeNote(payload.notes);
+        const notesChanged=notes!==String(order.notes||"");
+        const totals=quickOrderTotals(lines,shipping,order.orderDiscount,order.orderDiscountType);
         const paid=Math.max(Number(order.paidAmount||0),confirmedOrderPayments(db,order.id).reduce((sum,row)=>sum+Number(row.amount||0),0));
         const payment=OrderFinance.calculatePayment(totals.total,paid);
-        const unchanged=lines.length===beforeLines.length&&lines.every((line,i)=>line.bookId===beforeLines[i].bookId&&line.qty===Number(beforeLines[i].qty)&&line.price===Number(beforeLines[i].price));
+        const sameDiscount=(a,b)=>Number(a.discount||0)===Number(b.discount||0)&&(a.discountType||"percent")===(b.discountType||"percent")&&(a.discountScope||"line")===(b.discountScope||"line");
+        const unchanged=!shippingChanged&&!addressChanged&&!notesChanged&&lines.length===beforeLines.length&&lines.every((line,i)=>line.bookId===beforeLines[i].bookId&&line.qty===Number(beforeLines[i].qty)&&line.price===Number(beforeLines[i].price)&&sameDiscount(line,beforeLines[i]));
         if(unchanged)return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
         reserveOrderInventory(db,order,user,lines);
         const checked=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,item]));
-        const checklist=lines.map(line=>{const previous=beforeMap.get(line.bookId),check=checked.get(line.bookId);return {bookId:line.bookId,qty:line.qty,done:Boolean(check?.done&&Number(check.qty)===line.qty&&previous&&Number(previous.qty)===line.qty&&Number(previous.price)===line.price)};});
+        const checklist=lines.map(line=>{const previous=beforeMap.get(line.bookId),check=checked.get(line.bookId);return {bookId:line.bookId,qty:line.qty,done:Boolean(check?.done&&Number(check.qty)===line.qty&&previous&&Number(previous.qty)===line.qty&&Number(previous.price)===line.price&&sameDiscount(line,previous))};});
+        const previousDelivery={address:order.address,shippingFee:requestedShippingFee(order)};
+        if(shippingChanged)Object.assign(order,{shippingFee:shipping,shippingCost:shipping,shipping:shipping,shippingFeeOverride:true,shippingPriceSource:"manual"});
+        if(addressChanged)order.address=address;
+        if(notesChanged){appendOrderAudit(db,user,order,"تعديل ملاحظات الطلب",JSON.stringify({before:order.notes||"",after:notes}));order.notes=notes;}
         Object.assign(order,{lines:totals.lines,preparationChecklist:checklist,subtotal:totals.subtotal,subtotalBeforeDiscount:totals.subtotalBeforeDiscount,productDiscountTotal:totals.productDiscountTotal,discountTotal:totals.discountTotal,subtotalAfterDiscount:totals.goods,total:totals.total,paidAmount:payment.paidAmount,paymentStatus:payment.paymentStatus,remainingAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,updatedAt:new Date().toISOString()});
-        appendOrderAudit(db,user,order,"تعديل أصناف الطلب أثناء التغليف",JSON.stringify({before:beforeLines.map(({bookId,qty,price})=>({bookId,qty,price})),after:lines.map(({bookId,qty,price})=>({bookId,qty,price}))}));
+        appendOrderAudit(db,user,order,"تعديل الطلب أثناء التغليف",JSON.stringify({before:beforeLines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount,discountType,discountScope})),after:lines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount,discountType,discountScope})),deliveryBefore:previousDelivery,deliveryAfter:{address:order.address,shippingFee:shipping}}));
         writeDb(db,{expectedRevision:expected,operationType:"PACKING_ITEMS_EDIT",performedBy:user.username});
         return send(res,200,{ok:true,order,revision:dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_EDIT_FAILED",message:error.message});}

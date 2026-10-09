@@ -3470,6 +3470,7 @@ async function openPreparationOrder(id,start=false) {
     openModal(`تجهيز ${order.id}`,"تغليف الطلب",`
       <div class="packing-sheet" data-packing-order="${esc(order.id)}">
         <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc(order.phone||"")} · ${esc(order.governorate||"")}</span><small>${esc(order.address||"")}</small></div>
+        ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
         <div class="packing-progress">تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
         <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكتاب</span><span>الكمية</span><span>إجمالي الصنف</span></div>
@@ -3494,8 +3495,22 @@ function openPackingEditor(id) {
 
 function renderPackingEditLines() {
   const host=document.getElementById("packing-edit-lines");if(!host||!packingEditDraft)return;
-  host.innerHTML=packingEditDraft.lines.map((line,index)=>`<div class="packing-edit-row"><div class="packing-book"><strong>${esc(getBook(line.bookId)?.name||line.bookId)}</strong><small>${esc(line.bookId)} · الخصم محفوظ كما هو</small></div><label>الكمية<input data-packing-field="qty" data-index="${index}" inputmode="numeric" value="${esc(line.qty)}" required></label><label>السعر الأساسي للنسخة<input data-packing-field="price" data-index="${index}" inputmode="decimal" value="${esc(line.price)}" required></label><span class="packing-edit-net" data-packing-net="${index}"></span><button class="btn ghost text-danger" type="button" data-action="packing-edit-remove" data-index="${index}" aria-label="حذف ${esc(getBook(line.bookId)?.name||line.bookId)} من الطلب">حذف</button></div>`).join("")||`<p class="muted">أضف كتابًا واحدًا على الأقل قبل الحفظ.</p>`;
+  host.innerHTML=packingEditDraft.lines.map((line,index)=>{
+    let values={discountPercent:"",unitDiscountAmount:"",finalUnitPrice:""};try{values=OrderFinance.calculateOrder([line]).lines[0];}catch{}
+    const input=(field,label,value,disabled=false)=>`<label>${label}<input data-packing-field="${field}" data-index="${index}" inputmode="${field==="qty"?"numeric":"decimal"}" value="${esc(value)}" ${disabled?"disabled":""} required></label>`;
+    return `<div class="packing-edit-row"><div class="packing-book"><strong>${esc(getBook(line.bookId)?.name||line.bookId)}</strong><small>${esc(line.bookId)} · الخصم بالجنيه والسعر بعد الخصم لكل نسخة</small></div>${input("qty","الكمية",line.qty)}${input("price","السعر الأساسي",line.price)}${input("discountPercent","خصم %",values.discountPercent,!canAction("order.discount.override"))}${input("discountAmount","خصم ج.م / نسخة",values.unitDiscountAmount,!canAction("order.discount.override"))}${input("netPrice","بعد الخصم / نسخة",values.finalUnitPrice,!canAction("order.discount.override"))}<span class="packing-edit-net" data-packing-net="${index}"></span><button class="btn ghost text-danger" type="button" data-action="packing-edit-remove" data-index="${index}" aria-label="حذف ${esc(getBook(line.bookId)?.name||line.bookId)} من الطلب">حذف</button></div>`;
+  }).join("")||`<p class="muted">أضف كتابًا واحدًا على الأقل قبل الحفظ.</p>`;
+  let delivery=document.getElementById("packing-edit-delivery");
+  if(!delivery){host.insertAdjacentHTML("afterend",`<div id="packing-edit-delivery" class="packing-edit-delivery"><label>سعر الشحن<input data-packing-delivery="shippingFee" inputmode="decimal" value="${esc(orderShippingFee(packingEditDraft.order))}" ${canAction("order.shipping.override")?"":"disabled"} required></label><label>عنوان تسليم هذا الطلب<textarea data-packing-delivery="address" maxlength="1000" required>${esc(packingEditDraft.order.address||"")}</textarea></label><label style="grid-column:1/-1">ملاحظات الطلب (اختياري)<textarea data-packing-delivery="notes" placeholder="تعليمات التغليف أو التوصيل">${esc(packingEditDraft.order.notes||"")}</textarea></label></div>`);}
   updatePackingEditTotals();
+}
+
+function changePackingLineField(line,field,value) {
+  if(["qty","price"].includes(field)){line[field]=value;return;}
+  const number=OrderFinance.normalizeNumber(value),price=OrderFinance.normalizeNumber(line.price);
+  if(!Number.isFinite(number)||String(value).trim()===""||number<0||field==="discountPercent"&&number>100||field!=="discountPercent"&&number>price){line.packingInputError="أدخل خصمًا صالحًا أو سعرًا بين صفر والسعر الأساسي.";return;}
+  delete line.packingInputError;
+  Object.assign(line,{discount:field==="netPrice"?OrderFinance.round(price-number):number,discountType:field==="discountPercent"?"percent":"amount",discountScope:"unit"});
 }
 
 function updatePackingEditTotals() {
@@ -3503,10 +3518,13 @@ function updatePackingEditTotals() {
   let valid=false;
   try{
     if(!draft.lines.length)throw new Error("أضف صنفًا واحدًا على الأقل.");
-    for(const line of draft.lines){const qty=OrderFinance.normalizeNumber(line.qty),price=OrderFinance.normalizeNumber(line.price);if(!Number.isInteger(qty)||qty<=0||!Number.isFinite(price)||price<0||String(line.price).trim()==="")throw new Error("أدخل كمية صحيحة أكبر من صفر وسعرًا صالحًا.");}
+    for(const line of draft.lines){if(line.packingInputError)throw new Error(line.packingInputError);const qty=OrderFinance.normalizeNumber(line.qty),price=OrderFinance.normalizeNumber(line.price);if(!Number.isInteger(qty)||qty<=0||!Number.isFinite(price)||price<0||String(line.price).trim()==="")throw new Error("أدخل كمية صحيحة أكبر من صفر وسعرًا صالحًا.");}
+    if(!String(draft.order.address||"").trim())throw new Error("أدخل عنوان التسليم.");
+    const shipping=OrderFinance.normalizeNumber(draft.order.shippingFee??orderShippingFee(draft.order));
+    if(!Number.isFinite(shipping)||shipping<0||String(draft.order.shippingFee??shipping).trim()==="")throw new Error("أدخل سعر شحن صالحًا.");
     const totals=onlineOrderTotals(draft.lines,draft.order.orderDiscount,draft.order.orderDiscountType,orderShippingFee(draft.order));
     const payment=OrderFinance.calculatePayment(totals.total,Number(draft.order.paidAmount||0));
-    totals.lines.forEach((line,index)=>{const cell=form.querySelector(`[data-packing-net="${index}"]`);if(cell)cell.textContent=`بعد الخصم: ${money(line.finalNet)}`;});
+    totals.lines.forEach((line,index)=>{const cell=form.querySelector(`[data-packing-net="${index}"]`);if(cell)cell.textContent=`إجمالي الصنف: ${money(line.finalNet)}`;for(const [field,value] of Object.entries({discountPercent:line.discountPercent,discountAmount:line.unitDiscountAmount,netPrice:line.finalUnitPrice})){const input=form.querySelector(`[data-packing-field="${field}"][data-index="${index}"]`);if(input&&input!==document.activeElement)input.value=value;}});
     document.getElementById("packing-edit-totals").innerHTML=`<span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(payment.paidAmount)}</b></span><span>المتبقي <b>${money(payment.remainingAmount)}</b></span>`;
     document.getElementById("packing-edit-error").textContent="";valid=true;
   }catch(error){document.getElementById("packing-edit-error").textContent=error.message;document.getElementById("packing-edit-totals").innerHTML="";form.querySelectorAll("[data-packing-net]").forEach(cell=>{cell.textContent="—";});}
@@ -3516,11 +3534,12 @@ function updatePackingEditTotals() {
 
 async function savePackingEdit(form) {
   const draft=packingEditDraft;if(!draft||draft.pending||!updatePackingEditTotals())return;
-  draft.pending=true;form.querySelectorAll("input,button").forEach(control=>{control.disabled=true;});
+  const controls=[...form.querySelectorAll("input,textarea,button")].map(control=>({control,disabled:control.disabled}));
+  draft.pending=true;controls.forEach(({control})=>{control.disabled=true;});
   try{
-    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(draft.id)}/prepare/items`,{method:"PATCH",revision:draft.revision,body:{lines:draft.lines.map(({bookId,qty,price})=>({bookId,qty,price}))}});
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(draft.id)}/prepare/items`,{method:"PATCH",revision:draft.revision,body:{lines:draft.lines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount:discount||0,discountType:discountType||"percent",discountScope:discountScope||"line"})),shippingFee:draft.order.shippingFee??orderShippingFee(draft.order),address:draft.order.address,notes:draft.order.notes||""}});
     packingEditDraft=null;await openPreparationOrder(draft.id);toast("تم حفظ الأصناف وتحديث الإجمالي وحجز المخزون. راجع علامات التغليف.");
-  }catch(error){draft.pending=false;if(form.isConnected){form.querySelectorAll("input,button").forEach(control=>{control.disabled=false;});updatePackingEditTotals();document.getElementById("packing-edit-error").textContent=error.message;}toast(error.message,"error");}
+  }catch(error){draft.pending=false;if(form.isConnected){controls.forEach(({control,disabled})=>{control.disabled=disabled;});updatePackingEditTotals();document.getElementById("packing-edit-error").textContent=error.message;}toast(error.message,"error");}
 }
 
 function finishPreparationModal(id) {
@@ -7744,8 +7763,9 @@ modalBody.addEventListener("input", event => {
   }
   if(event.target.matches("[data-packing-field]")&&packingEditDraft&&!packingEditDraft.pending){
     const line=packingEditDraft.lines[Number(event.target.dataset.index)],field=event.target.dataset.packingField;
-    if(line&&["qty","price"].includes(field)){line[field]=event.target.value;updatePackingEditTotals();}return;
+    if(line&&["qty","price","discountPercent","discountAmount","netPrice"].includes(field)){changePackingLineField(line,field,event.target.value);updatePackingEditTotals();}return;
   }
+  if(event.target.matches("[data-packing-delivery]")&&packingEditDraft&&!packingEditDraft.pending){const field=event.target.dataset.packingDelivery;if(["address","shippingFee","notes"].includes(field)){packingEditDraft.order[field]=event.target.value;updatePackingEditTotals();}return;}
   if (event.target.id === "sale-customer-modal-search") {
     const suggestions = document.getElementById("sale-customer-modal-suggestions");
     const matches = event.target.value.trim() ? searchCustomers(event.target.value) : (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);

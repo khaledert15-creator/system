@@ -36,6 +36,11 @@ db.inventoryBatches.push({id:"BAT-EDIT-QA",productId:"B-EDIT-QA",receivedQty:20,
 const editablePacking=fixture(21,{paid:100,stage:"preparing",prepared:false,withSale:false});
 editablePacking.preparingByUsername="owner";editablePacking.lines=[{bookId:"B-PACK-QA",qty:1,price:100,discount:0,discountType:"percent"}];
 editablePacking.preparationChecklist=[{bookId:"B-PACK-QA",qty:1,done:true}];
+const restrictedPacking=fixture(22,{stage:"preparing",prepared:false,withSale:false});
+restrictedPacking.preparingByUsername="packing-editor";
+restrictedPacking.lines.forEach(line=>{line.discountScope="line";});
+db.users.push({...db.users.find(row=>row.username==="owner"),id:"U-PACK-EDIT",username:"packing-editor",role:"كاشير",active:true});
+db.settings.permissions ||= {};db.settings.permissions.users ||= {};db.settings.permissions.users["packing-editor"]={actions:["order.quick.edit"]};
 for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
 const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
 const settledCancellable=fixture(12,{paid:670,stage:"awaiting_preparation",prepared:false,withSale:false});
@@ -74,6 +79,13 @@ async function wait(){
   pass(fs.readFileSync(dbPath,"utf8")===beforeAuthFailures,"403 order actions do not change data");
   const login=await call("/api/login",{method:"POST",body:{username:"owner",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"}});token=login.body.token;pass(login.status===200,"owner login");
   const editRoute=`/api/orders/${editablePacking.id}/prepare/items`,readPacking=()=>JSON.parse(fs.readFileSync(dbPath,"utf8"));
+  const restrictedLogin=await call("/api/login",{method:"POST",body:{username:"packing-editor",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"}});
+  pass(restrictedLogin.status===200,"packing editor without discount/shipping override can log in");
+  for(const extra of [{shippingFee:99},{lines:[{...restrictedPacking.lines[0],discount:10,discountType:"percent",discountScope:"unit"}]}]){
+    const snapshot=fs.readFileSync(dbPath,"utf8");
+    const denied=await call(`/api/orders/${restrictedPacking.id}/prepare/items`,{method:"PATCH",authToken:restrictedLogin.body.token,revision:readPacking().meta?.dataRevision||0,body:{lines:restrictedPacking.lines,...extra}});
+    pass(denied.status===403&&fs.readFileSync(dbPath,"utf8")===snapshot,"discount/shipping override permission is enforced without mutation");
+  }
   const editLines=[{bookId:"B-PACK-QA",qty:2,price:100},{bookId:"B-EDIT-QA",qty:2,price:60}];
   const beforeEdit=fs.readFileSync(dbPath,"utf8");
   pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},authToken:"expired"})).status===401,"packing edit requires authentication");
@@ -91,6 +103,19 @@ async function wait(){
   pass(changedPrice.body.order.preparationChecklist[0].done&&!changedPrice.body.order.preparationChecklist[1].done,"only the changed price resets its packing check");
   const deletedLine=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:[{...editLines[1],price:70}]}});
   pass(deletedLine.status===200&&deletedLine.body.order.lines.length===1&&readPacking().books.find(row=>row.id==="B-PACK-QA").reservedStock===2,"removing a line releases only that order reservation");
+  const customerSnapshot=JSON.stringify(readPacking().customers);
+  const priced=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:[{bookId:"B-EDIT-QA",qty:2,price:70,discount:10,discountType:"percent",discountScope:"unit"}],shippingFee:90,address:"عنوان توصيل جديد QA"}});
+  pass(priced.status===200&&priced.body.order.total===216&&priced.body.order.amountDueAtDelivery===116,"discount and shipping update payable total together");
+  pass(priced.body.order.address==="عنوان توصيل جديد QA"&&priced.body.order.shippingFee===90&&priced.body.order.shippingCost===90&&priced.body.order.shippingFeeOverride,"address and canonical shipping aliases are saved");
+  pass(JSON.stringify(readPacking().customers)===customerSnapshot,"order address edit does not alter customer master");
+  const noteResult=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:priced.body.order.lines,notes:"تغليف إضافي\nالاتصال قبل التوصيل"}});
+  pass(noteResult.status===200&&noteResult.body.order.notes.includes("الاتصال قبل التوصيل")&&noteResult.body.order.total===216,"notes-only edit persists without changing totals");
+  const clearedNote=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:noteResult.body.order.lines,notes:""}});
+  pass(clearedNote.status===200&&clearedNote.body.order.notes==="","notes can be cleared explicitly");
+  for(const extra of [{shippingFee:-1},{address:""},{lines:[{bookId:"B-EDIT-QA",qty:2,price:70,discount:101,discountType:"percent",discountScope:"unit"}]}]){
+    const snapshot=fs.readFileSync(dbPath,"utf8");const rejected=await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines:[{bookId:"B-EDIT-QA",qty:2,price:70}],...extra}});
+    pass(rejected.status===409&&fs.readFileSync(dbPath,"utf8")===snapshot,"invalid discount, shipping or address never writes data");
+  }
   for(const lines of [[],[{bookId:"B-EDIT-QA",qty:0,price:70}],[{bookId:"B-EDIT-QA",qty:99,price:70}],[{bookId:"B-EDIT-QA",qty:1,price:0}],editLines.concat(editLines[0])]){
     const snapshot=fs.readFileSync(dbPath,"utf8");
     pass((await call(editRoute,{method:"PATCH",revision:readPacking().meta.dataRevision,body:{lines}})).status===409&&fs.readFileSync(dbPath,"utf8")===snapshot,"invalid, empty, duplicate, oversold or underpaid edit is blocked atomically");
