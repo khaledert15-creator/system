@@ -62,3 +62,22 @@ test("three-stage UI includes packing, tracking wait and shipped list",()=>{asse
 test("shipment cancellation requires carrier confirmation and resolution",()=>{assert.match(server,/CARRIER_CANCELLATION_CONFIRMATION_REQUIRED/);assert.match(server,/revise_shipment/);assert.match(server,/cancel_order/);assert.match(app,/أؤكد أنني ألغيت الشحنة من نظام شركة الشحن/);});
 test("cancelled tracking remains recorded but does not block a replacement shipment",()=>{assert.match(server,/!shipment\.cancelledAt&&shipment\.shippingStatus!=="cancelled"/);assert.match(server,/previousTrackingNumbers/);assert.match(server,/shippingExport:null/);});
 test("batch endpoints use authenticated server-side validation",()=>{assert.match(server,/\/api\/orders\/shipping\/export/);assert.match(server,/\/api\/orders\/shipping\/import-preview/);assert.match(server,/TRACKING_ALREADY_USED/);assert.match(server,/PHONE_MISMATCH/);assert.match(server,/COD_MISMATCH/);});
+test("order entry chooses Egyptian Post by default and keeps the carrier editable",()=>{
+  const source=app.slice(app.indexOf("function activeShippingCompanies("),app.indexOf("function getCustomerFrom("));
+  const context=vm.createContext({data:{shippingCompanies:[{name:"بوسطة",active:true},{name:"البريد المصري",active:true}]},esc:String});
+  vm.runInContext(source,context);
+  assert.equal(context.preferredShippingCompanyName(),"البريد المصري");
+  assert.match(context.shippingCompanyOptions(context.preferredShippingCompanyName()),/value="البريد المصري" selected/);
+  assert.match(context.shippingCompanyOptions("بوسطة"),/value="بوسطة" selected/);
+  assert.match(app,/id="quick-order-shipping-company" required/);
+  assert.match(app,/name="shippingCompany" required/);
+  assert.match(app,/shippingCompany: formData\.shippingCompany \|\| preferredShippingCompanyName\(\)/);
+});
+test("shipment confirmation does not ask for a carrier cost or reuse customer shipping fee",()=>{
+  const readyModal=app.slice(app.indexOf("function shipReadyOrderModal("),app.indexOf("async function submitReadyOrderShipment("));
+  const legacyModal=app.slice(app.indexOf("function shipmentFromOrderModal("),app.indexOf("async function saveSale("));
+  assert.doesNotMatch(readyModal,/name:"cost"|تكلفة شركة الشحن المتوقعة/);
+  assert.doesNotMatch(legacyModal,/name:"cost"|تكلفة الشحن الإضافية/);
+  assert.match(app,/cost: 0, productsValue:/);
+  assert.match(server,/customerShippingCharge:Number\(sale\.shipping\|\|order\.shippingCost\|\|0\)/);
+});

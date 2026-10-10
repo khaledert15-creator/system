@@ -469,6 +469,15 @@ function shipmentForOnlineOrder(db, order) {
   return (db.shipments||[]).find(shipment=>!shipment.deletedAt&&!shipment.cancelledAt&&shipment.shippingStatus!=="cancelled"&&(shipment.id===order.shipmentId||shipment.onlineOrderId===order.id))||null;
 }
 
+function orderShippingCompany(db,requested="",fallback="") {
+  const active=(db.shippingCompanies||[]).filter(item=>!item.deletedAt&&item.active!==false);
+  const preferred=active.find(item=>/البريد المصري|egypt\s*post/i.test(item.name))?.name||active[0]?.name||"";
+  const name=String(requested||fallback||preferred).trim();
+  const company=active.find(item=>item.name===name);
+  if(!company)throw Object.assign(new Error("اختر شركة شحن مسجلة وفعالة."),{status:400,code:"INVALID_CARRIER"});
+  return company.name;
+}
+
 function createReadyOrderShipment(db,order,payload,user) {
   if(!order||order.deletedAt)throw Object.assign(new Error("الطلب غير موجود."),{status:404,code:"ORDER_NOT_FOUND"});
   const existing=shipmentForOnlineOrder(db,order);
@@ -480,9 +489,7 @@ function createReadyOrderShipment(db,order,payload,user) {
   if(!trackingNumber||!isValidTrackingNumber(trackingNumber))throw Object.assign(new Error("أدخل كود تتبع صالحًا."),{status:400,code:"INVALID_TRACKING"});
   const duplicate=(db.shipments||[]).find(shipment=>!shipment.deletedAt&&normalizeTrackingNumber(shipment.trackingNumber||shipment.tracking)===trackingNumber);
   if(duplicate)throw Object.assign(new Error("كود التتبع مستخدم في شحنة أخرى."),{status:409,code:"TRACKING_ALREADY_USED",shipmentId:duplicate.id});
-  const company=String(payload.company||payload.carrier||"").trim();
-  const registered=(db.shippingCompanies||[]).find(item=>!item.deletedAt&&item.active!==false&&item.name===company);
-  if(!registered)throw Object.assign(new Error("اختر شركة شحن مسجلة وفعالة."),{status:400,code:"INVALID_CARRIER"});
+  const company=orderShippingCompany(db,payload.company||payload.carrier,order.shippingCompany);
   const now=new Date().toISOString(),payment=OrderFinance.calculatePayment(Number(order.total||sale.total||0),Number(order.paidAmount??sale.paidAmount??sale.paid??0));
   const snapshot=sale.customerSnapshot||{};
   const shipment={
@@ -493,14 +500,14 @@ function createReadyOrderShipment(db,order,payload,user) {
     customerId:sale.customerId||order.customerId||"",customer:snapshot.name||order.customerName||"",customerName:snapshot.name||order.customerName||"",
     phone:snapshot.phone||order.phone||"",customerPhone:snapshot.phone||order.phone||"",
     governorate:snapshot.governorate||order.governorate||"",city:snapshot.city||order.city||"",address:snapshot.address||order.address||"",
-    cost:Math.max(0,Number(OrderFinance.normalizeNumber(payload.cost)||0)),productsValue:Math.max(0,Number(sale.total||order.total||0)-Number(sale.shipping||order.shippingCost||0)),
+    cost:0,productsValue:Math.max(0,Number(sale.total||order.total||0)-Number(sale.shipping||order.shippingCost||0)),
     customerShippingCharge:Number(sale.shipping||order.shippingCost||0),collectionAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,
     status:"تم الشحن",currentStatus:"تم الشحن",normalizedStatus:"shipped",shippingStatus:"shipped",
     shippedAt:String(payload.shippedAt||now),shippedBy:user.name||user.username,createdAt:now,updatedAt:now,updated:now,deletedAt:null
   };
   db.shipments=db.shipments||[];db.shipments.unshift(shipment);
   Object.assign(sale,{shipmentId:shipment.id,shippingCost:shipment.cost,updatedAt:now});
-  Object.assign(order,{shipmentId:shipment.id,tracking:trackingNumber,trackingNumber,status:"تم الشحن",workflowStage:"shipped",shippedAt:shipment.shippedAt,shippedBy:user.name||user.username,shippedByUsername:user.username,amountDueAtDelivery:payment.remainingAmount,updatedAt:now});
+  Object.assign(order,{shipmentId:shipment.id,shippingCompany:company,tracking:trackingNumber,trackingNumber,status:"تم الشحن",workflowStage:"shipped",shippedAt:shipment.shippedAt,shippedBy:user.name||user.username,shippedByUsername:user.username,amountDueAtDelivery:payment.remainingAmount,updatedAt:now});
   appendOrderAudit(db,user,order,"تأكيد شحن الطلب",`${company} · ${trackingNumber}`);
   return shipment;
 }
@@ -2621,6 +2628,7 @@ const server = http.createServer(async (req, res) => {
         const found=(db.onlineOrders||[]).find(item=>item.chatwootConversationId===conversationId&&!item.deletedAt);
         if(found)return send(res,200,{ok:true,order:found,existing:true,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }
+      let shippingCompany;try{shippingCompany=orderShippingCompany(db,payload.shippingCompany);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       const phone=normalizeCustomerPhone(payload.phone);
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       db.customers=db.customers||[];db.onlineOrders=db.onlineOrders||[];db.books=db.books||[];
@@ -2647,7 +2655,7 @@ const server = http.createServer(async (req, res) => {
       if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
       const automaticShipping=automaticShippingFee(db,payload.governorate||customer.governorate,lines,payload.orderDiscount,payload.orderDiscountType);
       if(Math.abs(totals.shipping-automaticShipping)>.009&&!canOrderAction(db,user,"order.shipping.override"))return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة."});
-      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
@@ -2665,6 +2673,7 @@ const server = http.createServer(async (req, res) => {
       if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
       if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,code:"REOPEN_PREPARATION_REQUIRED",message:"تم تجهيز هذا الطلب بالفعل. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار."});
       const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
+      let shippingCompany;try{shippingCompany=orderShippingCompany(db,payload.shippingCompany,order.shippingCompany);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
       const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
@@ -2691,7 +2700,7 @@ const server = http.createServer(async (req, res) => {
       const paidBefore=confirmedOrderPayments(db,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
       if(paidBefore>totals.total)return send(res,409,{ok:false,code:"PAID_EXCEEDS_NEW_TOTAL",message:"القيمة الجديدة للطلب أقل من المبلغ المدفوع. راجع الاسترداد أو المعالجة المالية قبل الحفظ."});
       if(order.confirmedAt)reserveOrderInventory(db,order,user,lines);
-      Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,updatedAt:now});
+      Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,updatedAt:now});
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       if(preparationStarted){
@@ -2956,7 +2965,7 @@ const server = http.createServer(async (req, res) => {
       if(payload.previewRevision!=null&&String(payload.previewRevision)!==dbRevision())return send(res,409,{ok:false,code:"STALE_SHIPPING_PREVIEW",message:"تغيرت البيانات منذ معاينة الملف. ارفع ملف Packages مرة أخرى قبل تأكيد الشحن."});
       for(const row of rows){
         const order=(db.onlineOrders||[]).find(item=>item.id===String(row.orderId||"").trim()&&!item.deletedAt);
-        try{const shipment=createReadyOrderShipment(db,order,{...row,company:row.company||payload.company},user);results.push({orderId:order.id,trackingNumber:shipment.trackingNumber,ok:true,shipmentId:shipment.id});}
+        try{const shipment=createReadyOrderShipment(db,order,{...row,company:order?.shippingCompany||row.company||payload.company},user);results.push({orderId:order.id,trackingNumber:shipment.trackingNumber,ok:true,shipmentId:shipment.id});}
         catch(error){results.push({orderId:String(row.orderId||""),trackingNumber:normalizeTrackingNumber(row.trackingNumber||""),ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message});}
       }
       if(results.some(row=>row.ok))writeDb(db);

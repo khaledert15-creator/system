@@ -205,7 +205,7 @@ let shippingExportSelection = new Set();
 let shippingFileImportRows = [];
 let shippingImportBusy = false;
 let shippingImportPreviewRevision = null;
-const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
+const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
 let quickOrderContextRender = false;
@@ -1239,6 +1239,11 @@ function normalizeShippingCompanyName(value) {
   const text = String(value || "").trim();
   const company = activeShippingCompanies().find(item => item.name === text);
   return company?.name || "";
+}
+
+function preferredShippingCompanyName() {
+  const companies=activeShippingCompanies();
+  return companies.find(company=>/البريد المصري|egypt\s*post/i.test(company.name))?.name||companies[0]?.name||"";
 }
 
 function shippingCompanyOptions(selected = "") {
@@ -3292,7 +3297,7 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
-      <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
@@ -3361,7 +3366,7 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
 
 function quickOrderPayload() {
   const {shippingManual,...persistedDraft}=quickOrderDraft;
-  return {...persistedDraft,phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
+  return {...persistedDraft,shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
 async function saveQuickOrderDraft({silent=false}={}) {
@@ -3392,7 +3397,7 @@ function editQuickOrder(id) {
   if(order.saleId)return toast("تم إنشاء فاتورة لهذا الطلب؛ استخدم إجراءات التصحيح الحالية.","error");
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:Boolean(order.shippingFeeOverride),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:Boolean(order.shippingFeeOverride),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
 }
 
@@ -3546,7 +3551,7 @@ async function savePackingEdit(form) {
 
 function finishPreparationModal(id) {
   const order=getOnlineOrder(id);if(!order)return;
-  const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  const company=order.shippingCompany||preferredShippingCompanyName();
   openModal(`إنهاء تجهيز ${order.id}`,"اختر الخطوة التالية",`<div class="finish-preparation-options">
     <button type="button" class="finish-preparation-card preferred" data-action="prepare-order-complete" data-id="${order.id}"><span class="finish-option-icon">✓</span><span><strong>جاهز للشحن لاحقًا</strong><small>الخيار المعتاد: ينقل الطلب إلى قائمة «جاهز للشحن» دون إنشاء شحنة الآن.</small></span></button>
     <form id="prepare-and-ship-form" data-order-id="${order.id}" class="finish-preparation-card direct"><span class="finish-option-icon">↗</span><div><strong>تجهيز وشحن مباشر</strong><small>ينشئ الفاتورة تلقائيًا عند الحاجة ثم يسجل الشحنة مرة واحدة.</small><div class="form-grid two"><div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions(company)}</select></div><div class="form-field"><label class="required">كود التتبع</label><input name="trackingNumber" dir="ltr" required></div></div><button class="btn secondary" type="submit">تأكيد التجهيز والشحن</button></div></form>
@@ -3599,7 +3604,7 @@ function parseBatchShippingText(value="") {
 }
 
 function renderQuickShippingScreen() {
-  const order=shippingLookupOrder(quickShippingOrderId),company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  const order=shippingLookupOrder(quickShippingOrderId),company=shippingSessionCompany||preferredShippingCompanyName();
   shippingSessionCompany=company;
   return `${workflowModeTabs("quick-shipping")}<div class="section-title"><div><span class="eyebrow">أقل عدد من الضغطات</span><h2>الشحن السريع</h2><p>رقم الطلب ← كود التتبع ← Enter ← الطلب التالي.</p></div></div><div class="quick-shipping-layout"><article class="card quick-shipping-station"><div class="quick-shipping-settings"><div class="form-field"><label>شركة الشحن الافتراضية للجلسة</label><select id="quick-shipping-company">${shippingCompanyOptions(company)}</select></div><span>يظل الاختيار محفوظًا حتى تغييره.</span></div><div class="quick-shipping-flow"><div class="form-field"><label class="required">1. رقم الطلب / الفاتورة</label><input id="quick-shipping-order-code" value="${esc(quickShippingOrderId)}" autocomplete="off" placeholder="ORD-1001 أو INV-1001"></div><div class="flow-arrow">←</div><div class="form-field"><label class="required">2. كود التتبع</label><input id="quick-shipping-tracking" dir="ltr" autocomplete="off" placeholder="ENO123456789EG" ${order&&order.workflowStage==="awaiting_shipping"&&order.preparedAt&&order.saleId&&!order.shipmentId?"":"disabled"}></div><button class="btn" id="quick-shipping-confirm" data-action="quick-shipping-confirm" ${order&&order.workflowStage==="awaiting_shipping"&&order.preparedAt&&order.saleId&&!order.shipmentId?"":"disabled"}>تأكيد الشحن</button></div><div id="quick-shipping-order-preview">${quickShippingOrderCard(order)}</div></article><article class="card batch-shipping-card"><div class="card-header"><div><h3>إدخال عدة شحنات</h3><p>سطر لكل طلب بالشكل: ORD-1001 | ENO123456EG</p></div></div><textarea id="batch-shipping-input" rows="7" dir="ltr" placeholder="ORD-1001 | ENO123456EG&#10;ORD-1002 | ENO123457EG"></textarea><div id="batch-shipping-preview">${batchShippingPreviewRows.length?batchShippingPreviewMarkup(batchShippingPreviewRows):""}</div><div class="form-actions"><button class="btn secondary" data-action="batch-shipping-preview">مراجعة البيانات</button><button class="btn" data-action="batch-shipping-confirm" ${batchShippingPreviewRows.some(row=>row.ok)?"":"disabled"}>تأكيد الشحنات الصحيحة</button></div></article></div>`;
 }
@@ -3658,7 +3663,7 @@ async function confirmShippingPackagesImport(button){
   if(!rows.length)return toast("لا توجد شحنات سليمة للاعتماد.","error");
   if(shippingImportPreviewRevision==null)return toast("ارفع ملف Packages للمراجعة قبل تأكيد الشحن.","error");
   shippingImportBusy=true;button.disabled=true;
-  const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  const company=shippingSessionCompany||preferredShippingCompanyName();
   try{
     const response=await fetch("/api/orders/shipping/batch",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({company,rows,previewRevision:shippingImportPreviewRevision})});
     const result=await response.json().catch(()=>({}));
@@ -3682,8 +3687,8 @@ async function confirmShippingPackagesImport(button){
 
 function shipReadyOrderModal(id) {
   const order=getOnlineOrder(id);if(!order)return;
-  const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
-  openModal(`شحن ${order.id}`,"جاهز للشحن",`<form id="ready-order-shipment-form" data-order-id="${order.id}"><div class="shipment-ready-summary"><strong>${esc(order.customerName)}</strong><span>${esc([order.governorate,order.city,order.address].filter(Boolean).join("، "))}</span><b>${payment.remainingAmount?`COD ${money(payment.remainingAmount)}`:"مدفوع بالكامل — COD ٠ ج.م"}</b></div><div class="form-grid two"><div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions(company)}</select></div><div class="form-field"><label class="required">كود التتبع</label><input name="trackingNumber" dir="ltr" required autofocus></div><div class="form-field"><label>تاريخ الشحن</label><input name="shippedAt" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"></div><div class="form-field"><label>تكلفة شركة الشحن المتوقعة</label><input ${numericFieldAttributes({name:"cost",value:0})}></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد الشحن</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+  const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),company=order.shippingCompany||preferredShippingCompanyName();
+  openModal(`شحن ${order.id}`,"جاهز للشحن",`<form id="ready-order-shipment-form" data-order-id="${order.id}"><div class="shipment-ready-summary"><strong>${esc(order.customerName)}</strong><span>${esc([order.governorate,order.city,order.address].filter(Boolean).join("، "))}</span><b>${payment.remainingAmount?`COD ${money(payment.remainingAmount)}`:"مدفوع بالكامل — COD ٠ ج.م"}</b></div><div class="form-grid two"><div class="form-field"><label class="required">شركة الشحن المحددة للطلب</label><select name="company" required>${shippingCompanyOptions(company)}</select></div><div class="form-field"><label class="required">كود التتبع</label><input name="trackingNumber" dir="ltr" required autofocus></div><div class="form-field"><label>تاريخ الشحن</label><input name="shippedAt" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد الشحن</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
 }
 
 async function submitReadyOrderShipment(orderId,payload,{silent=false}={}) {
@@ -3857,6 +3862,7 @@ function collectOnlineOrderDraftFromForm() {
     address: formData.address || "",
     source: formData.source || "المتجر الإلكتروني",
     paymentMethod: formData.paymentMethod || "الدفع عند الاستلام",
+    shippingCompany: formData.shippingCompany || preferredShippingCompanyName(),
     shippingCost: Number(formData.shippingCost || 0),
     tracking: formData.tracking || "",
     status: formData.status || "طلب جديد",
@@ -3915,6 +3921,7 @@ function onlineOrderModal(order = null) {
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(selectedCustomer?.address || order?.address || "")}"></div>
         <div class="form-field"><label>مصدر الطلب</label><select name="source">${["المتجر الإلكتروني","WhatsApp","Facebook","Instagram","هاتف","أخرى"].map(v => `<option ${order?.source === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         <div class="form-field"><label>طريقة الدفع</label><select name="paymentMethod">${["الدفع عند الاستلام","نقدي","Visa","تحويل بنكي","InstaPay","محفظة"].map(v => `<option ${order?.paymentMethod === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+        <div class="form-field"><label class="required">شركة الشحن</label><select name="shippingCompany" required>${shippingCompanyOptions(order?.shippingCompany||preferredShippingCompanyName())}</select></div>
         <div class="form-field"><label>رسوم الشحن</label><input name="shippingCost" inputmode="decimal" min="0" data-shipping-override="${order?.shippingFeeOverride?"true":"false"}" value="${orderShippingFee(order)}"><small id="online-order-shipping-hint">${order?.shippingPriceSource?.startsWith("governorate:")?"حسب المحافظة":"يمكن تعديلها يدويًا"}</small></div>
         <div class="form-field"><label>كود التتبع</label><input name="tracking" value="${esc(order?.tracking || "")}"></div>
         <div class="form-field"><label>الحالة</label><select name="status">${editableOrderStatuses(order).map(v => `<option ${(order?.status || "طلب جديد") === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
@@ -6786,7 +6793,7 @@ root.addEventListener("click", async event => {
     const order=shippingLookupOrder(quickShippingOrderId),trackingNumber=document.getElementById("quick-shipping-tracking")?.value||"";
     if(!order)return toast("ابحث عن طلب جاهز أولًا.","error");
     target.disabled=true;
-    submitReadyOrderShipment(order.id,{company:shippingSessionCompany,trackingNumber}).then(()=>{quickShippingOrderId="";renderOnlineOrders();}).catch(error=>{target.disabled=false;toast(error.message,"error");});
+    submitReadyOrderShipment(order.id,{company:order.shippingCompany||shippingSessionCompany||preferredShippingCompanyName(),trackingNumber}).then(()=>{quickShippingOrderId="";renderOnlineOrders();}).catch(error=>{target.disabled=false;toast(error.message,"error");});
   }
   if (action === "batch-shipping-preview") {
     batchShippingPreviewRows=parseBatchShippingText(document.getElementById("batch-shipping-input")?.value||"");renderOnlineOrders();
@@ -7332,6 +7339,7 @@ root.addEventListener("change", event => {
     return;
   }
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
+  if(event.target.id==="quick-order-shipping-company"){quickOrderDraft.shippingCompany=event.target.value;return;}
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
   if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
   if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderQuickOrderPreservingContext();return;}
@@ -8090,6 +8098,8 @@ modalBody.addEventListener("submit", async event => {
         : requestedStatus;
     const linkedCustomer = getCustomer(formData.customerId);
     if (!linkedCustomer) return toast("يجب اختيار عميل مسجل أو تسجيل عميل جديد قبل حفظ طلب الأونلاين.", "error");
+    const selectedShippingCompany=normalizeShippingCompanyName(formData.shippingCompany);
+    if(!selectedShippingCompany)return toast("اختر شركة شحن مسجلة وفعالة قبل حفظ الطلب.","error");
     const customerSnapshotData = customerSnapshot(linkedCustomer);
     const orderCustomerName = customerSnapshotData.name || formData.customerName;
     const orderPhone = customerSnapshotData.phone || formData.phone;
@@ -8111,6 +8121,7 @@ modalBody.addEventListener("submit", async event => {
       customerId: linkedCustomer.id,
       customerName: orderCustomerName, phone: orderPhone, governorate: orderGovernorate,
       city: orderCity, address: orderAddress, source: formData.source,
+      shippingCompany:selectedShippingCompany,
       paymentMethod: formData.paymentMethod, shippingCost: totals.shipping, shippingFee:totals.shipping,
       shippingFeeOverride:canAction("order.shipping.override")&&form.querySelector('[name="shippingCost"]')?.dataset.shippingOverride==="true",
       shippingPriceSource:form.querySelector('[name="shippingCost"]')?.dataset.shippingSource||existing?.shippingPriceSource||"manual",
@@ -8261,8 +8272,7 @@ modalBody.addEventListener("submit", async event => {
     createShipmentFromOrder(form.dataset.orderId, {
       company: formData.company,
       tracking: formData.tracking,
-      status: formData.status,
-      cost: Math.max(0, Number(normalizeArabicNumericText(formData.cost)) || 0)
+      status: formData.status
     });
     return;
   }
@@ -8275,7 +8285,7 @@ modalBody.addEventListener("submit", async event => {
   if (form.id === "ready-order-shipment-form") {
     const button=form.querySelector('button[type="submit"]');button.disabled=true;
     shippingSessionCompany=formData.company;
-    submitReadyOrderShipment(form.dataset.orderId,{company:formData.company,trackingNumber:formData.trackingNumber,shippedAt:formData.shippedAt,cost:Math.max(0,Number(normalizeArabicNumericText(formData.cost))||0)}).then(()=>{closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();}).catch(error=>{button.disabled=false;toast(error.message,"error");});
+    submitReadyOrderShipment(form.dataset.orderId,{company:formData.company,trackingNumber:formData.trackingNumber,shippedAt:formData.shippedAt}).then(()=>{closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();}).catch(error=>{button.disabled=false;toast(error.message,"error");});
     return;
   }
   if (form.id === "post-invoice-shipping-choice") {
@@ -8977,7 +8987,7 @@ function createShipmentFromOrder(id, details = null) {
     trackingProvider: isEgyptPostCarrier(company) ? data.settings.tracking.providerName : "",
     customerId: sale.customerId, customer: snapshot.name, customerName: snapshot.name, phone: snapshot.phone, customerPhone: snapshot.phone,
     governorate: snapshot.governorate, city: snapshot.city, address: snapshot.address,
-    cost: Number(details.cost ?? order.shippingFee ?? order.shippingCost ?? sale.shipping ?? 0), productsValue:Math.max(0,Number(sale.total||0)-Number(sale.shipping||0)),customerShippingCharge:Number(sale.shipping||0),collectionAmount:Number(sale.remainingAmount??sale.remaining??order.amountDueAtDelivery??order.total??0),amountDueAtDelivery:Number(sale.remainingAmount??sale.remaining??0), status: details.status || "تم الشحن", currentStatus: details.status || "تم الشحن", normalizedStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), shippingStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), updated: now,
+    cost: 0, productsValue:Math.max(0,Number(sale.total||0)-Number(sale.shipping||0)),customerShippingCharge:Number(sale.shipping||0),collectionAmount:Number(sale.remainingAmount??sale.remaining??order.amountDueAtDelivery??order.total??0),amountDueAtDelivery:Number(sale.remainingAmount??sale.remaining??0), status: details.status || "تم الشحن", currentStatus: details.status || "تم الشحن", normalizedStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), shippingStatus: normalizeTrackingStatusText(details.status || "تم الشحن"), updated: now,
     createdAt: now, updatedAt: now, deletedAt: null
   };
   data.shipments.unshift(shipment);
@@ -9000,10 +9010,9 @@ function shipmentFromOrderModal(order, sale) {
       <div class="form-grid">
         <div class="form-field"><label>الفاتورة</label><input value="${esc(documentDisplayName(sale.id, "sale"))}" readonly></div>
         <div class="form-field"><label>رقم الطلب</label><input value="${esc(order.id)}" readonly></div>
-        <div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions()}</select></div>
+        <div class="form-field"><label class="required">شركة الشحن</label><select name="company" required>${shippingCompanyOptions(order.shippingCompany)}</select></div>
         <div class="form-field"><label>رقم التتبع</label><input name="tracking" value="${esc(order.tracking || "")}" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا"></div>
         <div class="form-field"><label>الحالة</label><select name="status">${Object.values(SHIPPING_STATUSES).map(meta => `<option>${meta.label}</option>`).join("")}</select></div>
-        <div class="form-field"><label for="order-shipment-extra-cost">تكلفة الشحن الإضافية</label><input ${numericFieldAttributes({ id:"order-shipment-extra-cost", name:"cost", value:Number(orderShippingFee(order) || sale.shippingCost || sale.shipping || 0) })}></div>
       </div>
       <div class="customer-summary" style="margin-top:14px"><strong>${esc(snapshot.name)}</strong><span><span dir="ltr">${esc(snapshot.phone || "—")}</span></span><span>${esc([snapshot.governorate, snapshot.city, snapshot.address].filter(Boolean).join("، "))}</span></div>
       <div class="form-actions"><button class="btn" type="submit">إنشاء الشحنة وربطها بالفاتورة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>

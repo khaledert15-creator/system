@@ -15,6 +15,8 @@ const customer=(db.customers||[]).find(x=>!x.deletedAt)||{id:"C-QA",name:"عمي
 const book=(db.books||[]).find(x=>!x.deletedAt&&Number(x.stock||0)-Number(x.reservedStock||0)>=3)||(db.books||[]).find(x=>!x.deletedAt)||{id:"B-QA",name:"كتاب QA"};
 const company=(db.shippingCompanies||[]).find(x=>!x.deletedAt&&x.active!==false)?.name;
 if(!company)throw new Error("No active shipping company fixture.");
+const preferredCompany=(db.shippingCompanies||[]).find(x=>!x.deletedAt&&x.active!==false&&/البريد المصري|egypt\s*post/i.test(x.name))?.name||company;
+const otherCompany=(db.shippingCompanies||[]).find(x=>!x.deletedAt&&x.active!==false&&x.name!==preferredCompany)?.name||preferredCompany;
 db.onlineOrders=db.onlineOrders||[];db.sales=db.sales||[];db.shipments=db.shipments||[];
 const now=new Date().toISOString();
 function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true,withSale=true}={}){
@@ -42,6 +44,9 @@ restrictedPacking.lines.forEach(line=>{line.discountScope="line";});
 db.users.push({...db.users.find(row=>row.username==="owner"),id:"U-PACK-EDIT",username:"packing-editor",role:"كاشير",active:true});
 db.settings.permissions ||= {};db.settings.permissions.users ||= {};db.settings.permissions.users["packing-editor"]={actions:["order.quick.edit"]};
 for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
+db.onlineOrders.find(order=>order.id==="ORD-WF-02").shippingCompany=otherCompany;
+const chosenCarrierOrder=fixture(13);
+chosenCarrierOrder.shippingCompany=otherCompany;
 const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
 const settledCancellable=fixture(12,{paid:670,stage:"awaiting_preparation",prepared:false,withSale:false});
 db.orderPayments=db.orderPayments||[];db.cashAccounts=db.cashAccounts||[];
@@ -138,9 +143,16 @@ async function wait(){
   pass(paidCancelledAgain.body.existing===true&&paidRetrySnapshot.orderRefunds.length===paidCounts.refunds&&paidRetrySnapshot.orderPayments.length===paidCounts.payments&&paidRetrySnapshot.cash.length===paidCounts.cash&&paidRetrySnapshot.audit.length===paidCounts.audit,"paid-order cancel retry creates no refund payment cash movement or audit");
   const editPayload={phone:`010${String(Date.now()).slice(-8)}`,customerName:"عميل تعديل التجهيز",governorate:"القاهرة",address:"QA",chatwootConversationId:`wf-edit-${Date.now()}`,lines:[{bookId:book.id,qty:1,discount:0,discountType:"percent"}],shippingCost:70,paymentPlan:"cash_on_delivery",paidAmount:0,paymentConfirmed:false};
   const created=await call("/api/orders/quick",{method:"POST",body:editPayload}),editId=created.body.order?.id;pass(created.status===201&&editId,"editable order created");
+  pass(created.body.order.shippingCompany===preferredCompany,"new order defaults to Egyptian Post when registered");
+  const invalidCarrierSnapshot=fs.readFileSync(dbPath,"utf8");
+  const invalidCarrier=await call(`/api/orders/${editId}/quick`,{method:"PATCH",body:{...editPayload,shippingCompany:"شركة غير مسجلة"}});
+  pass(invalidCarrier.status===400&&invalidCarrier.body.code==="INVALID_CARRIER"&&fs.readFileSync(dbPath,"utf8")===invalidCarrierSnapshot,"unknown carrier cannot alter an order");
+  const selectedCarrier=await call(`/api/orders/${editId}/quick`,{method:"PATCH",body:{...editPayload,shippingCompany:otherCompany}});
+  pass(selectedCarrier.status===200&&selectedCarrier.body.order.shippingCompany===otherCompany,"carrier can be changed while registering the order");
   await call(`/api/orders/${editId}/confirm`,{method:"POST"});await call(`/api/orders/${editId}/prepare/start`,{method:"POST"});await call(`/api/orders/${editId}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}});
   const edited=await call(`/api/orders/${editId}/quick`,{method:"PATCH",body:{...editPayload,lines:[{bookId:book.id,qty:2,discount:0,discountType:"percent"}]}});
   pass(edited.status===200&&edited.body.preparationReset&&edited.body.order.lines[0].qty===2&&edited.body.order.preparationChecklist[0].qty===2&&!edited.body.order.preparationChecklist[0].done,"edit during preparation updates source order and checklist");
+  pass(edited.body.order.shippingCompany===otherCompany,"editing the draft without a carrier change preserves its choice");
   pass(edited.body.order.inventoryReservation?.lines?.[0]?.qty===2,"edit updates inventory reservation atomically");
   pass((await call(`/api/orders/${prep.id}/prepare/start`,{method:"POST"})).status===200,"start preparation");
   pass((await call(`/api/orders/${prep.id}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}})).status===200,"checklist reads current order item");
@@ -182,6 +194,10 @@ async function wait(){
   const full=after.shipments.find(x=>x.onlineOrderId==="ORD-WF-01"),partial=after.shipments.find(x=>x.onlineOrderId==="ORD-WF-02");
   pass(full.amountDueAtDelivery===0&&full.collectionAmount===0,"fully paid order COD is zero");
   pass(partial.amountDueAtDelivery===470&&partial.collectionAmount===470,"partially paid order COD equals remaining");
+  pass(partial.company===otherCompany,"batch import honors each order carrier ahead of the session default");
+  const selectedShipment=await call(`/api/orders/${chosenCarrierOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000013EG",cost:999}});
+  pass(selectedShipment.status===201&&selectedShipment.body.shipment.company===otherCompany&&selectedShipment.body.order.shippingCompany===otherCompany,"shipping uses the carrier chosen on the order");
+  pass(selectedShipment.body.shipment.cost===0&&selectedShipment.body.shipment.customerShippingCharge===70&&selectedShipment.body.shipment.collectionAmount===670,"carrier cost is not guessed from customer shipping charge or COD");
   const duplicate=await call("/api/orders/shipping/batch",{method:"POST",body:{company,rows:[{orderId:"ORD-WF-01",trackingNumber:"WF0000000001EG"},{orderId:"ORD-WF-02",trackingNumber:"WF0000000001EG"}]}});
   pass(duplicate.body.results.every(x=>!x.ok),"already shipped orders and duplicate attempts are rejected");
   pass(after.onlineOrders.filter(x=>/^ORD-WF-0[1-9]$|^ORD-WF-10$/.test(x.id)).every(x=>x.workflowStage==="shipped"&&x.shipmentId),"shipped orders leave ready queue persistently");
