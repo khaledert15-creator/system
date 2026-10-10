@@ -2953,6 +2953,7 @@ const server = http.createServer(async (req, res) => {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلبات."});
       const payload=JSON.parse(await readBody(req)||"{}"),rows=Array.isArray(payload.rows)?payload.rows:[],results=[];
+      if(payload.previewRevision!=null&&String(payload.previewRevision)!==dbRevision())return send(res,409,{ok:false,code:"STALE_SHIPPING_PREVIEW",message:"تغيرت البيانات منذ معاينة الملف. ارفع ملف Packages مرة أخرى قبل تأكيد الشحن."});
       for(const row of rows){
         const order=(db.onlineOrders||[]).find(item=>item.id===String(row.orderId||"").trim()&&!item.deletedAt);
         try{const shipment=createReadyOrderShipment(db,order,{...row,company:row.company||payload.company},user);results.push({orderId:order.id,trackingNumber:shipment.trackingNumber,ok:true,shipmentId:shipment.id});}

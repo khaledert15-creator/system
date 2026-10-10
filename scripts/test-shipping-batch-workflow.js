@@ -19,14 +19,30 @@ test("ignore and undo affect preview only",()=>{
   assert.match(vm.runInContext("batchShippingPreviewMarkup(shippingFileImportRows)",context),/تراجع عن التجاهل/);
   vm.runInContext("toggleShippingImportIgnore(0)",context);assert.equal(rows[0].ignored,false);
 });
-test("partial import preserves invalid ignored and failed records",()=>{
+test("confirmed shipments and ignored codes leave preview; unresolved errors remain",()=>{
   const context=previewContext([{ok:false,trackingNumber:"BAD"},{ok:true,ignored:true,orderId:"I",trackingNumber:"TI"},{ok:true,orderId:"A",trackingNumber:"TA"},{ok:true,orderId:"B",trackingNumber:"TB"}]);
   context.results=[{ok:true,orderId:"A",trackingNumber:"TA"},{ok:false,orderId:"B",trackingNumber:"TB",message:"failed"}];
   vm.runInContext("applyShippingImportResults(results)",context);
-  assert.equal(context.shippingFileImportRows.length,3);assert.equal(context.shippingFileImportRows[2].message,"failed");
-  assert.equal(context.shippingFileImportRows[1].ignored,true);
+  assert.equal(context.shippingFileImportRows.length,2);assert.equal(context.shippingFileImportRows[1].message,"failed");
+  assert.equal(context.shippingFileImportRows[0].trackingNumber,"BAD");
+});
+test("successful import clears the preview",()=>{
+  const context=previewContext([{ok:true,orderId:"A",trackingNumber:"TA"},{ok:false,ignored:true,trackingNumber:"WRONG"},{ok:false,alreadyAdded:true,trackingNumber:"OLD"}]);
+  context.results=[{ok:true,orderId:"A",trackingNumber:"TA"}];
+  vm.runInContext("applyShippingImportResults(results)",context);
+  assert.equal(context.shippingFileImportRows.length,0);
 });
 test("confirmation excludes ignored rows",()=>{assert.match(app,/shippingFileImportRows\.filter\(row=>row.ok&&!row.ignored\)\.map/);});
+test("waiting queue shows only unshipped orders and one confirmation action",()=>{
+  const source=app.slice(app.indexOf("function readyShippingOrders("),app.indexOf("function workflowModeTabs("))+app.slice(app.indexOf("function renderReadyShippingQueue("),app.indexOf("function quickShippingOrderCard("));
+  const context=vm.createContext({data:{onlineOrders:[{id:"WAIT",workflowStage:"awaiting_shipping",preparedAt:"now",shipmentId:null,saleId:"INV"},{id:"DONE",workflowStage:"shipped",preparedAt:"now",shipmentId:"SH"}]},shippingExportSelection:new Set(),shippingFileImportRows:[{ok:true,orderId:"WAIT",trackingNumber:"T1"}],workflowModeTabs:()=>"",readyShippingRow:order=>`<tr><td>${order.id}</td></tr>`,batchShippingPreviewMarkup:()=>"PREVIEW"});
+  vm.runInContext(source,context);
+  const before=vm.runInContext("renderReadyShippingQueue()",context);
+  assert.match(before,/تأكيد الشحن ونقل 1 طلب إلى قسم الشحن/);assert.match(before,/WAIT/);assert.doesNotMatch(before,/DONE/);
+  context.data.onlineOrders[0].workflowStage="shipped";context.data.onlineOrders[0].shipmentId="SH2";context.shippingFileImportRows=[];
+  const after=vm.runInContext("renderReadyShippingQueue()",context);
+  assert.match(after,/لا توجد طلبات تنتظر كود تتبع/);assert.doesNotMatch(after,/<td>WAIT<\/td>/);
+});
 test("existing tracking is classified without creating a shipment",()=>{
   const context=vm.createContext({normalizeTrackingNumber:String,ShippingBatchXlsx:ShippingBatch});
   vm.runInContext(server.slice(server.indexOf("function shipmentImportPreview("),server.indexOf("function normalizeCollectionTracking(")),context);
@@ -42,7 +58,7 @@ test("upload row follows the shipping-company template",()=>{assert.equal(row.le
 test("generated workbook is a valid xlsx zip with both required sheets",()=>{const buffer=ShippingBatch.workbookBuffer([row]);assert.equal(buffer.readUInt32LE(0),0x04034b50);assert.ok(buffer.includes(Buffer.from("xl/worksheets/sheet1.xml")));assert.ok(buffer.includes(Buffer.from("xl/worksheets/sheet2.xml")));});
 test("real Packages export exposes tracking codes and matching evidence",()=>{const file="/Users/macbook/مكتبه دوت كوم/Packages.xlsx";if(!fs.existsSync(file))return;const rows=ShippingBatch.packageRows(fs.readFileSync(file));assert.equal(rows.length,11);assert.match(rows[0].trackingNumber,/^ENO\d+EG$/);assert.equal(rows[0].phone,"01003977278");assert.equal(rows[0].cod,185);});
 test("order reference is extracted from the exported description",()=>{assert.equal(ShippingBatch.extractOrderId("[ORDER:ORD-112]\nكتاب × 1"),"ORD-112");});
-test("three-stage UI includes packing, tracking wait and shipped list",()=>{assert.match(app,/يحتاج تغليف/);assert.match(app,/مغلف وينتظر كود التتبع/);assert.match(app,/استيراد الأكواد وإتمام الشحن/);assert.match(app,/تم إرساله للشركة/);});
+test("three-stage UI includes packing, tracking wait and shipped list",()=>{assert.match(app,/يحتاج تغليف/);assert.match(app,/مغلف وينتظر كود التتبع/);assert.match(app,/استيراد الأكواد ومراجعتها/);assert.match(app,/تم تصدير الملف — بانتظار الكود/);});
 test("shipment cancellation requires carrier confirmation and resolution",()=>{assert.match(server,/CARRIER_CANCELLATION_CONFIRMATION_REQUIRED/);assert.match(server,/revise_shipment/);assert.match(server,/cancel_order/);assert.match(app,/أؤكد أنني ألغيت الشحنة من نظام شركة الشحن/);});
 test("cancelled tracking remains recorded but does not block a replacement shipment",()=>{assert.match(server,/!shipment\.cancelledAt&&shipment\.shippingStatus!=="cancelled"/);assert.match(server,/previousTrackingNumbers/);assert.match(server,/shippingExport:null/);});
 test("batch endpoints use authenticated server-side validation",()=>{assert.match(server,/\/api\/orders\/shipping\/export/);assert.match(server,/\/api\/orders\/shipping\/import-preview/);assert.match(server,/TRACKING_ALREADY_USED/);assert.match(server,/PHONE_MISMATCH/);assert.match(server,/COD_MISMATCH/);});

@@ -171,8 +171,13 @@ async function wait(){
   const reopened=await call(`/api/orders/${prep.id}/prepare/reopen`,{method:"POST"});
   pass(reopened.status===200&&reopened.body.order.workflowStage==="awaiting_preparation"&&!reopened.body.order.preparedAt,"explicit reopen returns order to preparation");
   const rows=Array.from({length:10},(_,i)=>({orderId:`ORD-WF-${String(i+1).padStart(2,"0")}`,trackingNumber:`WF${String(i+1).padStart(10,"0")}EG`}));
-  const batch=await call("/api/orders/shipping/batch",{method:"POST",body:{company,rows}});
+  const beforeBatch=fs.readFileSync(dbPath,"utf8");
+  const staleBatch=await call("/api/orders/shipping/batch",{method:"POST",body:{company,rows,previewRevision:-1}});
+  pass(staleBatch.status===409&&staleBatch.body.code==="STALE_SHIPPING_PREVIEW"&&fs.readFileSync(dbPath,"utf8")===beforeBatch,"stale shipping preview cannot move orders or create shipments");
+  const previewRevision=JSON.parse(beforeBatch).meta.dataRevision;
+  const batch=await call("/api/orders/shipping/batch",{method:"POST",body:{company,previewRevision,rows:[...rows,{orderId:"ORD-NOT-READY",trackingNumber:"WF9999999999EG"}]}});
   pass(batch.status===200&&batch.body.results.filter(x=>x.ok).length===10,"10 ready orders shipped in one batch");
+  pass(batch.body.results.filter(x=>!x.ok).length===1&&batch.body.results.find(x=>!x.ok).orderId==="ORD-NOT-READY","unmatched code does not create a shipment");
   const after=(await call("/api/db")).body;
   const full=after.shipments.find(x=>x.onlineOrderId==="ORD-WF-01"),partial=after.shipments.find(x=>x.onlineOrderId==="ORD-WF-02");
   pass(full.amountDueAtDelivery===0&&full.collectionAmount===0,"fully paid order COD is zero");
