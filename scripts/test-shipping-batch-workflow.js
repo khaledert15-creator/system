@@ -6,6 +6,33 @@ const path=require("path");
 const ShippingBatch=require("../app/shipping-batch-xlsx.js");
 const app=fs.readFileSync(path.join(__dirname,"../app/app.js"),"utf8");
 const server=fs.readFileSync(path.join(__dirname,"../server-node.js"),"utf8");
+const vm=require("vm");
+function previewContext(rows){
+  const source=app.slice(app.indexOf("function batchShippingPreviewMarkup("),app.indexOf("async function exportShippingCompanyFile("));
+  const context=vm.createContext({shippingFileImportRows:rows,shippingImportBusy:false,esc:String,renderOnlineOrders:()=>{}});
+  vm.runInContext(source,context);return context;
+}
+test("ignore and undo affect preview only",()=>{
+  const rows=[{ok:false,trackingNumber:"WRONG",message:"unmatched"},{ok:true,orderId:"O1",trackingNumber:"T1"}];
+  const context=previewContext(rows);
+  vm.runInContext("toggleShippingImportIgnore(0)",context);assert.equal(rows[0].ignored,true);
+  assert.match(vm.runInContext("batchShippingPreviewMarkup(shippingFileImportRows)",context),/تراجع عن التجاهل/);
+  vm.runInContext("toggleShippingImportIgnore(0)",context);assert.equal(rows[0].ignored,false);
+});
+test("partial import preserves invalid ignored and failed records",()=>{
+  const context=previewContext([{ok:false,trackingNumber:"BAD"},{ok:true,ignored:true,orderId:"I",trackingNumber:"TI"},{ok:true,orderId:"A",trackingNumber:"TA"},{ok:true,orderId:"B",trackingNumber:"TB"}]);
+  context.results=[{ok:true,orderId:"A",trackingNumber:"TA"},{ok:false,orderId:"B",trackingNumber:"TB",message:"failed"}];
+  vm.runInContext("applyShippingImportResults(results)",context);
+  assert.equal(context.shippingFileImportRows.length,3);assert.equal(context.shippingFileImportRows[2].message,"failed");
+  assert.equal(context.shippingFileImportRows[1].ignored,true);
+});
+test("confirmation excludes ignored rows",()=>{assert.match(app,/shippingFileImportRows\.filter\(row=>row.ok&&!row.ignored\)\.map/);});
+test("existing tracking is classified without creating a shipment",()=>{
+  const context=vm.createContext({normalizeTrackingNumber:String,ShippingBatchXlsx:ShippingBatch});
+  vm.runInContext(server.slice(server.indexOf("function shipmentImportPreview("),server.indexOf("function normalizeCollectionTracking(")),context);
+  const result=context.shipmentImportPreview({shipments:[{trackingNumber:"T1"}]},[{trackingNumber:"T1"}]);
+  assert.equal(result[0].alreadyAdded,true);assert.equal(result[0].ok,false);
+});
 
 function test(name,fn){try{fn();console.log(`PASS ${name}`);}catch(error){console.error(`FAIL ${name}: ${error.message}`);process.exitCode=1;}}
 

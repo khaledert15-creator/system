@@ -509,6 +509,8 @@ function shipmentImportPreview(db, packageRows=[]) {
   const ready=(db.onlineOrders||[]).filter(order=>!order.deletedAt&&order.workflowStage==="awaiting_shipping"&&order.preparedAt&&!order.shipmentId);
   const usedOrders=new Set(),usedTracking=new Set();
   return packageRows.map((row,index)=>{
+    const existing=(db.shipments||[]).find(item=>!item.deletedAt&&!item.cancelledAt&&item.shippingStatus!=="cancelled"&&normalizeTrackingNumber(item.trackingNumber||item.tracking)===row.trackingNumber);
+    if(existing&&row.trackingNumber)return {...row,rowNumber:index+5,ok:false,alreadyAdded:true,code:"TRACKING_ALREADY_USED",message:"مضاف سابقًا"};
     let order=row.orderId?(db.onlineOrders||[]).find(item=>String(item.id).toUpperCase()===row.orderId):null;
     let matchedBy=order?"order-reference":"";
     if(!order){

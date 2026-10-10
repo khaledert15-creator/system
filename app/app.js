@@ -203,6 +203,7 @@ let quickShippingOrderId = "";
 let batchShippingPreviewRows = [];
 let shippingExportSelection = new Set();
 let shippingFileImportRows = [];
+let shippingImportBusy = false;
 const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
@@ -3569,7 +3570,7 @@ function readyShippingRow(order) {
 
 function renderReadyShippingQueue() {
   const rows=readyShippingOrders();
-  const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId).length,validImported=shippingFileImportRows.filter(row=>row.ok).length;
+  const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId).length,validImported=shippingFileImportRows.filter(row=>row.ok&&!row.ignored).length;
   return `${workflowModeTabs("ready-shipping")}<div class="section-title fulfillment-title"><div><span class="eyebrow">شركة الشحن</span><h2>مغلف وينتظر كود التتبع</h2><p>صدّر الطلبات، ارفعها إلى شركة الشحن، ثم استورد ملف Packages. الكود يعني أن الطلب تم شحنه.</p></div><div class="fulfillment-counters"><b>${rows.length}<small>بانتظار الكود</small></b><b class="success">${selected}<small>محدد للتصدير</small></b></div></div><article class="card shipping-batch-toolbar"><div class="shipping-step"><b>1</b><span><strong>تصدير الطلبات</strong><small>ملف مطابق لقالب شركة الشحن</small></span><button class="btn secondary" data-action="shipping-select-all">تحديد الجاهز</button><button class="btn" data-action="shipping-export-xlsx" ${selected?"":"disabled"}>تحميل أسماء الشحنات (${selected})</button></div><div class="shipping-step"><b>2</b><span><strong>استيراد الأكواد وإتمام الشحن</strong><small>اختر ملف Packages بعد رفع الشحنات</small></span><label class="btn secondary file-button">اختيار Packages.xlsx<input id="shipping-packages-file" type="file" accept=".xlsx" hidden></label><button class="btn" data-action="shipping-import-confirm" ${validImported?"":"disabled"}>اعتماد ${validImported} شحنة سليمة</button></div>${shippingFileImportRows.length?batchShippingPreviewMarkup(shippingFileImportRows):""}</article><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" data-shipping-export-all aria-label="تحديد الكل"></th><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>المطلوب تحصيله</th><th>حالة التصدير</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="7" class="text-center muted">لا توجد طلبات مغلفة تنتظر كود التتبع.</td></tr>`}</tbody></table></div></article>`;
 }
 
@@ -3603,7 +3604,24 @@ function renderQuickShippingScreen() {
 }
 
 function batchShippingPreviewMarkup(rows) {
-  return `<div class="batch-preview-list">${rows.map(row=>`<div class="${row.ok?"valid":"invalid"}"><b>${row.ok?"✓":"✕"}</b><span><strong>${esc(row.orderId||"—")}</strong><small dir="ltr">${esc(row.trackingNumber||"—")}</small></span><em>${esc(row.ok?"جاهز للشحن":row.message)}</em></div>`).join("")}</div>`;
+  const imported=rows===shippingFileImportRows;
+  const ready=rows.filter(row=>row.ok&&!row.ignored).length,ignored=rows.filter(row=>row.ignored).length;
+  return `${imported?`<div class="shipping-preview-actions"><strong>${ready} جاهز للاعتماد · ${rows.filter(row=>!row.ok&&!row.ignored&&!row.alreadyAdded).length} يحتاج مراجعة · ${ignored} تم تجاهله · ${rows.filter(row=>row.alreadyAdded&&!row.ignored).length} مضاف سابقًا</strong><button type="button" class="btn secondary" data-action="shipping-ignore-invalid">تجاهل كل غير المطابق</button><small>التجاهل من الملف فقط، ولا يلغي أي طلب أو شحنة.</small></div>`:""}<div class="batch-preview-list">${rows.map((row,index)=>`<div class="${row.ignored||row.alreadyAdded?"ignored":row.ok?"valid":"invalid"}"><b aria-hidden="true">${row.ignored?"−":row.alreadyAdded||row.ok?"✓":"⚠"}</b><span><strong>${esc(row.orderId||"—")}</strong><small dir="ltr">${esc(row.trackingNumber||"—")}</small></span><em>${esc(row.ignored?"تم تجاهله":row.alreadyAdded?"مضاف سابقًا":row.ok?"جاهز للشحن":row.message)}</em>${imported?`<button type="button" class="btn secondary" data-action="shipping-toggle-ignore" data-index="${index}">${row.ignored?"تراجع عن التجاهل":"تجاهل السجل"}</button>`:""}</div>`).join("")}</div>`;
+}
+
+function toggleShippingImportIgnore(index){
+  if(shippingImportBusy)return;
+  const row=shippingFileImportRows[index];if(!row)return;
+  row.ignored=!row.ignored;renderOnlineOrders();
+}
+
+function applyShippingImportResults(results){
+  shippingFileImportRows=shippingFileImportRows.flatMap(row=>{
+    if(!row.ok||row.ignored)return [row];
+    const result=results.find(item=>item.orderId===row.orderId&&item.trackingNumber===row.trackingNumber);
+    if(result?.ok)return [];
+    return [{...row,ok:false,code:result?.code||"RESULT_MISSING",message:result?.message||"لم يتأكد اعتماد السجل؛ أعد مراجعة الملف قبل المحاولة."}];
+  });
 }
 
 async function exportShippingCompanyFile(){
@@ -3615,13 +3633,15 @@ async function exportShippingCompanyFile(){
 }
 
 async function previewShippingPackagesFile(file){
+  if(shippingImportBusy)return;
   if(!file)return;const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||"").split(",")[1]||"");reader.onerror=()=>reject(new Error("تعذر قراءة الملف."));reader.readAsDataURL(file);});
   const response=await fetch("/api/orders/shipping/import-preview",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json"}),body:JSON.stringify({fileBase64:base64})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.message||"تعذر تحليل ملف Packages.");shippingFileImportRows=result.rows||[];renderOnlineOrders();toast(`تمت مراجعة ${result.summary?.total||0} سجل: ${result.summary?.valid||0} جاهز و${result.summary?.review||0} يحتاج مراجعة.`);
 }
 
 async function confirmShippingPackagesImport(button){
-  const rows=shippingFileImportRows.filter(row=>row.ok).map(row=>({orderId:row.orderId,trackingNumber:row.trackingNumber}));if(!rows.length)return toast("لا توجد شحنات سليمة للاعتماد.","error");button.disabled=true;const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
-  try{const response=await fetch("/api/orders/shipping/batch",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({company,rows})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.message||"تعذر اعتماد الشحنات.");dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;await reloadRemoteData();const saved=result.results.filter(row=>row.ok).length,failed=result.results.length-saved;shippingFileImportRows=[];renderOnlineOrders();toast(`تم شحن ${saved} طلب ونقله إلى قائمة الشحن${failed?` · ${failed} يحتاج مراجعة`:""}.`);}catch(error){button.disabled=false;toast(error.message,"error");}
+  if(shippingImportBusy)return;
+  const rows=shippingFileImportRows.filter(row=>row.ok&&!row.ignored).map(row=>({orderId:row.orderId,trackingNumber:row.trackingNumber}));if(!rows.length)return toast("لا توجد شحنات سليمة للاعتماد.","error");shippingImportBusy=true;button.disabled=true;const company=shippingSessionCompany||data.shippingCompanies?.find(item=>!item.deletedAt&&item.active!==false)?.name||"";
+  try{const response=await fetch("/api/orders/shipping/batch",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({company,rows})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.message||"تعذر اعتماد الشحنات.");dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;applyShippingImportResults(result.results||[]);await reloadRemoteData();const saved=result.results.filter(row=>row.ok&&!row.ignored).length,failed=result.results.length-saved;renderOnlineOrders();toast(`تم شحن ${saved} طلب ونقله إلى قائمة الشحن${failed?` · ${failed} يحتاج مراجعة`:""}.`);}catch(error){button.disabled=false;toast(error.message,"error");}finally{shippingImportBusy=false;}
 }
 
 function shipReadyOrderModal(id) {
@@ -6719,6 +6739,8 @@ root.addEventListener("click", async event => {
     target.disabled=true;exportShippingCompanyFile().catch(error=>{target.disabled=false;toast(error.message,"error");});
   }
   if(action==="shipping-import-confirm")confirmShippingPackagesImport(target);
+  if(action==="shipping-toggle-ignore")toggleShippingImportIgnore(Number(target.dataset.index));
+  if(action==="shipping-ignore-invalid"&&!shippingImportBusy){shippingFileImportRows.forEach(row=>{if(!row.ok&&!row.alreadyAdded)row.ignored=true;});renderOnlineOrders();}
   if (action === "ship-ready-order") shipReadyOrderModal(target.dataset.id);
   if(action==="cancel-shipment-flow")cancelShipmentFlowModal(target.dataset.id);
   if (action === "reopen-order-preparation") {
