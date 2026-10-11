@@ -2988,7 +2988,7 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});
       if(!order.preparedAt&&!["awaiting_packing","awaiting_shipping"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب لم يكتمل تجهيزه بعد."});
-      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
       appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز","إعادة مراجعة محتويات الطرد");writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()});
     }

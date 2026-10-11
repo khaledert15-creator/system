@@ -185,8 +185,10 @@ async function wait(){
   const retry=await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST"});
   pass(retry.body.existing===true&&fs.readFileSync(dbPath,"utf8")===packedSnapshot,"packing retry does not duplicate invoice, stock, balance or audit");
   pass((await call(`/api/orders/${prep.id}/prepare/start`,{method:"POST"})).status===409,"prepared order cannot start preparation again");
+  const exportedForRepack=await call("/api/orders/shipping/export",{method:"POST",body:{orderIds:[prep.id]}});
+  pass(exportedForRepack.status===200,"packed order can be exported before repacking");
   const reopened=await call(`/api/orders/${prep.id}/prepare/reopen`,{method:"POST"});
-  pass(reopened.status===200&&reopened.body.order.workflowStage==="awaiting_preparation"&&!reopened.body.order.preparedAt,"explicit reopen returns order to preparation");
+  pass(reopened.status===200&&reopened.body.order.workflowStage==="awaiting_preparation"&&!reopened.body.order.preparedAt&&!reopened.body.order.shippingExport,"explicit reopen returns order to preparation and clears the old export");
   const rows=Array.from({length:10},(_,i)=>({orderId:`ORD-WF-${String(i+1).padStart(2,"0")}`,trackingNumber:`WF${String(i+1).padStart(10,"0")}EG`}));
   const beforeBatch=fs.readFileSync(dbPath,"utf8");
   const staleBatch=await call("/api/orders/shipping/batch",{method:"POST",body:{company,rows,previewRevision:-1}});
@@ -205,6 +207,10 @@ async function wait(){
   pass(selectedShipment.body.shipment.cost===0&&selectedShipment.body.shipment.customerShippingCharge===70&&selectedShipment.body.shipment.collectionAmount===670,"carrier cost is not guessed from customer shipping charge or COD");
   const missingWeight=await call(`/api/orders/${missingWeightOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000015EG"}});
   pass(missingWeight.status===409&&!missingWeight.body.shipmentId,"missing packed weight blocks shipment creation");
+  const addedWeight=await call(`/api/orders/${missingWeightOrder.id}/packed-weight`,{method:"PATCH",body:{packedWeightGrams:1200}});
+  pass(addedWeight.status===200&&addedWeight.body.order.packedWeightGrams===1200,"ready order accepts a missing weight from its row action");
+  const shippedAfterWeight=await call(`/api/orders/${missingWeightOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000015EG"}});
+  pass(shippedAfterWeight.status===201&&shippedAfterWeight.body.order.workflowStage==="shipped","manual tracking works after the weight is saved");
   if(/البريد المصري|egypt\s*post/i.test(preferredCompany)){
     const postalShipment=await call(`/api/orders/${postalOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000014EG",cost:999}});
     pass(postalShipment.status===201&&postalShipment.body.shipment.postalBillingManaged===true&&postalShipment.body.shipment.cost===74.6&&postalShipment.body.shipment.customerShippingCharge===70,"postal shipping uses the measured tariff without changing the customer's shipping charge");

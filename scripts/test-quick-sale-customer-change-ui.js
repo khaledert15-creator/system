@@ -17,6 +17,60 @@ test("customer change button opens a dedicated picker", () => {
   assert.match(app, /function openSaleCustomerPicker\(\)[\s\S]*openModal\("تغيير عميل الفاتورة"/);
 });
 
+test("quick sale and customer picker both offer adding a new customer", () => {
+  const invoice = app.match(/function renderSaleInvoice\(\) \{[\s\S]*?\n\}/)?.[0] || "";
+  const picker = app.match(/function openSaleCustomerPicker\(\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(invoice, /class="quick-customer"[\s\S]*?data-action="register-sale-customer">\+ إضافة عميل/);
+  assert.match(picker, /data-action="register-sale-customer">\+ إضافة عميل جديد/);
+  assert.match(css, /\.quick-customer-actions \{[^}]*display: flex/);
+  assert.match(css, /\.sale-customer-footer-actions \{[^}]*display: flex/);
+});
+
+test("new customer is selected only after a successful save without clearing invoice lines", () => {
+  assert.match(app, /if \(action === "register-sale-customer"\) addPartyModal\("customer", null, \{ returnToSale: true \}\)/);
+  const submit = app.match(/if \(form\.id === "party-form"\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.match(submit, /const saved = await saveData\(partyOperation/);
+  assert.match(submit, /if \(!saved\) \{[\s\S]*?return toast/);
+  assert.match(submit, /if \(isCustomer && form\.dataset\.returnToSale === "true"\) \{\s*draftSale\.customerId = item\.id;\s*applySaleCustomerShipping\(item\);\s*renderSales\(\)/);
+  assert.doesNotMatch(submit, /resetSaleDraft\(|draftSale\.lines\s*=/);
+});
+
+test("add customer button inside the picker opens the sale customer form", () => {
+  const modalClick = app.match(/modalBody\.addEventListener\("click", event => \{[\s\S]*?\n\}\);/)?.[0] || "";
+  assert.match(modalClick, /dataset\.action === "register-sale-customer"[\s\S]*?requireAction\("register-sale-customer"\)[\s\S]*?addPartyModal\("customer", null, \{ returnToSale: true \}\)/);
+});
+
+test("arrow keys move through customer and book suggestions without replacing Tab", () => {
+  const source = app.match(/function focusSuggestionWithArrow\(event, input, list\) \{[\s\S]*?\n\}/)?.[0] || "";
+  const navigate = new Function(`${source}; return focusSuggestionWithArrow;`)();
+  let focused = "", prevented = false;
+  const input = { focus: () => { focused = "search"; } };
+  const buttons = [0, 1, 2].map(index => ({ focus: () => { focused = index; } }));
+  const list = { querySelectorAll: () => buttons };
+  const event = (key, target) => ({ key, target, preventDefault: () => { prevented = true; } });
+  assert.strictEqual(navigate(event("ArrowDown", input), input, list), true);
+  assert.strictEqual(focused, 0);
+  assert.strictEqual(navigate(event("ArrowDown", buttons[0]), input, list), true);
+  assert.strictEqual(focused, 1);
+  assert.strictEqual(navigate(event("ArrowUp", buttons[0]), input, list), true);
+  assert.strictEqual(focused, "search");
+  assert.strictEqual(navigate(event("ArrowUp", input), input, list), true);
+  assert.strictEqual(focused, 2);
+  assert.strictEqual(prevented, true);
+  prevented = false;
+  assert.strictEqual(navigate(event("Tab", input), input, list), false);
+  assert.strictEqual(prevented, false);
+  assert.match(app, /event\.target\.id === "sale-book-search" \|\| event\.target\.closest\("#sale-book-suggestions"\)/);
+  assert.match(app, /modalBody\.addEventListener\("keydown"[\s\S]*?focusSuggestionWithArrow\(event, input, list\)/);
+});
+
+test("Tab stays inside sale customer dialogs and focus begins at the first field", () => {
+  assert.match(app, /modal\.addEventListener\("keydown"[\s\S]*?event\.key !== "Tab"[\s\S]*?focusable\.at\(-1\)\.focus\(\)[\s\S]*?focusable\[0\]\.focus\(\)/);
+  assert.match(app, /modalBody\.querySelector\("#sale-customer-modal-search"\)\?\.focus\(\)/);
+  assert.match(app, /if \(options\.returnToSale\) modalBody\.querySelector\('#party-form \[name="name"\]'\)\?\.focus\(\)/);
+  assert.match(app, /id="sale-book-suggestions"[\s\S]*?id="sale-quick-qty"/);
+});
+
 test("picker searches by customer name or phone", () => {
   assert.match(app, /sale-customer-modal-search/);
   assert.match(app, /type="search"[\s\S]*placeholder="ابحث بالاسم أو رقم الهاتف"/);
@@ -116,4 +170,4 @@ test("save remains server-confirmed before clearing the draft", () => {
   assert.match(app, /if\(!saved\)[\s\S]*?return null;[\s\S]*?toast\(`تم اعتماد الفاتورة/);
 });
 
-console.log(`${passed}/16 quick sale customer change UI tests passed`);
+console.log(`${passed} quick sale customer change UI tests passed`);

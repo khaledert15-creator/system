@@ -235,6 +235,8 @@ let stickyTableScroll = { wrap: null, bar: null, inner: null, syncing: false, ra
 let financeTab = "expenses";
 let shippingPriceTab = "customer";
 let financeReportFilters = { preset:"month", from:"", to:"", movementType:"", account:"", expenseType:"", carrier:"" };
+let carrierReceivablesCompany = "";
+let carrierReceivablesSearch = "";
 let pendingFinanceFormDraft = null;
 let pendingFinanceConfirmation = null;
 let orderCollectionDraft = { trackingNumber:"", amount:"", collectionDate:"", shipmentId:"", differenceReason:"", notes:"", registrationType:"collected_by_carrier", account:"" };
@@ -2588,13 +2590,14 @@ function openSaleCustomerPicker() {
     <div class="sale-customer-change">
       <div class="notice info sale-customer-draft-notice"><strong>المسودة محفوظة كما هي</strong><span>المسودة محفوظة كما هي؛ اختيار العميل لا يحفظ الفاتورة ولا يغيّر الأصناف أو الخصومات أو الملاحظة.</span></div>
       <div class="sale-customer-picker">
-        <label for="sale-customer-modal-search">البحث عن عميل</label>
-        <div class="sale-customer-search-control"><span aria-hidden="true">⌕</span><input id="sale-customer-modal-search" type="search" autocomplete="off" autofocus placeholder="ابحث بالاسم أو رقم الهاتف" aria-controls="sale-customer-modal-suggestions"></div>
+        <label for="sale-customer-modal-search">البحث عن عميل <small>↑↓ للنتائج · Enter للاختيار · Tab للتنقل</small></label>
+        <div class="sale-customer-search-control"><span aria-hidden="true">⌕</span><input id="sale-customer-modal-search" type="search" autocomplete="off" autofocus placeholder="ابحث بالاسم أو رقم الهاتف" aria-controls="sale-customer-modal-suggestions" aria-expanded="true"></div>
         <div class="sale-customer-results-heading"><strong>العملاء</strong><span>اختر العميل المطلوب من القائمة</span></div>
         <div id="sale-customer-modal-suggestions" class="modal-customer-suggestions" role="listbox" aria-label="نتائج البحث عن العملاء">${customers.map(saleCustomerChoiceButton).join("")}</div>
       </div>
-      <div class="sale-customer-footer"><div class="sale-customer-current"><span>العميل الحالي</span><strong>${esc(selected?.name || "عميل نقدي")}</strong></div><button class="btn ghost" type="button" data-action="close-modal">رجوع بدون تغيير</button></div>
+      <div class="sale-customer-footer"><div class="sale-customer-current"><span>العميل الحالي</span><strong>${esc(selected?.name || "عميل نقدي")}</strong></div><div class="sale-customer-footer-actions"><button class="btn secondary" type="button" data-action="register-sale-customer">+ إضافة عميل جديد</button><button class="btn ghost" type="button" data-action="close-modal">رجوع بدون تغيير</button></div></div>
     </div>`);
+  modalBody.querySelector("#sale-customer-modal-search")?.focus();
 }
 
 function resetSaleDraft() {
@@ -2939,15 +2942,15 @@ function renderSaleInvoice() {
     <div class="invoice-layout quick-sale-layout">
       <article class="card">
         <div class="invoice-lines">
-          <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف</label>
-          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"><div id="sale-book-suggestions"></div></div>
+          <label class="quick-search-label" for="sale-book-search">امسح الباركود أو اكتب اسم الصنف <small>↑↓ للنتائج · Enter للإضافة · Tab للتنقل</small></label>
+          <div class="sale-quick-add"><div class="search"><input id="sale-book-search" autocomplete="off" autofocus placeholder="امسح الباركود أو اكتب اسم الصنف" aria-controls="sale-book-suggestions" aria-expanded="false"></div><div id="sale-book-suggestions" role="group" aria-label="نتائج البحث عن الأصناف"></div><input id="sale-quick-qty" type="number" min="1" value="1" aria-label="الكمية" title="الكمية"></div>
           <div class="quick-order-table-head sale-line-head"><span>الكتاب</span><span>الكمية</span><span>السعر الأساسي</span><span>خصم %</span><span>خصم ج.م</span><span>بعد الخصم</span><span>إجمالي الصنف</span><span></span></div>
           <div id="sale-lines" class="quick-order-lines">${lines}</div>
         </div>
       </article>
       <aside class="card invoice-summary">
         <span class="eyebrow">ملخص الفاتورة</span>
-        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><button class="btn secondary quick-change-customer" type="button" data-action="open-sale-customer-picker">تغيير العميل</button></div>
+        <div class="quick-customer"><span>العميل</span><strong>${esc(selectedCustomer?.name || "عميل نقدي")}</strong><div class="quick-customer-actions"><button class="btn secondary quick-change-customer" type="button" data-action="open-sale-customer-picker">تغيير العميل</button><button class="btn ghost quick-add-customer" type="button" data-action="register-sale-customer">+ إضافة عميل</button></div></div>
         <div class="summary-row"><span>المجموع الإجمالي قبل الخصم</span><strong id="sale-subtotal">${money(totals.subtotal)}</strong></div>
         <div class="summary-row"><span>خصومات الأصناف</span><strong id="sale-line-discount-total">${money(totals.lineDiscountTotal)}</strong></div>
         <div class="summary-row ${totals.invoiceDiscount ? "" : "summary-row-muted"}"><span>خصم الطلب</span><strong id="sale-invoice-discount-total">${totals.invoiceDiscount ? money(totals.invoiceDiscount) : "—"}</strong></div>
@@ -2967,7 +2970,7 @@ function renderSaleInvoice() {
         </details>
       </aside>
     </div>`;
-  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 30);
+  setTimeout(() => { if (modal.hidden) document.getElementById("sale-book-search")?.focus(); }, 30);
   const saleShippingInput=document.getElementById("sale-shipping-cost");
   if(saleShippingInput&&!canAction("order.shipping.override")){
     saleShippingInput.readOnly=true;
@@ -3491,10 +3494,14 @@ async function openPreparationOrder(id,start=false) {
 }
 
 function openPackingWeightModal(id,existingPacked=false){
-  const order=getOnlineOrder(id);if(!order)return;
+  const order=getOnlineOrder(id);if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
+  if(existingPacked){
+    if(!canAction("order.pack")&&!canAction("order.shipping"))return toast("ليس لديك صلاحية تسجيل وزن الطرد.","error");
+    if(order.workflowStage!=="awaiting_shipping"||order.shipmentId)return toast("لم يعد الطلب بانتظار كود التتبع. حدّث القائمة وحاول مرة أخرى.","error");
+  }
   if(!existingPacked&&!(order.lines||[]).length)return toast("أضف صنفًا قبل إكمال التغليف.","error");
   const grams=Number(order.packedWeightGrams||0),postal=/البريد المصري|egypt\s*post/i.test(order.shippingCompany||"");
-  openModal(existingPacked?`تعديل وزن ${id}`:`وزن الطرد ${id}`,"آخر خطوة في التغليف",`<form id="packing-weight-form" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}"><div class="finance-callout"><strong>زن الطرد بعد إغلاقه</strong><span>أدخل الوزن في أي خانة؛ الأخرى تتحدث تلقائيًا. سعر البريد محسوب ولا يستطيع الموظف تعديله.</span></div><div class="packing-weight-grid"><label>الوزن بالجرام<input name="grams" inputmode="numeric" autocomplete="off" value="${grams||""}" placeholder="مثال: ٢٣٥٠" required></label><label>الوزن بالكيلوجرام<input name="kilograms" inputmode="decimal" autocomplete="off" value="${grams?grams/1000:""}" placeholder="مثال: ٢٫٣٥"></label></div><div class="packing-weight-cost" id="packing-weight-cost" aria-live="polite">${postal?"أدخل الوزن لعرض تكلفة شحن البريد.":"شركة الشحن المختارة ليس لها تعريفة بريد."}</div><div class="form-actions"><button class="btn" type="submit">${existingPacked?"حفظ الوزن وإلغاء التصدير السابق":"تأكيد الوزن وإتمام التغليف"}</button><button class="btn ghost" type="button" data-action="packing-weight-back" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}">رجوع</button></div></form>`);
+  openModal(existingPacked?(grams?`تصحيح وزن ${id}`:`تسجيل وزن ${id}`):`وزن الطرد ${id}`,"آخر خطوة في التغليف",`<form id="packing-weight-form" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}"><div class="finance-callout"><strong>زن الطرد بعد إغلاقه</strong><span>أدخل الوزن في أي خانة؛ الأخرى تتحدث تلقائيًا. بعد حفظه يمكنك إدخال كود التتبع. سعر البريد محسوب ولا يستطيع الموظف تعديله.</span></div><div class="packing-weight-grid"><label>الوزن بالجرام<input name="grams" inputmode="numeric" autocomplete="off" value="${grams||""}" placeholder="مثال: ٢٣٥٠" required></label><label>الوزن بالكيلوجرام<input name="kilograms" inputmode="decimal" autocomplete="off" value="${grams?grams/1000:""}" placeholder="مثال: ٢٫٣٥"></label></div><div class="packing-weight-cost" id="packing-weight-cost" aria-live="polite">${postal?"أدخل الوزن لعرض تكلفة شحن البريد.":"شركة الشحن المختارة ليس لها تعريفة بريد."}</div><div class="form-actions"><button class="btn" type="submit">${existingPacked?(grams?"حفظ الوزن وإلغاء التصدير السابق":"حفظ الوزن وتفعيل إدخال الكود"):"تأكيد الوزن وإتمام التغليف"}</button><button class="btn ghost" type="button" data-action="packing-weight-back" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}">رجوع</button></div></form>`);
   updatePackingWeightPreview(document.getElementById("packing-weight-form"));
   document.querySelector('#packing-weight-form [name="grams"]')?.focus();
 }
@@ -3595,7 +3602,10 @@ function shippingLookupOrder(value="") {
 function readyShippingRow(order) {
   const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),units=(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0);
   const shipment=data.shipments.find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
-  return `<tr><td><input type="checkbox" data-shipping-export="${order.id}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&order.packedWeightGrams?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${order.packedWeightGrams?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${shipment?`<strong>تم الشحن</strong>`:`<div class="row-actions"><button class="row-action" data-action="packed-weight-edit" data-id="${order.id}">${order.packedWeightGrams?"تصحيح الوزن":"تسجيل الوزن"}</button>${!order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`:`<button class="row-action" data-action="ship-ready-order" data-id="${order.id}" ${order.packedWeightGrams?"":"disabled"}>إدخال كود يدويًا</button>`}<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة للتغليف</button></div>`}</td></tr>`;
+  const hasWeight=Number(order.packedWeightGrams)>0;
+  const canWeight=canAction("order.pack")||canAction("order.shipping"),canShip=canWeight,canRepack=canAction("order.prepare");
+  const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${canRepack?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${esc(order.id)}">إعادة للتغليف</button>`:""}</div>`;
+  return `<tr><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
 }
 
 function renderReadyShippingQueue() {
@@ -3710,7 +3720,11 @@ async function confirmShippingPackagesImport(button){
 }
 
 function shipReadyOrderModal(id) {
-  const order=getOnlineOrder(id);if(!order)return;
+  const order=getOnlineOrder(id);if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
+  if(!canAction("order.pack")&&!canAction("order.shipping"))return toast("ليس لديك صلاحية شحن هذا الطلب.","error");
+  if(order.workflowStage!=="awaiting_shipping"||order.shipmentId)return toast("لم يعد الطلب بانتظار كود التتبع. حدّث القائمة وحاول مرة أخرى.","error");
+  if(!order.saleId)return toast("أنشئ فاتورة الطلب قبل تسجيل كود التتبع.","error");
+  if(!(Number(order.packedWeightGrams)>0))return toast("سجّل وزن الطرد أولًا ثم أدخل كود التتبع.","error");
   const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),company=order.shippingCompany||preferredShippingCompanyName();
   openModal(`شحن ${order.id}`,"جاهز للشحن",`<form id="ready-order-shipment-form" data-order-id="${order.id}"><div class="shipment-ready-summary"><strong>${esc(order.customerName)}</strong><span>${esc([order.governorate,order.city,order.address].filter(Boolean).join("، "))}</span><b>${payment.remainingAmount?`COD ${money(payment.remainingAmount)}`:"مدفوع بالكامل — COD ٠ ج.م"}</b></div><div class="form-grid two"><div class="form-field"><label class="required">شركة الشحن المحددة للطلب</label><select name="company" required>${shippingCompanyOptions(company)}</select></div><div class="form-field"><label class="required">كود التتبع</label><input name="trackingNumber" dir="ltr" required autofocus></div><div class="form-field"><label>تاريخ الشحن</label><input name="shippedAt" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"></div></div><div class="form-actions"><button class="btn" type="submit">تأكيد الشحن</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
 }
@@ -4659,7 +4673,7 @@ function renderFinanceLedger() {
 
 function allowedFinanceTabs() {
   return [
-    ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["order-collections","تحصيل الأوردرات",["finance.collection.view","finance.collection.create"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
+    ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["order-collections","تحصيل الأوردرات",["finance.collection.view","finance.collection.create"]],["carrier-receivables","مستحقات شركات الشحن",["view-financial-reports"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
     ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","سجل الحركات",["view-cash"]],["postal-account","حساب البريد المصري",["view-financial-reports"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
   ].filter(([, , actions])=>actions.some(canAction));
 }
@@ -4671,6 +4685,7 @@ const FINANCE_TAB_META = {
   settlements:["تسويات التحصيل","طابق تحويلات شركات الشحن وسجل ما وصل للمكتبة فعليًا."],
   accounts:["الخزائن والحسابات","تابع أرصدة الخزائن والبنوك والمحافظ."],
   movements:["سجل الحركات","كل عمليات الدخول والخروج المالي في مكان واحد."],
+  "carrier-receivables":["مستحقات شركات الشحن","اعرف ما حُصّل لدى كل شركة ولم يصل إلى خزنتك، وما زال قيد التسليم أو بانتظار إثبات التحصيل."],
   "postal-account":["حساب البريد المصري","تكلفة البريد الشهرية منفصلة عن قيمة خدمة العملاء؛ الخصم يقلل المديونية، والسداد لا يكرر المصروف."],
   "finance-reports":["التقارير المالية","ملخص الإيرادات والمصروفات والتحصيلات والنتيجة المالية."]
 };
@@ -4838,6 +4853,56 @@ function renderFinanceSettlements() {
   return `${financeTabsMarkup()}<div class="stats-grid finance-summary">${statCard("تسويات معتمدة",rows.filter(i=>Boolean(i.approvedAt)).length,"تحويلات شركات الشحن","✓")}${statCard("مسودة / مراجعة",rows.filter(i=>["مسودة","بانتظار المراجعة"].includes(i.status)).length,"تحتاج استكمالًا","⌛","gold")}${statCard("مسلمة غير مسواة",deliveredUnsettled,"تحتاج تسوية تحصيل","!","red")}</div><article class="card"><div class="card-header"><div><h3>تسويات التحصيل</h3><p>طابق تحويل شركة الشحن مع أكواد التتبع ثم اعتمد مرة واحدة.</p></div>${canAction("create-settlement")?`<button class="btn" data-action="new-settlement">＋ تسوية جديدة</button>`:""}</div><div class="table-wrap"><table><thead><tr><th>رقم التسوية</th><th>الشركة</th><th>تاريخ التحويل</th><th>الشحنات</th><th>المتوقع</th><th>المستلم</th><th>الفرق</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>{const totals=settlementSummary(item);const expected=Number(item.expectedNetSettlement??(totals.collection-totals.actualCost-totals.actualCommission-Number(item.otherDeductions||0)));const actual=Number(item.actualNetSettlement||0);return `<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.transferReference||"")}</span></td><td>${esc(item.company)}</td><td>${fmtDate(item.transferDate)}</td><td>${totals.count}</td><td class="money">${money(expected)}</td><td class="money">${money(actual)}</td><td class="money ${Math.abs(actual-expected)>.01?"text-danger":""}">${money(actual-expected)}</td><td>${expenseStatusBadge(item.status)}</td><td><button class="row-action" data-action="view-settlement" data-id="${item.id}">فتح</button></td></tr>`}).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد تسويات بعد.</td></tr>`}</tbody></table></div></article>`;
 }
 
+function carrierReceivablesSnapshot(db, financeForShipment, statusForShipment) {
+  const collections=new Map();
+  for(const item of db.orderCollections||[])if(item.shipmentId&&item.status!=="reversed")collections.set(item.shipmentId,item);
+  const approvedSettlements=new Set();
+  for(const settlement of db.carrierSettlements||[])if(!settlement.deletedAt&&settlement.approvedAt){
+    approvedSettlements.add(settlement.id);
+    for(const line of settlement.lines||[])if(line.shipmentId)approvedSettlements.add(line.shipmentId);
+  }
+  const cents=value=>Math.round((Number(value)||0)*100);
+  const rows=[];
+  for(const shipment of db.shipments||[]){
+    if(shipment.deletedAt||/ملغ|cancel/i.test(String(shipment.status||"")))continue;
+    const collection=collections.get(shipment.id);
+    if(approvedSettlements.has(shipment.id)||approvedSettlements.has(shipment.settlementId)||approvedSettlements.has(collection?.settlementId)||collection?.status==="settled"||shipment.financialCollectionStatus==="settled")continue;
+    const status=statusForShipment(shipment);
+    if(!collection&&status==="returned")continue;
+    const values=financeForShipment(shipment);
+    const gross=collection?Number(collection.amount||0):Number(values.collectionAmount||0);
+    if(gross<=0)continue;
+    const estimatedNet=collection&&Number.isFinite(Number(collection.expectedNetTransfer))
+      ?Number(collection.expectedNetTransfer)
+      :collection?gross-Number(collection.expectedCommission??values.collectionCommissionExpected??0)-Number(collection.shippingCost??values.carrierShippingCostExpected??0)
+      :Number(values.expectedNetSettlement||0);
+    const kind=collection?"collected":status==="delivered"?"delivered":"in_transit";
+    rows.push({shipment,collection,kind,company:String(shipment.company||shipment.carrier||collection?.carrier||"غير محددة"),gross:Math.max(0,cents(gross))/100,net:Math.max(0,cents(estimatedNet))/100,date:String(shipment.shippedAt||shipment.createdAt||"").slice(0,10)});
+  }
+  return rows;
+}
+
+function renderCarrierReceivables() {
+  const query=normalizeSmartSearch(carrierReceivablesSearch);
+  const all=carrierReceivablesSnapshot(data,shipmentFinanceValues,shipmentStatusCode);
+  const companies=[...new Set(all.map(row=>row.company))].sort((a,b)=>a.localeCompare(b,"ar"));
+  const rows=all.filter(row=>(!carrierReceivablesCompany||row.company===carrierReceivablesCompany)&&(!query||normalizeSmartSearch([row.shipment.trackingNumber,row.shipment.tracking,row.shipment.orderId,row.shipment.invoiceId,row.shipment.customer,row.shipment.customerName,row.shipment.phone,row.shipment.customerPhone,row.company].join(" ")).includes(query)));
+  const total=kind=>centsMoney(rows.filter(row=>row.kind===kind).reduce((sum,row)=>sum+moneyCents(row.net),0));
+  const collected=total("collected"),delivered=total("delivered"),inTransit=total("in_transit");
+  const grouped=new Map();
+  for(const row of rows){
+    const group=grouped.get(row.company)||{company:row.company,count:0,collected:0,delivered:0,inTransit:0};
+    group.count++;
+    group[row.kind==="collected"?"collected":row.kind==="delivered"?"delivered":"inTransit"]+=moneyCents(row.net);
+    grouped.set(row.company,group);
+  }
+  return `${financeTabsMarkup()}<div class="finance-callout"><strong>ما المبلغ الموجود خارج المكتبة؟</strong><span>«حُصّل لدى الشركة» مثبت بتحصيل ولم يدخل الخزنة. «تم التسليم» و«في الطريق» تقديرات حتى تأكيد التحصيل. الصافي يخصم العمولة والرسوم المسجلة للشحنة؛ تكلفة البريد الشهرية منفصلة في «حساب البريد المصري».</span></div>
+    <div class="stats-grid finance-summary">${statCard("مستحق مثبت لدى الشركات",money(collected),`${rows.filter(row=>row.kind==="collected").length} شحنة محصلة ولم تُسوَّ`,"▣","blue")}${statCard("تم التسليم ولم يُثبت التحصيل",money(delivered),"صافي تقديري يحتاج مراجعة شركة الشحن","⌛","gold")}${statCard("شحنات في الطريق",money(inTransit),"صافي محتمل، وليس مستحقًا مؤكدًا","↗")}${statCard("إجمالي محتمل خارج المكتبة",money(centsMoney(moneyCents(collected)+moneyCents(delivered)+moneyCents(inTransit))),"يشمل غير المحصل وغير المؤكد","≋")}</div>
+    <article class="card carrier-receivables-card"><div class="card-header"><div><h3>المستحقات حسب شركة الشحن</h3><p>رصيد مفتوح من كل الفترات؛ الشحنات المسواة أو الملغاة لا تظهر.</p></div><div class="carrier-receivables-filters"><select id="carrier-receivables-company" aria-label="شركة الشحن"><option value="">كل الشركات</option>${companies.map(company=>`<option value="${esc(company)}" ${carrierReceivablesCompany===company?"selected":""}>${esc(company)}</option>`).join("")}</select><input id="carrier-receivables-search" value="${esc(carrierReceivablesSearch)}" placeholder="بحث بكود الشحنة أو الأوردر أو العميل" aria-label="بحث في المستحقات"></div></div>
+      <div class="table-wrap"><table><thead><tr><th>شركة الشحن</th><th>الشحنات المفتوحة</th><th>محصل لدى الشركة</th><th>تسليم بلا إثبات تحصيل</th><th>في الطريق</th><th>الإجمالي المحتمل</th></tr></thead><tbody>${[...grouped.values()].map(group=>`<tr><td><strong>${esc(group.company)}</strong></td><td>${group.count}</td><td class="money">${money(centsMoney(group.collected))}</td><td class="money">${money(centsMoney(group.delivered))}</td><td class="money">${money(centsMoney(group.inTransit))}</td><td class="money"><strong>${money(centsMoney(group.collected+group.delivered+group.inTransit))}</strong></td></tr>`).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد شحنات مفتوحة مطابقة.</td></tr>`}</tbody></table></div></article>
+    <article class="card carrier-receivables-card"><div class="card-header"><div><h3>تفاصيل الشحنات المفتوحة</h3><p>افتح الشحنة لمراجعة التحصيل أو التسوية. لا تُنشئ هذه الشاشة قيودًا مالية.</p></div></div><div class="table-wrap"><table><thead><tr><th>تاريخ الشحن</th><th>شركة الشحن</th><th>الشحنة / الأوردر</th><th>العميل</th><th>المرحلة</th><th>مطلوب من العميل</th><th>الصافي المتوقع لنا</th><th></th></tr></thead><tbody>${rows.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(row=>`<tr><td>${row.date?fmtDate(row.date):"—"}</td><td>${esc(row.company)}</td><td><strong dir="ltr">${esc(row.shipment.trackingNumber||row.shipment.tracking||row.shipment.id)}</strong><br><span class="muted">${esc(row.shipment.orderId||row.shipment.invoiceId||"—")}</span></td><td>${esc(row.shipment.customer||row.shipment.customerName||"—")}</td><td>${row.kind==="collected"?badge("حُصّل لدى الشركة","blue"):row.kind==="delivered"?badge("تم التسليم · غير مثبت","warning"):badge(shipmentStatusMeta(row.shipment).label,"gray")}</td><td class="money">${money(row.gross)}</td><td class="money">${money(row.net)}</td><td><button class="row-action" data-action="view-shipment" data-id="${esc(row.shipment.id)}">فتح الشحنة</button></td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد شحنات مفتوحة مطابقة.</td></tr>`}</tbody></table></div></article>`;
+}
+
 function renderFinancialReports() {
   const range=financeReportRange();
   const inRange=item=>{const date=String(item.date||item.transferDate||item.settledAt||item.createdAt||"").slice(0,10);return (!range.from||date>=range.from)&&(!range.to||date<=range.to);};
@@ -4925,6 +4990,7 @@ function renderAccounting() {
   else if(financeTab==="income") root.innerHTML=heading+renderFinanceIncome();
   else if(financeTab==="order-collections") root.innerHTML=heading+renderOrderCollections();
   else if(financeTab==="settlements") root.innerHTML=heading+renderFinanceSettlements();
+  else if(financeTab==="carrier-receivables") root.innerHTML=heading+renderCarrierReceivables();
   else if(financeTab==="postal-account") root.innerHTML=heading+renderPostalAccount();
   else if(financeTab==="finance-reports") root.innerHTML=heading+renderFinancialReports();
   else { renderFinanceLedger(); root.insertAdjacentHTML("afterbegin",heading+financeTabsMarkup()); }
@@ -6227,6 +6293,7 @@ function addPartyModal(kind, item = null, options = {}) {
       </div>
       <div class="form-actions"><button class="btn" type="submit">حفظ</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
     </form>`);
+  if (options.returnToSale) modalBody.querySelector('#party-form [name="name"]')?.focus();
 }
 
 function addShipmentModal(item = null) {
@@ -6683,7 +6750,6 @@ document.addEventListener("click", event => {
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
   if(action==="prepare-order-complete"&&!target.disabled)openPackingWeightModal(target.dataset.id);
   if(action==="packing-weight-back"){if(target.dataset.existing==="true")closeModal();else openPreparationOrder(target.dataset.id);}
-  if(action==="packed-weight-edit")openPackingWeightModal(target.dataset.id,true);
   if(action==="pack-order-complete")openPackingWeightModal(target.dataset.id);
 });
 document.addEventListener("submit", event => {
@@ -6760,6 +6826,7 @@ document.addEventListener("keydown", event => {
     closeModal();
     return;
   }
+  if (!modal.hidden) return;
   if (!(event.metaKey || event.ctrlKey) || currentView !== "sales" || salesScreenMode !== "invoice") return;
   if (event.key.toLowerCase() === "k") {
     event.preventDefault();
@@ -6768,6 +6835,36 @@ document.addEventListener("keydown", event => {
   if (event.key === "Enter") {
     event.preventDefault();
     if (requireAction("save-sale")) saveSale({ printAfter: false });
+  }
+});
+
+function focusSuggestionWithArrow(event, input, list) {
+  if (!input || !list || !["ArrowDown", "ArrowUp"].includes(event.key)) return false;
+  const buttons = [...list.querySelectorAll('button:not([disabled])')];
+  const current = buttons.indexOf(event.target);
+  if (!buttons.length || (event.target !== input && current < 0)) return false;
+  event.preventDefault();
+  if (event.target === input) {
+    buttons[event.key === "ArrowDown" ? 0 : buttons.length - 1].focus();
+  } else if (event.key === "ArrowUp" && current === 0) {
+    input.focus();
+  } else {
+    buttons[event.key === "ArrowDown" ? (current + 1) % buttons.length : current - 1].focus();
+  }
+  return true;
+}
+
+modal.addEventListener("keydown", event => {
+  if (event.key !== "Tab" || modal.hidden || !modalBody.querySelector('.sale-customer-change, #party-form[data-return-to-sale="true"]')) return;
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(node => node.getClientRects().length && !node.closest("[hidden]"));
+  if (!focusable.length) return;
+  if (event.shiftKey && document.activeElement === focusable[0]) {
+    event.preventDefault();
+    focusable.at(-1).focus();
+  } else if (!event.shiftKey && document.activeElement === focusable.at(-1)) {
+    event.preventDefault();
+    focusable[0].focus();
   }
 });
 
@@ -6864,9 +6961,17 @@ root.addEventListener("click", async event => {
   if(action==="shipping-toggle-ignore")toggleShippingImportIgnore(Number(target.dataset.index));
   if(action==="shipping-ignore-invalid"&&!shippingImportBusy){shippingFileImportRows.forEach(row=>{if(!row.ok&&!row.alreadyAdded)row.ignored=true;});renderOnlineOrders();}
   if (action === "ship-ready-order") shipReadyOrderModal(target.dataset.id);
+  if (action === "packed-weight-edit") openPackingWeightModal(target.dataset.id,true);
   if(action==="cancel-shipment-flow")cancelShipmentFlowModal(target.dataset.id);
   if (action === "reopen-order-preparation") {
-    if(confirm("تم تجهيز هذا الطلب بالفعل. إعادة فتحه ستعيده إلى مرحلة التجهيز لمراجعة محتويات الطرد."))orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/reopen`).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast("تمت إعادة فتح الطلب للتجهيز.");}).catch(error=>toast(error.message,"error"));
+    const order=getOnlineOrder(target.dataset.id);
+    if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
+    if(!canAction("order.prepare"))return toast("ليس لديك صلاحية إعادة الطلب للتغليف.","error");
+    const warning=order.shippingExport?"سبق تصدير هذا الطلب لشركة الشحن. بعد إعادة التغليف يجب تحديثه هناك وتصدير بياناته مجددًا. هل تريد المتابعة؟":"سيعود الطلب إلى قائمة التغليف وتُلغى علامة تأكيد الكتب والوزن المسجل. هل تريد المتابعة؟";
+    if(confirm(warning)){
+      target.disabled=true;
+      orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/prepare/reopen`).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast("عاد الطلب إلى قائمة التغليف. سجّل الوزن وصدّره مجددًا بعد الانتهاء.");}).catch(error=>{target.disabled=false;toast(error.message,"error");});
+    }
   }
   if (action === "quick-shipping-confirm") {
     const order=shippingLookupOrder(quickShippingOrderId),trackingNumber=document.getElementById("quick-shipping-tracking")?.value||"";
@@ -7190,6 +7295,18 @@ root.addEventListener("click", async event => {
 });
 
 root.addEventListener("keydown", event => {
+  if (event.target.id === "sale-book-search" || event.target.closest("#sale-book-suggestions")) {
+    const input = document.getElementById("sale-book-search");
+    const list = document.getElementById("sale-book-suggestions");
+    if (focusSuggestionWithArrow(event, input, list)) return;
+    if (event.key === "Escape" && list?.children.length) {
+      event.preventDefault();
+      list.innerHTML = "";
+      input?.setAttribute("aria-expanded", "false");
+      input?.focus();
+      return;
+    }
+  }
   if(onlineOrdersMode==="quick"&&event.key==="Tab"&&event.target.closest(".quick-order-layout")){
     const fields=[...root.querySelectorAll(".quick-order-layout input:not([disabled]), .quick-order-layout select:not([disabled]), .quick-order-layout textarea:not([disabled])")]
       .filter(node=>!node.hidden&&node.getClientRects().length&&node.tabIndex!==-1);
@@ -7326,6 +7443,14 @@ root.addEventListener("input", event => {
   if(event.target.id==="quick-order-order-discount"){event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){const previous=quickOrderDraft.orderDiscount;quickOrderDraft.orderDiscount=parsed;if(!refreshQuickOrderComputedUi())quickOrderDraft.orderDiscount=previous;}return;}
   if(event.target.id==="quick-order-shipping-cost"){if(!canAction("order.shipping.override")){event.target.value=quickOrderDraft.shippingCost||0;return;}event.target.value=normalizeArabicNumericText(event.target.value);const parsed=OrderFinance.normalizeNumber(event.target.value);if(Number.isFinite(parsed)&&parsed>=0){quickOrderDraft.shippingCost=parsed;quickOrderDraft.shippingManual=true;refreshQuickOrderComputedUi();}return;}
   if(event.target.id==="order-collection-history-search"){orderCollectionSearch=event.target.value;return renderAccounting();}
+  if(event.target.id==="carrier-receivables-search"){
+    carrierReceivablesSearch=event.target.value;
+    const position=event.target.selectionStart;
+    renderAccounting();
+    const input=document.getElementById("carrier-receivables-search");
+    input?.focus();if(input&&position!==null)input.setSelectionRange(position,position);
+    return;
+  }
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
@@ -7335,6 +7460,7 @@ root.addEventListener("input", event => {
     const suggestions = document.getElementById("sale-book-suggestions");
     const matches = searchSaleBooks(event.target.value);
     if (suggestions) suggestions.innerHTML = matches.map(book => bookSuggestionButton(book, "quick-add-sale-book")).join("");
+    event.target.setAttribute("aria-expanded", matches.length ? "true" : "false");
   }
   if (event.target.id === "purchase-book-search") {
     const suggestions = document.getElementById("purchase-book-suggestions");
@@ -7444,6 +7570,7 @@ root.addEventListener("change", event => {
     if(row)row.differenceReason=event.target.value;
     return;
   }
+  if(event.target.id==="carrier-receivables-company"){carrierReceivablesCompany=event.target.value;return renderAccounting();}
   if (event.target.id === "finance-report-from") { financeReportFilters={...financeReportFilters,preset:"custom",from:event.target.value}; return renderAccounting(); }
   if (event.target.id === "finance-report-to") { financeReportFilters={...financeReportFilters,preset:"custom",to:event.target.value}; return renderAccounting(); }
   if (event.target.id === "finance-report-movement") { financeReportFilters.movementType=event.target.value; return renderAccounting(); }
@@ -7563,6 +7690,10 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "register-sale-customer") {
+    if (requireAction("register-sale-customer")) addPartyModal("customer", null, { returnToSale: true });
+    return;
+  }
   if (appAction?.dataset.action === "choose-sale-customer") {
     const customer = getCustomer(appAction.dataset.id);
     if (!customer) return toast("تعذر اختيار العميل. حدّث الصفحة وحاول مرة أخرى.", "error");
@@ -7826,6 +7957,17 @@ modalBody.addEventListener("click", event => {
   if (action === "delete-purchase") deletePurchase(target.dataset.id);
 });
 
+modalBody.addEventListener("keydown", event => {
+  const input = modalBody.querySelector("#sale-customer-modal-search");
+  const list = modalBody.querySelector("#sale-customer-modal-suggestions");
+  if (!input || !list || (event.target !== input && !event.target.closest("#sale-customer-modal-suggestions"))) return;
+  if (focusSuggestionWithArrow(event, input, list)) return;
+  if (event.key === "Enter" && event.target === input) {
+    const first = list.querySelector('button:not([disabled])');
+    if (first) { event.preventDefault(); first.click(); }
+  }
+});
+
 modalBody.addEventListener("change", event => {
   if(event.target.matches('#postal-payment-form [name="month"]')){
     const form=event.target.form,limit=Number(event.target.selectedOptions[0]?.dataset.due||0),amount=form?.elements.amount;
@@ -7937,6 +8079,7 @@ modalBody.addEventListener("input", event => {
     const suggestions = document.getElementById("sale-customer-modal-suggestions");
     const matches = event.target.value.trim() ? searchCustomers(event.target.value) : (data.customers || []).filter(customer => !customer.deletedAt).slice(0, 12);
     if (suggestions) suggestions.innerHTML = matches.map(saleCustomerChoiceButton).join("") || `<div class="customer-no-results">لا يوجد عميل مطابق. جرّب الاسم أو رقم الهاتف.</div>`;
+    event.target.setAttribute("aria-expanded", matches.length ? "true" : "false");
     return;
   }
   if (event.target.id === "return-customer-search") {
@@ -8365,6 +8508,7 @@ modalBody.addEventListener("submit", async event => {
     closeModal();
     if (isCustomer && form.dataset.returnToSale === "true") {
       draftSale.customerId = item.id;
+      applySaleCustomerShipping(item);
       renderSales();
     } else if (isCustomer && form.dataset.returnToOnlineOrder === "true") {
       const draft = {
@@ -8908,7 +9052,7 @@ function addBookToDraftSale(bookId, qty = 1) {
     if (empty) Object.assign(empty, line); else draftSale.lines.push(line);
   }
   renderSales();
-  setTimeout(() => document.getElementById("sale-book-search")?.focus(), 50);
+  setTimeout(() => { if (modal.hidden) document.getElementById("sale-book-search")?.focus(); }, 50);
 }
 
 function addBookToDraftPurchase(bookId, qty = 1) {
