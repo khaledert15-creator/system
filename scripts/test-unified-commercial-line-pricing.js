@@ -17,10 +17,11 @@ check("sale amount and percent update one canonical discount", app.includes("set
 check("sale fixed discount stays per unit when quantity changes", app.includes("Number(line.unitDiscountAmount) * line.qty"));
 check("purchase entry exposes percent and amount together", app.includes("purchase-supplier-discount") && app.includes("purchase-discount-amount"));
 check("purchase amount derives the after-discount cost", app.includes("line.cost = OrderFinance.round(cover - amount)"));
-check("sale details show all requested pricing columns", /السعر الأساسي<\/th><th>خصم %<\/th><th>خصم ج\.م<\/th><th>السعر بعد الخصم/.test(app));
+check("sale details separate book and invoice discounts", /سعر الكتاب<\/th><th>خصم الكتاب %<\/th><th>خصم الكتاب ج\.م<\/th><th>خصم الفاتورة للنسخة<\/th><th>سعر النسخة النهائي/.test(app));
 check("purchase details show all requested pricing columns", app.includes('commercialUnitPricing(line,"purchase")'));
 check("return source pricing is resolved from original documents", app.includes("function returnLinePricing") && app.includes("sourceInvoiceId"));
-check("all return selectors expose pricing breakdown", (app.match(/كمية المرتجع<\/th><th>قيمة المتاح/g) || []).length >= 4 && (app.match(/خصم ج\.م<\/th>/g) || []).length >= 7);
+check("sales return selectors show invoice discount and actual return amount", (app.match(/خصم الفاتورة للنسخة<\/th><th>سعر النسخة النهائي<\/th><th>كمية المرتجع<\/th><th>قيمة المرتجع/g) || []).length >= 2 && app.includes('data-return-line-value'));
+check("purchase return selectors retain source discount columns", (app.match(/خصم ج\.م<\/th><th>بعد الخصم<\/th><th>كمية المرتجع<\/th><th>قيمة المتاح/g) || []).length >= 2);
 check("sale and purchase printouts expose explicit discount columns", (app.match(/<th>خصم %<\/th><th>خصم ج\.م<\/th><th>بعد الخصم<\/th>/g) || []).length >= 2);
 check("online order details retain the unified pricing fields", app.includes("line.unitOriginalPrice") && app.includes("line.unitDiscountAmount") && app.includes("line.unitFinalPrice"));
 check("desktop sale rows have eight aligned columns", css.includes("minmax(130px, 1.7fr) 52px 68px 58px 68px 78px 88px 30px"));

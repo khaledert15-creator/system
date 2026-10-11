@@ -26,6 +26,14 @@ test("quick sale and customer picker both offer adding a new customer", () => {
   assert.match(css, /\.sale-customer-footer-actions \{[^}]*display: flex/);
 });
 
+test("invoice customer name has its own row and both actions fit below it", () => {
+  assert.match(css, /\.quick-customer \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /\.quick-customer > strong \{[^}]*overflow-wrap: anywhere/);
+  assert.doesNotMatch(css.match(/\.quick-customer > strong \{[^}]*\}/)?.[0] || "", /text-overflow: ellipsis|white-space: nowrap/);
+  assert.match(css, /\.quick-customer-actions \{[^}]*display: flex[^}]*border-top:/);
+  assert.match(css, /\.quick-customer-actions \.btn \{[^}]*flex: 1 1 0/);
+});
+
 test("new customer is selected only after a successful save without clearing invoice lines", () => {
   assert.match(app, /if \(action === "register-sale-customer"\) addPartyModal\("customer", null, \{ returnToSale: true \}\)/);
   const submit = app.match(/if \(form\.id === "party-form"\) \{[\s\S]*?\n  \}/)?.[0] || "";
