@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+"use strict";
+
+const assert=require("node:assert/strict");
+const fs=require("node:fs"),os=require("node:os"),path=require("node:path"),vm=require("node:vm"),{spawn}=require("node:child_process");
+const Postal=require("../app/postal-shipping.js"),Xlsx=require("../app/shipping-batch-xlsx.js");
+const root=path.resolve(__dirname,"..");
+const tariff=Postal.defaultTariff();
+for(const [gov,grams,expected] of [["الشرقية",1000,63.2],["الشرقية",1001,70.2],["القاهرة",2000,74.6],["القاهرة",2001,81.6],["أسوان",3500,134.2]])assert.equal(Postal.quote(tariff,gov,grams).totalCost,expected);
+assert.equal(Postal.statementNet(100,7.25),92.75);
+assert.equal(Postal.statementNet("١٠٠","٧٫٢٥"),92.75);
+assert.throws(()=>Postal.statementNet(100,101));
+assert.throws(()=>Postal.normalizeWeightGrams(0));
+assert.throws(()=>Postal.normalizeTariff({...tariff,byGovernorate:{...tariff.byGovernorate,"القاهرة":0}}));
+assert.throws(()=>Xlsx.orderToUploadRow({id:"NO-WEIGHT",lines:[]}),/وزن الطرد/);
+console.log("PASS tariff boundaries, monthly discount, and mandatory measured export weight");
+const appSource=fs.readFileSync(path.join(root,"app/app.js"),"utf8");
+const financeUi=appSource.slice(appSource.indexOf("function postalAccountMonthRows()"),appSource.indexOf("function renderAccounting()"));
+const ui=vm.createContext({data:{shipments:[{company:"البريد المصري",shippedAt:"2026-09-15",postalChargeStatus:"charged",postalCostQuote:{totalCost:74.6}}],postalStatements:[{month:"2026-09",billedShipmentCount:1,grossCost:74.6,discount:5,netDue:69.6}],postalPayments:[{month:"2026-09",date:"2026-10-01",amount:20,account:"QA"}]},PostalShipping:Postal,money:value=>`${value} ج.م`,esc:String,financeTabsMarkup:()=>"",currentUser:{role:"مالك"},today:()=>"2026-10-10",openModal:()=>{}});
+vm.runInContext(financeUi,ui);
+const html=vm.runInContext("renderPostalAccount()",ui);
+assert.match(html,/حساب البريد|كشوف تكلفة شحن البريد/);assert.match(html,/خصم البريد/);assert.match(html,/المتبقي/);assert.match(html,/49\.6 ج\.م/);
+console.log("PASS postal account UI shows gross, discount, net, payments, and balance");
+
+const qa=fs.mkdtempSync(path.join(os.tmpdir(),"dotcom-postal-"));
+fs.cpSync(path.join(root,"server-node.js"),path.join(qa,"server-node.js"));
+fs.cpSync(path.join(root,"app"),path.join(qa,"app"),{recursive:true});
+fs.cpSync(path.join(root,"data"),path.join(qa,"data"),{recursive:true});
+const dbFile=path.join(qa,"data/database.json"),db=JSON.parse(fs.readFileSync(dbFile,"utf8"));
+const previous=new Date();previous.setUTCDate(1);previous.setUTCMonth(previous.getUTCMonth()-1);
+const month=previous.toISOString().slice(0,7),shippedAt=`${month}-15T12:00:00.000Z`;
+db.cashAccounts ||= [];if(!db.cashAccounts.some(row=>row.name==="Postal QA Cash"))db.cashAccounts.push({id:"CA-POSTAL-QA",name:"Postal QA Cash",active:true});
+db.shipments=[];
+db.postalStatements=[];db.postalPayments=[];
+db.shipments.push({id:"SH-POSTAL-QA-1",company:"البريد المصري",carrier:"البريد المصري",shippedAt,postalBillingManaged:true,postalChargeStatus:"charged",cost:74.6,postalCostQuote:{totalCost:74.6},packedWeightGrams:1500});
+db.shipments.push({id:"SH-POSTAL-QA-2",company:"البريد المصري",carrier:"البريد المصري",shippedAt,postalBillingManaged:true,postalChargeStatus:"not_charged",postalChargeReason:"Confirmed waived",cost:81.6,postalCostQuote:{totalCost:81.6},packedWeightGrams:2300});
+db.onlineOrders ||= [];db.onlineOrders.push({id:"ORD-POSTAL-QA-3",workflowStage:"shipped",status:"تم الشحن",shipmentId:"SH-POSTAL-QA-3",trackingNumber:"EN123456789EG",previousTrackingNumbers:[],shippingCost:70});
+db.shipments.push({id:"SH-POSTAL-QA-3",onlineOrderId:"ORD-POSTAL-QA-3",company:"البريد المصري",carrier:"البريد المصري",shippedAt,trackingNumber:"EN123456789EG",postalBillingManaged:true,postalChargeStatus:"charged",cost:74.6,postalCostQuote:{totalCost:74.6},packedWeightGrams:1400});
+fs.writeFileSync(dbFile,JSON.stringify(db,null,2));
+const port=8947,child=spawn(process.execPath,["server-node.js"],{cwd:qa,env:{...process.env,PORT:String(port),HOST:"127.0.0.1",TRACKING_RPA_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
+let output="";child.stdout.on("data",d=>output+=d);child.stderr.on("data",d=>output+=d);
+const base=`http://127.0.0.1:${port}`;let token="";
+async function call(route,{method="GET",body,auth=token}={}){const response=await fetch(base+route,{method,headers:{...(auth?{"X-Session-Token":auth}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});return {status:response.status,body:await response.json().catch(()=>({}))};}
+async function wait(){for(let i=0;i<60;i++){try{if((await fetch(base+"/")).ok)return;}catch{}await new Promise(r=>setTimeout(r,50));}throw new Error(output||"Server did not start");}
+(async()=>{
+  await wait();
+  assert.equal((await call("/api/finance/postal-statement",{method:"POST",body:{month},auth:"invalid"})).status,401);
+  const login=await call("/api/login",{method:"POST",body:{username:"owner",password:process.env.DOTCOM_TEST_PASSWORD||"DotCom@2026"},auth:""});assert.equal(login.status,200);token=login.body.token;
+  const cancelBody={carrierCancelled:true,resolution:"revise_shipment",reason:"خطأ في كود التتبع",postalChargeStatus:"not_charged"};
+  assert.equal((await call("/api/shipping/shipments/SH-POSTAL-QA-3/cancel",{method:"POST",body:cancelBody})).status,400);
+  const cancelled=await call("/api/shipping/shipments/SH-POSTAL-QA-3/cancel",{method:"POST",body:{...cancelBody,postalChargeReason:"أكد البريد حذف الشحنة من الكشف"}});
+  assert.equal(cancelled.status,200,JSON.stringify(cancelled.body));assert.equal(cancelled.body.shipment.postalChargeStatus,"not_charged");assert.equal(cancelled.body.shipment.postalChargeRecordedByUsername,"owner");
+  const mismatch=await call("/api/finance/postal-statement",{method:"POST",body:{month,billedShipmentCount:2,grossCost:74.6,discount:5}});assert.equal(mismatch.status,400);
+  const posted=await call("/api/finance/postal-statement",{method:"POST",body:{month,billedShipmentCount:1,grossCost:74.6,discount:5,sourceReference:"POSTAL-QA"}});
+  assert.equal(posted.status,200,JSON.stringify(posted.body));assert.equal(posted.body.statement.expectedCount,1);assert.equal(posted.body.statement.waivedCount,2);assert.equal(posted.body.statement.netDue,69.6);assert.equal(posted.body.outstanding,69.6);
+  assert.equal((await call("/api/finance/postal-statement",{method:"POST",body:{month,billedShipmentCount:1,grossCost:74.6,discount:5}})).status,409);
+  const afterStatement=(await call("/api/db")).body;assert.equal(afterStatement.expenses.filter(item=>item.postalStatementId===`POSTAL-${month}`).length,1);assert.equal(afterStatement.cash.filter(item=>item.postalStatementId===`POSTAL-${month}`).length,0);
+  const paymentPayload={operationKey:"postal:qa:payment-1",month,amount:20,account:"Postal QA Cash",date:`${month}-20`,reference:"PAY-QA"};
+  const paid=await call("/api/finance/postal-payment",{method:"POST",body:paymentPayload});assert.equal(paid.status,200,JSON.stringify(paid.body));assert.equal(paid.body.outstanding,49.6);
+  assert.equal(paid.body.payment.month,month);
+  const duplicate=await call("/api/finance/postal-payment",{method:"POST",body:paymentPayload});assert.equal(duplicate.status,200);assert.equal(duplicate.body.existing,true);
+  assert.equal((await call("/api/finance/postal-payment",{method:"POST",body:{...paymentPayload,amount:21}})).status,409);
+  assert.equal((await call("/api/finance/postal-payment",{method:"POST",body:{...paymentPayload,operationKey:"postal:qa:too-large",amount:100}})).status,400);
+  assert.equal((await call("/api/finance/postal-payment",{method:"POST",body:{...paymentPayload,operationKey:"postal:qa:wrong-month",month:"2000-01"}})).status,400);
+  const afterPayment=(await call("/api/db")).body;assert.equal(afterPayment.cash.filter(item=>item.postalPaymentId===paid.body.payment.id).length,1);assert.equal(afterPayment.expenses.filter(item=>item.postalPaymentId===paid.body.payment.id).length,0);
+  const changedStatement=structuredClone(afterPayment);changedStatement.postalStatements[0].discount=0;
+  assert.equal((await call("/api/db",{method:"PUT",body:changedStatement})).status,409);
+  const changedExpense=structuredClone(afterPayment);changedExpense.expenses.find(item=>item.postalStatementId===`POSTAL-${month}`).amount=1;
+  assert.equal((await call("/api/db",{method:"PUT",body:changedExpense})).status,409);
+  const changedCash=structuredClone(afterPayment);changedCash.cash.find(item=>item.postalPaymentId===paid.body.payment.id).amount=1;
+  assert.equal((await call("/api/db",{method:"PUT",body:changedCash})).status,409);
+  console.log("PASS cancellation charge audit, monthly reconciliation, carrier discount, single expense, partial payment, idempotency, and ledger protection");
+})().catch(error=>{console.error("FAIL",error);process.exitCode=1;}).finally(()=>{child.kill("SIGTERM");setTimeout(()=>fs.rmSync(qa,{recursive:true,force:true}),50);});

@@ -233,6 +233,7 @@ let omniMediaChunks = [];
 let omniMediaStream = null;
 let stickyTableScroll = { wrap: null, bar: null, inner: null, syncing: false, raf: null };
 let financeTab = "expenses";
+let shippingPriceTab = "customer";
 let financeReportFilters = { preset:"month", from:"", to:"", movementType:"", account:"", expenseType:"", carrier:"" };
 let pendingFinanceFormDraft = null;
 let pendingFinanceConfirmation = null;
@@ -1209,7 +1210,7 @@ function shipmentFinanceValues(shipment = {}) {
   const customerShippingCharge = Number(shipment.customerShippingCharge ?? sale?.shippingCost ?? sale?.shipping ?? 0);
   const productsValue = Number(shipment.productsValue ?? Math.max(0, Number(sale?.total || 0) - customerShippingCharge));
   const collectionAmount = Number(shipment.collectionAmount ?? (productsValue + customerShippingCharge));
-  const expectedCost = Number(shipment.carrierShippingCostExpected ?? shipment.cost ?? 0);
+  const expectedCost = shipment.postalBillingManaged?0:Number(shipment.carrierShippingCostExpected ?? shipment.cost ?? 0);
   const settings = shipment.carrierFinanceSnapshot || carrierFinanceSettings(shipment.company || shipment.carrier);
   const base = settings.commissionBasis === "products_only" ? productsValue : settings.commissionBasis === "custom" ? Number(settings.customCommissionBase || 0) : collectionAmount;
   const baseCents=moneyCents(base);
@@ -3489,6 +3490,29 @@ async function openPreparationOrder(id,start=false) {
   }catch(error){toast(error.message,"error");}
 }
 
+function openPackingWeightModal(id,existingPacked=false){
+  const order=getOnlineOrder(id);if(!order)return;
+  if(!existingPacked&&!(order.lines||[]).length)return toast("أضف صنفًا قبل إكمال التغليف.","error");
+  const grams=Number(order.packedWeightGrams||0),postal=/البريد المصري|egypt\s*post/i.test(order.shippingCompany||"");
+  openModal(existingPacked?`تعديل وزن ${id}`:`وزن الطرد ${id}`,"آخر خطوة في التغليف",`<form id="packing-weight-form" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}"><div class="finance-callout"><strong>زن الطرد بعد إغلاقه</strong><span>أدخل الوزن في أي خانة؛ الأخرى تتحدث تلقائيًا. سعر البريد محسوب ولا يستطيع الموظف تعديله.</span></div><div class="packing-weight-grid"><label>الوزن بالجرام<input name="grams" inputmode="numeric" autocomplete="off" value="${grams||""}" placeholder="مثال: ٢٣٥٠" required></label><label>الوزن بالكيلوجرام<input name="kilograms" inputmode="decimal" autocomplete="off" value="${grams?grams/1000:""}" placeholder="مثال: ٢٫٣٥"></label></div><div class="packing-weight-cost" id="packing-weight-cost" aria-live="polite">${postal?"أدخل الوزن لعرض تكلفة شحن البريد.":"شركة الشحن المختارة ليس لها تعريفة بريد."}</div><div class="form-actions"><button class="btn" type="submit">${existingPacked?"حفظ الوزن وإلغاء التصدير السابق":"تأكيد الوزن وإتمام التغليف"}</button><button class="btn ghost" type="button" data-action="packing-weight-back" data-id="${esc(id)}" data-existing="${existingPacked?"true":"false"}">رجوع</button></div></form>`);
+  updatePackingWeightPreview(document.getElementById("packing-weight-form"));
+  document.querySelector('#packing-weight-form [name="grams"]')?.focus();
+}
+
+function updatePackingWeightPreview(form){
+  if(!form)return;
+  const target=form.querySelector("#packing-weight-cost"),order=getOnlineOrder(form.dataset.id);
+  if(!target||!order)return;
+  try{
+    const grams=PostalShipping.normalizeWeightGrams(form.elements.grams.value);
+    if(/البريد المصري|egypt\s*post/i.test(order.shippingCompany||"")){
+      const quote=PostalShipping.quote(data.settings?.postalTariff||PostalShipping.defaultTariff(),order.governorate,grams);
+      target.innerHTML=`<span>تعريفة ${esc(quote.governorate)} للوزنة الأولى: <b>${money(quote.baseCost)}</b></span><span>الوزن الإضافي: <b>${quote.extraKilos} كجم × ${money(quote.extraKilos?quote.extraCost/quote.extraKilos:0)}</b></span><strong>تكلفة شحن البريد: ${money(quote.totalCost)}</strong><small>هذه تكلفة البريد علينا؛ لا تغيّر خدمة العملاء في الفاتورة.</small>`;
+    }else target.textContent="تم تسجيل وزن الطرد. لا توجد تعريفة بريد لهذه الشركة.";
+    target.classList.remove("text-danger");
+  }catch(error){target.textContent=error.message;target.classList.add("text-danger");}
+}
+
 let packingEditDraft=null;
 
 function openPackingEditor(id) {
@@ -3571,12 +3595,12 @@ function shippingLookupOrder(value="") {
 function readyShippingRow(order) {
   const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),units=(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0);
   const shipment=data.shipments.find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
-  return `<tr><td><input type="checkbox" data-shipping-export="${order.id}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}</td><td>${shipment?`<strong>تم الشحن</strong>`:`<div class="row-actions">${!order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`:`<button class="row-action" data-action="ship-ready-order" data-id="${order.id}">إدخال كود يدويًا</button>`}<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة للتغليف</button></div>`}</td></tr>`;
+  return `<tr><td><input type="checkbox" data-shipping-export="${order.id}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&order.packedWeightGrams?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${order.packedWeightGrams?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${shipment?`<strong>تم الشحن</strong>`:`<div class="row-actions"><button class="row-action" data-action="packed-weight-edit" data-id="${order.id}">${order.packedWeightGrams?"تصحيح الوزن":"تسجيل الوزن"}</button>${!order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`:`<button class="row-action" data-action="ship-ready-order" data-id="${order.id}" ${order.packedWeightGrams?"":"disabled"}>إدخال كود يدويًا</button>`}<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة للتغليف</button></div>`}</td></tr>`;
 }
 
 function renderReadyShippingQueue() {
   const rows=readyShippingOrders();
-  const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId).length,validImported=shippingFileImportRows.filter(row=>row.ok&&!row.ignored).length;
+  const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId&&order.packedWeightGrams).length,validImported=shippingFileImportRows.filter(row=>row.ok&&!row.ignored).length;
   return `${workflowModeTabs("ready-shipping")}<div class="section-title fulfillment-title"><div><span class="eyebrow">شركة الشحن</span><h2>مغلف وينتظر كود التتبع</h2><p>صدّر الطلبات ثم استورد ملف Packages. بعد مراجعة الأكواد اضغط تأكيد الشحن لنقل الطلبات الصحيحة.</p></div><div class="fulfillment-counters"><b>${rows.length}<small>بانتظار الكود</small></b><b class="success">${selected}<small>محدد للتصدير</small></b></div></div><article class="card shipping-batch-toolbar"><div class="shipping-step"><b>1</b><span><strong>تصدير الطلبات</strong><small>ملف مطابق لقالب شركة الشحن</small></span><button class="btn secondary" data-action="shipping-select-all">تحديد الجاهز</button><button class="btn" data-action="shipping-export-xlsx" ${selected?"":"disabled"}>تحميل أسماء الشحنات (${selected})</button></div><div class="shipping-step"><b>2</b><span><strong>استيراد الأكواد ومراجعتها</strong><small>اختر ملف Packages لمراجعة الأكواد؛ يُسجَّل الشحن بعد الضغط على التأكيد.</small></span><label class="btn secondary file-button">اختيار Packages.xlsx<input id="shipping-packages-file" type="file" accept=".xlsx" hidden></label><button class="btn" data-action="shipping-import-confirm" ${validImported?"":"disabled"}>${validImported?`تأكيد الشحن ونقل ${validImported} طلب إلى قسم الشحن`:shippingFileImportRows.length?"لا توجد أكواد صحيحة للتأكيد":"ارفع الملف لمراجعة الأكواد"}</button></div>${shippingFileImportRows.length?batchShippingPreviewMarkup(shippingFileImportRows):""}</article><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" data-shipping-export-all aria-label="تحديد الكل"></th><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>المطلوب تحصيله</th><th>حالة التصدير</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="7" class="text-center muted">لا توجد طلبات تنتظر كود تتبع.</td></tr>`}</tbody></table></div></article>`;
 }
 
@@ -3632,7 +3656,7 @@ function applyShippingImportResults(results){
 }
 
 async function exportShippingCompanyFile(){
-  const orderIds=readyShippingOrders().filter(order=>shippingExportSelection.has(order.id)&&order.saleId).map(order=>order.id);
+  const orderIds=readyShippingOrders().filter(order=>shippingExportSelection.has(order.id)&&order.saleId&&order.packedWeightGrams).map(order=>order.id);
   if(!orderIds.length)return toast("حدد طلبًا جاهزًا وله فاتورة أولًا.","error");
   const response=await fetch("/api/orders/shipping/export",{method:"POST",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json",...(dbRevision?{"X-DB-Revision":dbRevision}:{})}),body:JSON.stringify({orderIds})});
   if(!response.ok){const result=await response.json().catch(()=>({}));throw new Error(result.message||"تعذر إنشاء ملف شركة الشحن.");}
@@ -4636,7 +4660,7 @@ function renderFinanceLedger() {
 function allowedFinanceTabs() {
   return [
     ["expenses","المصروفات",["add-expense","approve-expense"]],["income","الإيرادات الأخرى",["add-other-income","approve-other-income"]],["order-collections","تحصيل الأوردرات",["finance.collection.view","finance.collection.create"]],["settlements","تسويات التحصيل",["create-settlement","approve-settlement"]],
-    ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","سجل الحركات",["view-cash"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
+    ["accounts","الخزائن والحسابات",["add-cash-account","edit-cash-account"]],["movements","سجل الحركات",["view-cash"]],["postal-account","حساب البريد المصري",["view-financial-reports"]],["finance-reports","التقارير المالية",["view-financial-reports"]]
   ].filter(([, , actions])=>actions.some(canAction));
 }
 
@@ -4647,6 +4671,7 @@ const FINANCE_TAB_META = {
   settlements:["تسويات التحصيل","طابق تحويلات شركات الشحن وسجل ما وصل للمكتبة فعليًا."],
   accounts:["الخزائن والحسابات","تابع أرصدة الخزائن والبنوك والمحافظ."],
   movements:["سجل الحركات","كل عمليات الدخول والخروج المالي في مكان واحد."],
+  "postal-account":["حساب البريد المصري","تكلفة البريد الشهرية منفصلة عن قيمة خدمة العملاء؛ الخصم يقلل المديونية، والسداد لا يكرر المصروف."],
   "finance-reports":["التقارير المالية","ملخص الإيرادات والمصروفات والتحصيلات والنتيجة المالية."]
 };
 
@@ -4698,7 +4723,7 @@ function renderFinanceExpenses() {
     ${statCard("مصروفات الشحن", money(rows.filter(item=>item.source==="تسوية شركة شحن"&&item.status==="معتمد").reduce((s,i)=>s+Number(i.amount||0),0)), "من التسويات المعتمدة", "▣", "blue")}
   </div><article class="card"><div class="card-header"><div><h3>قائمة المصروفات</h3><p>المصروف لا يؤثر على الخزنة إلا بعد اعتماده.</p></div><div class="actions">${canAction("manage-finance-types")?`<button class="btn ghost" data-action="manage-expense-types">إدارة أنواع المصروفات</button>`:""}${canAction("add-expense")?`<button class="btn" data-action="add-expense">＋ إضافة مصروف</button>`:""}</div></div>
   <div class="finance-filters"><input id="finance-expense-search" placeholder="بحث بالرقم أو المستفيد أو المرجع"><select id="finance-expense-status"><option value="">كل الحالات</option><option>مسجل</option><option>معتمد</option><option>ملغي</option></select></div>
-  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("expense",item))}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}${item.settlementId?`<div class="source-trail">تم إنشاؤه تلقائيًا من تسوية <button class="inline-link" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button></div>`:""}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("expense",item))}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}${item.settlementId?`<div class="source-trail">تم إنشاؤه تلقائيًا من تسوية <button class="inline-link" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button></div>`:""}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&!item.postalStatementId&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceIncome() {
@@ -4709,12 +4734,13 @@ function renderFinanceIncome() {
 
 function settlementSummary(settlement={}) {
   const lines=settlement.lines||[];
+  const carrierCost=line=>data.shipments.find(item=>item.id===line.shipmentId)?.postalBillingManaged?0:Number(line.carrierShippingCostActual??line.carrierShippingCostExpected??0);
   return {
     count:lines.length,
     collection:sumMoney(lines,l=>l.collectionAmount||0),
     customerShipping:sumMoney(lines,l=>l.customerShippingCharge||0),
-    expectedCost:sumMoney(lines,l=>l.carrierShippingCostExpected||0),
-    actualCost:sumMoney(lines,l=>l.carrierShippingCostActual ?? l.carrierShippingCostExpected ?? 0),
+    expectedCost:sumMoney(lines,l=>data.shipments.find(item=>item.id===l.shipmentId)?.postalBillingManaged?0:Number(l.carrierShippingCostExpected||0)),
+    actualCost:sumMoney(lines,carrierCost),
     expectedCommission:sumMoney(lines,l=>l.collectionCommissionExpected||0),
     actualCommission:sumMoney(lines,l=>l.collectionCommissionActual ?? l.collectionCommissionExpected ?? 0)
   };
@@ -4852,6 +4878,45 @@ function financeReportRange() {
   return {from:financeReportFilters.from||"",to:financeReportFilters.to||""};
 }
 
+function postalAccountMonthRows(){
+  const groups=new Map();
+  for(const shipment of data.shipments||[]){
+    if(shipment.deletedAt||!(/البريد المصري|egypt\s*post/i.test(String(shipment.company||shipment.carrier||""))))continue;
+    const month=String(shipment.shippedAt||shipment.createdAt||"").slice(0,7);if(!/^\d{4}-\d{2}$/.test(month))continue;
+    const group=groups.get(month)||{month,count:0,estimate:0,waived:0,unpriced:0};
+    if(shipment.postalChargeStatus==="not_charged")group.waived++;
+    else{group.count++;group.estimate+=Number(shipment.postalCostQuote?.totalCost??shipment.cost??0);if(!shipment.postalCostQuote)group.unpriced++;}
+    groups.set(month,group);
+  }
+  for(const statement of data.postalStatements||[])if(!groups.has(statement.month))groups.set(statement.month,{month:statement.month,count:0,estimate:0,waived:0,unpriced:0});
+  return [...groups.values()].sort((a,b)=>b.month.localeCompare(a.month));
+}
+
+function renderPostalAccount(){
+  const statements=data.postalStatements||[],payments=data.postalPayments||[],rows=postalAccountMonthRows();
+  const due=PostalShipping.roundMoney(statements.reduce((sum,item)=>sum+Number(item.netDue||0),0)-payments.reduce((sum,item)=>sum+Number(item.amount||0),0));
+  const authorized=["مالك","محاسب","owner","accountant"].includes(currentUser?.role)||currentUser?.username==="owner";
+  return `${financeTabsMarkup()}<div class="postal-account-summary"><div><small>مديونية البريد المصري</small><strong>${money(due)}</strong></div><div><small>كشوف معتمدة</small><strong>${statements.length}</strong></div><div><small>مدفوع للبريد</small><strong>${money(payments.reduce((sum,item)=>sum+Number(item.amount||0),0))}</strong></div></div><article class="card"><div class="card-header"><div><h3>كشوف تكلفة شحن البريد</h3><p>الشحنات المتوقعة للمطابقة فقط. عند وصول كشف البريد، أدخل إجمالي تكلفته وخصمه ثم اعتمده مرة واحدة.</p></div><div class="actions">${authorized?`<button class="btn" data-action="postal-statement-open">اعتماد كشف شهر</button><button class="btn secondary" data-action="postal-payment-open" ${due<=0?"disabled":""}>تسجيل سداد</button>`:""}</div></div><div class="table-wrap"><table><thead><tr><th>الشهر</th><th>شحنات متوقعة</th><th>تكلفة متوقعة</th><th>لم تُحتسب</th><th>عدد الكشف</th><th>إجمالي البريد</th><th>خصم البريد</th><th>الصافي المستحق</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th></tr></thead><tbody>${rows.map(row=>{const statement=statements.find(item=>item.month===row.month),paid=payments.filter(item=>item.month===row.month).reduce((sum,item)=>sum+Number(item.amount||0),0);return `<tr><td><strong>${esc(row.month)}</strong></td><td>${row.count}${row.unpriced?`<small class="text-danger">${row.unpriced} بلا تسعير تاريخي</small>`:""}</td><td>${money(row.estimate)}</td><td>${row.waived}</td><td>${statement?.billedShipmentCount??"—"}</td><td>${statement?money(statement.grossCost):"—"}</td><td>${statement?money(statement.discount):"—"}</td><td>${statement?money(statement.netDue):"—"}</td><td>${statement?money(paid):"—"}</td><td>${statement?money(Math.max(0,Number(statement.netDue||0)-paid)):"—"}</td><td>${statement?"معتمد":"بانتظار كشف البريد"}</td></tr>`;}).join("")||`<tr><td colspan="11" class="muted">لا توجد شحنات بريد أو كشوف بعد.</td></tr>`}</tbody></table></div></article><article class="card"><div class="card-header"><div><h3>سداد مديونية البريد</h3><p>السداد يخرج من الخزنة ويخفض رصيد الشهر المحدد؛ لا ينشئ مصروفًا جديدًا.</p></div></div><div class="table-wrap"><table><thead><tr><th>شهر الكشف</th><th>التاريخ</th><th>المبلغ</th><th>الخزنة</th><th>المرجع</th><th>الموظف</th></tr></thead><tbody>${payments.slice().reverse().map(item=>`<tr><td>${esc(item.month||"—")}</td><td>${esc(item.date||"")}</td><td>${money(item.amount)}</td><td>${esc(item.account||"")}</td><td>${esc(item.reference||"—")}</td><td>${esc(item.createdBy||"—")}</td></tr>`).join("")||`<tr><td colspan="6" class="muted">لا توجد دفعات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+}
+
+function openPostalStatementModal(){
+  const month=postalAccountMonthRows().find(row=>row.month<today().slice(0,7)&&!(data.postalStatements||[]).some(item=>item.month===row.month));
+  openModal("اعتماد كشف البريد المصري","المالية",`<form id="postal-statement-form"><div class="finance-callout"><strong>طابق كشف البريد الورقي قبل الاعتماد</strong><span>خصم البريد يقلل صافي المديونية: إجمالي الكشف − الخصم. لا يُخصم من سعر خدمة العملاء.</span></div><div class="form-grid"><label>الشهر<input type="month" name="month" value="${month?.month||""}" required></label><label>عدد الشحنات في كشف البريد<input name="billedShipmentCount" type="number" min="0" step="1" value="${month?.count??""}" required></label><label>إجمالي تكلفة البريد قبل الخصم<input name="grossCost" type="number" min="0" step="0.01" value="${month?month.estimate.toFixed(2):""}" required></label><label>خصم البريد<input name="discount" type="number" min="0" step="0.01" value="0" required></label><label>مرجع الكشف<input name="sourceReference" maxlength="100" placeholder="رقم أو وصف الكشف"></label><label class="full">سبب اختلاف العدد أو إجمالي التكلفة<textarea name="differenceReason" placeholder="يُطلب إذا اختلف كشف البريد عن المتوقع في النظام"></textarea></label></div><div class="postal-net-preview" aria-live="polite">الصافي المستحق: <strong id="postal-statement-net">—</strong></div><div class="form-actions"><button class="btn" type="submit">اعتماد الكشف</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
+  updatePostalStatementPreview(document.getElementById("postal-statement-form"));
+}
+
+function updatePostalStatementPreview(form){
+  if(!form)return;const label=form.querySelector("#postal-statement-net");try{label.textContent=money(PostalShipping.statementNet(form.elements.grossCost.value,form.elements.discount.value));}catch{label.textContent="أدخل الإجمالي والخصم بشكل صحيح";}
+}
+
+function openPostalPaymentModal(){
+  const due=PostalShipping.roundMoney((data.postalStatements||[]).reduce((sum,item)=>sum+Number(item.netDue||0),0)-(data.postalPayments||[]).reduce((sum,item)=>sum+Number(item.amount||0),0));
+  const months=(data.postalStatements||[]).map(item=>({month:item.month,due:PostalShipping.roundMoney(Number(item.netDue||0)-(data.postalPayments||[]).filter(payment=>payment.month===item.month).reduce((sum,payment)=>sum+Number(payment.amount||0),0))})).filter(item=>item.due>0).sort((a,b)=>a.month.localeCompare(b.month));
+  if(!months.length)return toast("لا توجد مديونية شهرية مستحقة للسداد.","error");
+  const operationKey=`postal:${crypto.randomUUID?.()||`${Date.now()}:payment`}`;
+  openModal("سداد مديونية البريد المصري","المالية",`<form id="postal-payment-form" data-operation-key="${operationKey}"><div class="finance-callout"><strong>الرصيد المستحق ${money(due)}</strong><span>اختر شهر الكشف الذي تسدده. المصروف مسجل عند اعتماد الكشف ولا يتكرر بالسداد.</span></div><div class="form-grid"><label>شهر الكشف<select name="month" required>${months.map(item=>`<option value="${esc(item.month)}" data-due="${item.due}">${esc(item.month)} · متبقي ${money(item.due)}</option>`).join("")}</select></label><label>المبلغ المدفوع<input name="amount" type="number" min="0.01" max="${months[0].due}" step="0.01" required></label><label>التاريخ<input name="date" type="date" value="${today()}" required></label><label>من خزنة / حساب<select name="account" required>${cashAccountOptions()}</select></label><label>مرجع التحويل<input name="reference" maxlength="100"></label></div><div class="form-actions"><button class="btn" type="submit">تسجيل السداد</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
+}
+
 function renderAccounting() {
   const allowedTabs=allowedFinanceTabs();
   if(!allowedTabs.some(([id])=>id===financeTab))financeTab=allowedTabs[0]?.[0]||"expenses";
@@ -4860,6 +4925,7 @@ function renderAccounting() {
   else if(financeTab==="income") root.innerHTML=heading+renderFinanceIncome();
   else if(financeTab==="order-collections") root.innerHTML=heading+renderOrderCollections();
   else if(financeTab==="settlements") root.innerHTML=heading+renderFinanceSettlements();
+  else if(financeTab==="postal-account") root.innerHTML=heading+renderPostalAccount();
   else if(financeTab==="finance-reports") root.innerHTML=heading+renderFinancialReports();
   else { renderFinanceLedger(); root.insertAdjacentHTML("afterbegin",heading+financeTabsMarkup()); }
 }
@@ -5440,7 +5506,18 @@ function showSeasons() {
 
 function shippingPricesSettingsMarkup(){
   const rules=OrderFinance.normalizeShippingRules(data.settings?.shippingRules||data.settings?.shippingRates||{});
-  return `<article class="card shipping-prices-card" style="margin-top:18px"><div class="card-header"><div><h3>أسعار الشحن للمحافظات</h3><p>عدّل السعر ثم اضغط حفظ؛ سيظهر السعر الجديد مباشرة في الفواتير.</p></div><div class="shipping-prices-save"><span id="shipping-prices-save-state">لا توجد تعديلات</span><button id="save-shipping-prices" class="btn" type="button" data-action="save-settings">حفظ أسعار الشحن</button></div></div><div class="form-grid"><div class="form-field"><label>السعر الافتراضي عند عدم وجود سعر</label><input id="shipping-default-cost" inputmode="decimal" min="0" value="${rules.defaultCost}"></div><div class="form-field"><label>شحن مجاني بداية من</label><input id="shipping-free-above" inputmode="decimal" min="0" value="${rules.freeShippingAbove}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>سعر الشحن</th><th>مفعّل</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-shipping-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="shipping-governorate-price" inputmode="decimal" min="0" value="${rules.byGovernorate[name]??rules.defaultCost}"></td><td><input class="shipping-governorate-active" type="checkbox" ${rules.activeByGovernorate[name]!==false?"checked":""}></td></tr>`).join("")}</tbody></table></div></article>`;
+  const postal=PostalShipping.normalizeTariff(data.settings?.postalTariff||PostalShipping.defaultTariff());
+  return `<article class="card shipping-prices-card" style="margin-top:18px"><div class="card-header"><div><h3>أسعار الشحن للمحافظات</h3><p>نظامان منفصلان: ما يدفعه العميل، وما يحسبه البريد علينا.</p></div></div><div class="finance-tabs shipping-price-tabs" role="tablist"><button class="tab ${shippingPriceTab==="customer"?"active":""}" type="button" data-action="shipping-price-tab" data-tab="customer">خدمة العملاء</button><button class="tab ${shippingPriceTab==="postal"?"active":""}" type="button" data-action="shipping-price-tab" data-tab="postal">تكلفة شحن البريد</button></div>
+  <div id="customer-shipping-rates" ${shippingPriceTab==="postal"?"hidden":""}><div class="shipping-prices-save"><span id="shipping-prices-save-state">لا توجد تعديلات</span><button id="save-shipping-prices" class="btn" type="button" data-action="save-settings">حفظ خدمة العملاء</button></div><p class="muted">هذا المبلغ يدفعه العميل ويظهر في فاتورته، ولا يتغير بحساب تكلفة البريد.</p><div class="form-grid"><div class="form-field"><label>السعر الافتراضي عند عدم وجود سعر</label><input id="shipping-default-cost" inputmode="decimal" min="0" value="${rules.defaultCost}"></div><div class="form-field"><label>شحن مجاني بداية من</label><input id="shipping-free-above" inputmode="decimal" min="0" value="${rules.freeShippingAbove}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>سعر خدمة العملاء</th><th>مفعّل</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-shipping-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="shipping-governorate-price" inputmode="decimal" min="0" value="${rules.byGovernorate[name]??rules.defaultCost}"></td><td><input class="shipping-governorate-active" type="checkbox" ${rules.activeByGovernorate[name]!==false?"checked":""}></td></tr>`).join("")}</tbody></table></div></div>
+  <div id="postal-shipping-rates" ${shippingPriceTab==="customer"?"hidden":""}><div class="shipping-prices-save"><span id="postal-prices-save-state">تعريفة رقم ${postal.version}${postal.activatedAt?` · مفعّلة ${esc(arabicDateTimeLabel(postal.activatedAt))}`:" · من القائمة المرفقة"}</span><button class="btn" type="button" data-action="save-postal-tariff">تفعيل تعريفة البريد</button></div><p class="muted">تكلفة علينا للبريد المصري؛ لا تغيّر سعر شحن العميل. الشرقية: أول ١ كجم، وباقي المحافظات: أول ٢ كجم. كل كيلو أو جزء إضافي يُحسب كاملًا.</p><div class="form-grid"><div class="form-field"><label>اسم أو مرجع القائمة</label><input id="postal-tariff-source" value="${esc(postal.source)}" maxlength="120"></div><div class="form-field"><label>تكلفة الكيلو الإضافي</label><input id="postal-extra-kg" inputmode="decimal" value="${postal.extraKgCost}"></div></div><div class="table-wrap"><table><thead><tr><th>المحافظة</th><th>تكلفة البريد للوزنة الأولى</th><th>الوزنة الأولى</th></tr></thead><tbody>${EGYPT_GOVERNORATES.map(name=>`<tr data-postal-rate="${esc(name)}"><td><strong>${esc(name)}</strong></td><td><input class="postal-governorate-price" inputmode="decimal" value="${postal.byGovernorate[name]}"></td><td>${name==="الشرقية"?"حتى ١ كجم":"حتى ٢ كجم"}</td></tr>`).join("")}</tbody></table></div></div></article>`;
+}
+
+async function savePostalTariff(){
+  if(!confirm("تفعيل قائمة أسعار بريد جديدة للطرود القادمة فقط؟ الشحنات السابقة لن تتغير."))return;
+  const byGovernorate={};for(const row of document.querySelectorAll("[data-postal-rate]"))byGovernorate[row.dataset.postalRate]=row.querySelector(".postal-governorate-price").value;
+  const button=document.querySelector('[data-action="save-postal-tariff"]');if(button)button.disabled=true;
+  try{await orderWorkflowRequest("/api/settings/postal-tariff",{method:"PUT",body:{source:document.getElementById("postal-tariff-source").value,extraKgCost:document.getElementById("postal-extra-kg").value,byGovernorate}});renderSettings();toast("تم تفعيل تعريفة البريد الجديدة للطلبات القادمة.");}
+  catch(error){if(button)button.disabled=false;toast(error.message,"error");}
 }
 
 function renderSettings() {
@@ -6166,7 +6243,7 @@ function addShipmentModal(item = null) {
         <div class="form-field"><label class="required">المحافظة</label><select name="governorate" required>${governorateOptions(item?.governorate)}</select></div>
         <div class="form-field"><label>المدينة</label><input name="city" value="${esc(item?.city || "")}"></div>
         <div class="form-field full"><label>العنوان التفصيلي</label><input name="address" value="${esc(item?.address || "")}"></div>
-        <div class="form-field"><label for="shipment-extra-cost">${financeConceptTitle("تكلفة شركة الشحن المتوقعة","التكلفة المتوقع أن تتحملها المكتبة مقابل الشحنة. تصبح مصروفًا فعليًا عند التسوية.")}</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.carrierShippingCostExpected ?? item?.cost ?? 0 })}></div>
+        <div class="form-field"><label for="shipment-extra-cost">${financeConceptTitle("تكلفة شركة الشحن المتوقعة","للبريد المصري تُحسب من الوزن والتعريفة ولا تُعدل يدويًا؛ تُعتمد محاسبيًا من كشف البريد الشهري.")}</label><input ${numericFieldAttributes({ id:"shipment-extra-cost", name:"cost", value:item?.carrierShippingCostExpected ?? item?.cost ?? 0 })} ${item?.postalBillingManaged?"readonly":""}>${item?.postalBillingManaged?"<small>محسوبة من وزن الطرد وتعريفة البريد.</small>":""}</div>
         <div class="form-field full"><label>الحالة</label><select name="status">${Object.values(SHIPPING_STATUSES).map(meta => `<option ${shipmentStatusMeta(item || {}).label === meta.label ? "selected" : ""}>${meta.label}</option>`).join("")}</select></div>
       </div>
       <div class="shipment-finance-preview"><strong>ملخص مالي داخلي — لا يظهر في فاتورة العميل</strong><div><span>قيمة المنتجات<b>${money(finance.productsValue)}</b></span><span>الشحن المحصل من العميل<b>${money(finance.customerShippingCharge)}</b></span><span>إجمالي التحصيل<b>${money(finance.collectionAmount)}</b></span><span>عمولة متوقعة<b>${money(finance.collectionCommissionExpected)}</b></span><span>صافي تحويل متوقع<b>${money(finance.expectedNetSettlement)}</b></span></div></div>
@@ -6536,7 +6613,7 @@ async function approveCarrierSettlement(id) {
     const shipment=data.shipments.find(s=>s.id===line.shipmentId);
     const shippingKey=`shipment:${line.shipmentId}:settlement:${id}:shipping-cost`,commissionKey=`shipment:${line.shipmentId}:settlement:${id}:commission`;
     const addExpense=(amount,type,key)=>{if(Number(amount)<=0||data.expenses.some(e=>e.sourceKey===key))return;const expenseType=currentFinanceType("expense","",type);const expense={id:nextId("EXP-",[...data.expenses,...nextExpenses]),date:settlement.transferDate,expenseTypeId:expenseType?.id||"",expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,settlementId:id,status:"معتمد",sourceKey:key,createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};nextExpenses.push(expense);nextCash.push({id:nextId("TX-",[...data.cash,...nextCash]),date:settlement.transferDate,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:Number(amount),category:type,expenseId:expense.id,shipmentId:line.shipmentId,settlementId:id,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name});};
-    addExpense(line.carrierShippingCostActual ?? line.carrierShippingCostExpected,carrierFinanceSettings(settlement.company).shippingExpenseType,shippingKey);
+    if(!shipment?.postalBillingManaged)addExpense(line.carrierShippingCostActual ?? line.carrierShippingCostExpected,carrierFinanceSettings(settlement.company).shippingExpenseType,shippingKey);
     addExpense(line.collectionCommissionActual ?? line.collectionCommissionExpected,carrierFinanceSettings(settlement.company).commissionExpenseType,commissionKey);
     if(shipment){shipment.settlementId=id;shipment.financialSettlementStatus=Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية";shipment.settledAt=now;shipment.settledBy=actor.name;shipment.carrierShippingCostActual=Number(line.carrierShippingCostActual ?? line.carrierShippingCostExpected ?? 0);shipment.collectionCommissionActual=Number(line.collectionCommissionActual ?? line.collectionCommissionExpected ?? 0);}
   }
@@ -6604,8 +6681,10 @@ document.addEventListener("click", event => {
   }
   if(action==="prepare-order-issue")preparationIssueModal(target.dataset.id);
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
-  if(action==="prepare-order-complete")(async()=>{if(target.disabled)return;target.disabled=true;try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/prepare/complete`);closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast("تم التغليف وربط الفاتورة — الطلب ينتظر كود التتبع.");}catch(error){target.disabled=false;toast(error.message,"error");}})();
-  if(action==="pack-order-complete")(async()=>{try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(target.dataset.id)}/pack/complete`);closeModal();onlineOrdersMode="preparation";renderOnlineOrders();toast("تم التغليف والطلب جاهز للشحن.");}catch(error){toast(error.message,"error");}})();
+  if(action==="prepare-order-complete"&&!target.disabled)openPackingWeightModal(target.dataset.id);
+  if(action==="packing-weight-back"){if(target.dataset.existing==="true")closeModal();else openPreparationOrder(target.dataset.id);}
+  if(action==="packed-weight-edit")openPackingWeightModal(target.dataset.id,true);
+  if(action==="pack-order-complete")openPackingWeightModal(target.dataset.id);
 });
 document.addEventListener("submit", event => {
   if (event.target.id === "season-step-one") {
@@ -6661,7 +6740,7 @@ document.addEventListener("change", event => {
     renderOnlineOrders();return;
   }
   if(input.matches?.("[data-shipping-export-all]")){
-    shippingExportSelection.clear();if(input.checked)for(const order of readyShippingOrders())if(order.saleId)shippingExportSelection.add(order.id);
+    shippingExportSelection.clear();if(input.checked)for(const order of readyShippingOrders())if(order.saleId&&order.packedWeightGrams)shippingExportSelection.add(order.id);
     renderOnlineOrders();return;
   }
   if(input.id==="shipping-packages-file"){
@@ -6775,7 +6854,7 @@ root.addEventListener("click", async event => {
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
   if(action==="shipping-select-all"){
-    for(const order of readyShippingOrders())if(order.saleId)shippingExportSelection.add(order.id);
+    for(const order of readyShippingOrders())if(order.saleId&&order.packedWeightGrams)shippingExportSelection.add(order.id);
     renderOnlineOrders();
   }
   if(action==="shipping-export-xlsx"){
@@ -6909,6 +6988,8 @@ root.addEventListener("click", async event => {
   }
   if (action === "delete-cash") deleteCash(target.dataset.id);
   if (action === "finance-tab") { financeTab=target.dataset.tab; renderAccounting(); }
+  if (action === "postal-statement-open") openPostalStatementModal();
+  if (action === "postal-payment-open") openPostalPaymentModal();
   if (action === "collection-mode") { orderCollectionMode=target.dataset.mode;orderCollectionBatchRows=[];renderAccounting(); }
   if (action === "open-previous-collection") document.getElementById(`collection-${CSS.escape(target.dataset.id)}`)?.scrollIntoView({behavior:"smooth",block:"center"});
   if (action === "finance.collection.reverse") reverseOrderCollection(target.dataset.id);
@@ -7034,6 +7115,8 @@ root.addEventListener("click", async event => {
   if (action === "delete-shipping-company") deleteShippingCompany(target.dataset.id);
   if (action === "whatsapp-report") toast("تم تجهيز التقرير؛ ربط WhatsApp Business مطلوب للإرسال الفعلي.");
   if (action === "save-settings") saveSettings();
+  if (action === "shipping-price-tab") {shippingPriceTab=target.dataset.tab;document.getElementById("customer-shipping-rates").hidden=shippingPriceTab!=="customer";document.getElementById("postal-shipping-rates").hidden=shippingPriceTab!=="postal";document.querySelectorAll(".shipping-price-tabs .tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.tab===shippingPriceTab));}
+  if (action === "save-postal-tariff") savePostalTariff();
   if (action === "backup-db") createBackup();
   if (action === "audit-log") showAuditLog();
   if (action === "customize-role") customizeRole(target.dataset.role);
@@ -7204,6 +7287,10 @@ root.addEventListener("submit", async event => {
 });
 
 root.addEventListener("input", event => {
+  if(event.target.matches(".postal-governorate-price, #postal-extra-kg, #postal-tariff-source")){
+    if(event.target.id!=="postal-tariff-source")event.target.value=normalizeArabicNumericText(event.target.value);
+    const state=document.getElementById("postal-prices-save-state");if(state)state.textContent="تعريفة جديدة غير مفعلة";return;
+  }
   if(event.target.matches(".shipping-governorate-price, #shipping-default-cost, #shipping-free-above")){
     event.target.value=normalizeArabicNumericText(event.target.value);
     const save=document.querySelector(".shipping-prices-save"),state=document.getElementById("shipping-prices-save-state");
@@ -7740,6 +7827,11 @@ modalBody.addEventListener("click", event => {
 });
 
 modalBody.addEventListener("change", event => {
+  if(event.target.matches('#postal-payment-form [name="month"]')){
+    const form=event.target.form,limit=Number(event.target.selectedOptions[0]?.dataset.due||0),amount=form?.elements.amount;
+    if(amount){amount.max=String(limit);if(Number(amount.value)>limit)amount.value=String(limit);}
+    return;
+  }
   if(event.target.matches("[data-statement-date]")){applyStatementFilters();return;}
   if(event.target.matches("[data-preparation-book]")){
     const sheet=event.target.closest("[data-packing-order]"),orderId=sheet?.dataset.packingOrder;
@@ -7822,6 +7914,15 @@ modalBody.addEventListener("change", event => {
 });
 
 modalBody.addEventListener("input", event => {
+  if(event.target.closest("#postal-statement-form")){updatePostalStatementPreview(event.target.form);return;}
+  if(event.target.closest("#packing-weight-form")&&event.target.matches('[name="grams"], [name="kilograms"]')){
+    const form=event.target.form,field=event.target.name,normalized=normalizeArabicNumericText(event.target.value);
+    event.target.value=normalized;
+    const number=Number(normalized);
+    if(field==="grams")form.elements.kilograms.value=normalized!==""&&Number.isFinite(number)?String(number/1000):"";
+    else form.elements.grams.value=normalized!==""&&Number.isFinite(number)?String(Math.round(number*1000)):"";
+    updatePackingWeightPreview(form);return;
+  }
   if(event.target.id==="packing-edit-search"){
     const query=normalizeArabicDigits(event.target.value).trim().toLowerCase();
     const matches=query?(data.books||[]).filter(book=>!book.deletedAt&&normalizeArabicDigits([book.name,book.barcode,book.sku,book.id].join(" ")).toLowerCase().includes(query)).slice(0,15):[];
@@ -7962,6 +8063,20 @@ modalBody.addEventListener("change", event => {
 modalBody.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  if(form.id==="postal-statement-form"||form.id==="postal-payment-form"){
+    const button=form.querySelector('button[type="submit"]'),payload=Object.fromEntries(new FormData(form));
+    if(form.id==="postal-payment-form")payload.operationKey=form.dataset.operationKey;
+    button.disabled=true;
+    try{await orderWorkflowRequest(form.id==="postal-statement-form"?"/api/finance/postal-statement":"/api/finance/postal-payment",{body:payload});closeModal();financeTab="postal-account";renderAccounting();toast(form.id==="postal-statement-form"?"تم اعتماد كشف البريد وخصمه.":"تم تسجيل سداد البريد.");}
+    catch(error){button.disabled=false;toast(error.message,"error");}return;
+  }
+  if(form.id==="packing-weight-form"){
+    const button=form.querySelector('button[type="submit"]');let packedWeightGrams;
+    try{packedWeightGrams=PostalShipping.normalizeWeightGrams(form.elements.grams.value);}catch(error){return toast(error.message,"error");}
+    button.disabled=true;
+    try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/${form.dataset.existing==="true"?"packed-weight":"prepare/complete"}`,{method:form.dataset.existing==="true"?"PATCH":"POST",body:{packedWeightGrams}});closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast(form.dataset.existing==="true"?"تم تحديث الوزن؛ أعد تصدير الطلب لشركة الشحن.":"تم التغليف وربط الفاتورة وتسجيل وزن الطرد.");}
+    catch(error){button.disabled=false;toast(error.message,"error");}return;
+  }
   if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){
@@ -8277,9 +8392,10 @@ modalBody.addEventListener("submit", async event => {
     return;
   }
   if(form.id==="shipment-cancellation-form"){
-    const button=form.querySelector('button[type="submit"]'),payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:formData.resolution,reason:String(formData.reason||"").trim()};
+    const button=form.querySelector('button[type="submit"]'),payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:formData.resolution,reason:String(formData.reason||"").trim(),postalChargeStatus:formData.postalChargeStatus||"charged",postalChargeReason:String(formData.postalChargeReason||"").trim()};
     if(!payload.carrierCancelled)return toast("يجب تأكيد إلغاء الشحنة من نظام شركة الشحن أولًا.","error");
     if(!payload.reason)return toast("اكتب سبب الإلغاء.","error");
+    if(payload.postalChargeStatus==="not_charged"&&!payload.postalChargeReason)return toast("اذكر سبب عدم احتساب البريد تكلفة الإلغاء.","error");
     button.disabled=true;orderWorkflowRequest(`/api/shipping/shipments/${encodeURIComponent(form.dataset.id)}/cancel`,{body:payload}).then(result=>{closeModal();renderShipping();toast(result.resolution==="revise_shipment"?"أُلغيت الشحنة وعاد الطلب لانتظار كود جديد.":"أُلغيت الشحنة والطلب بالكامل.");}).catch(error=>{button.disabled=false;if(error.code==="PAYMENT_REFUND_REQUIRED")toast("يجب تسوية المبلغ المدفوع قبل إلغاء الطلب بالكامل.","error");else toast(error.message,"error");});return;
   }
   if (form.id === "ready-order-shipment-form") {
@@ -10119,7 +10235,9 @@ function deleteShipment(id) {
 
 function cancelShipmentFlowModal(id){
   const shipment=data.shipments.find(item=>item.id===id&&!item.deletedAt);if(!shipment)return;
-  openModal("إلغاء الشحنة","تأكيد الإلغاء لدى شركة الشحن",`<form id="shipment-cancellation-form" data-id="${esc(id)}"><div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>ألغِ الشحنة من نظام شركة الشحن أولًا</strong><span>النظام لا يستطيع تأكيد الإلغاء لدى الشركة دون ربط API. سيبقى كود التتبع محفوظًا في سجل الطلب.</span></div></div><label class="choice-card mandatory-confirm"><input type="checkbox" name="carrierCancelled" required><span><strong>أؤكد أنني ألغيت الشحنة من نظام شركة الشحن</strong><small dir="ltr">${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label><div class="form-field"><label class="required">ماذا تريد بعد الإلغاء؟</label><div class="resolution-options"><label><input type="radio" name="resolution" value="revise_shipment" checked><span><strong>تعديل الشحنة وإعادة إرسالها</strong><small>يعود الطلب إلى انتظار كود جديد، ويمكن تعديل بيانات الشحن.</small></span></label><label><input type="radio" name="resolution" value="cancel_order"><span><strong>إلغاء الطلب بالكامل</strong><small>يتطلب اكتمال أي تسوية مالية، ويلغي الفاتورة وحركة المخزون بأمان.</small></span></label></div></div><div class="form-field"><label class="required">سبب الإلغاء</label><textarea name="reason" required placeholder="مثال: تعديل العنوان أو إلغاء العميل للطلب"></textarea></div><div class="form-actions"><button class="btn danger" type="submit">متابعة الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
+  const postal=shipment.postalBillingManaged||/البريد المصري|egypt\s*post/i.test(String(shipment.company||shipment.carrier||""));
+  const postalCharge=postal?`<div class="form-field"><label>هل احتسب البريد تكلفة هذه الشحنة الملغاة؟</label><div class="resolution-options"><label><input type="radio" name="postalChargeStatus" value="charged" checked><span><strong>نعم، احتُسبت</strong><small>الوضع الافتراضي الآمن؛ تظهر ضمن مطابقة كشف البريد.</small></span></label><label><input type="radio" name="postalChargeStatus" value="not_charged"><span><strong>لا، لم تُحتسب</strong><small>يحتاج سببًا واضحًا وتأكيدًا من كشف البريد.</small></span></label></div></div><div class="form-field"><label>سبب عدم احتساب التكلفة (إذا اخترت لا)</label><input name="postalChargeReason" placeholder="مثال: أكد البريد حذف الشحنة من الكشف"></div>`:"";
+  openModal("إلغاء الشحنة","تأكيد الإلغاء لدى شركة الشحن",`<form id="shipment-cancellation-form" data-id="${esc(id)}"><div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>ألغِ الشحنة من نظام شركة الشحن أولًا</strong><span>النظام لا يستطيع تأكيد الإلغاء لدى الشركة دون ربط API. سيبقى كود التتبع محفوظًا في سجل الطلب.</span></div></div><label class="choice-card mandatory-confirm"><input type="checkbox" name="carrierCancelled" required><span><strong>أؤكد أنني ألغيت الشحنة من نظام شركة الشحن</strong><small dir="ltr">${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label><div class="form-field"><label class="required">ماذا تريد بعد الإلغاء؟</label><div class="resolution-options"><label><input type="radio" name="resolution" value="revise_shipment" checked><span><strong>تعديل الشحنة وإعادة إرسالها</strong><small>يعود الطلب إلى انتظار كود جديد، ويمكن تعديل بيانات الشحن.</small></span></label><label><input type="radio" name="resolution" value="cancel_order"><span><strong>إلغاء الطلب بالكامل</strong><small>يتطلب اكتمال أي تسوية مالية، ويلغي الفاتورة وحركة المخزون بأمان.</small></span></label></div></div>${postalCharge}<div class="form-field"><label class="required">سبب الإلغاء</label><textarea name="reason" required placeholder="مثال: تعديل العنوان أو إلغاء العميل للطلب"></textarea></div><div class="form-actions"><button class="btn danger" type="submit">متابعة الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
 }
 
 const COMPLAINT_STATUSES = {

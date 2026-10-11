@@ -58,7 +58,7 @@ async function request(path,{token,method="GET",body}={}){
   assert(Number(afterEdit.books.find(item=>item.id===books[2].id).reservedStock||0)===reservedBefore[2]+1,"confirmed-order edit reserves only the added quantity");
   result=await request(`/api/orders/${orderId}/prepare/checklist`,{token:warehouse,method:"PATCH",body:{doneBookIds:payload.lines.map(line=>line.bookId)}});
   assert(result.status===200&&result.body.order.preparationChecklist.every(item=>item.done),"all preparation items checked");
-  result=await request(`/api/orders/${orderId}/prepare/complete`,{token:warehouse,method:"POST"});
+  result=await request(`/api/orders/${orderId}/prepare/complete`,{token:warehouse,method:"POST",body:{packedWeightGrams:1200}});
   assert(result.status===200&&result.body.order.workflowStage==="awaiting_shipping"&&result.body.order.preparedAt,"completed preparation moved directly to ready shipping");
   result=await request(`/api/orders/${orderId}/prepare/start`,{token:warehouse,method:"POST"});
   assert(result.status===409,"ready order cannot start preparation again");

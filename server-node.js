@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
 const os = require("os");
+const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
@@ -13,6 +14,7 @@ const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
 const OrderRefunds = require("./app/order-refund.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
+const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
 const { createDatabasePersistence } = require("./app/database-persistence.js");
 
@@ -31,7 +33,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -164,12 +166,12 @@ function verifiedDatabaseBackup(prefix = "season-operation", metadata = null) {
 
 const DEFAULT_EXPENSE_TYPE_NAMES = ["تكلفة شحن البريد المصري","عمولة تحصيل البريد المصري","تكلفة مرتجع","تغليف وأكياس","إعلانات وتسويق","رواتب وأجور","إيجار","اتصالات وإنترنت","استضافة وبرامج","أدوات مكتبية","صيانة","نقل ومواصلات","مصروفات بنكية","مصروفات أخرى"];
 const DEFAULT_INCOME_TYPE_NAMES = ["تعويض من شركة شحن","عمولة من مورد","خدمات إضافية","بيع مواد أو كراتين","إيراد متنوع"];
-const LAZY_FINANCE_ARRAYS = ["expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections"];
+const LAZY_FINANCE_ARRAYS = ["expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","postalStatements","postalPayments"];
 
 function ensureFinanceDb(db) {
   const source=db&&typeof db==="object"?db:{};
   const next={...source};
-  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","shipments","audit"].forEach(key=>{
+  ["cash","cashAccounts","expenses","otherIncome","expenseTypes","incomeTypes","carrierSettlements","orderCollections","postalStatements","postalPayments","shipments","audit"].forEach(key=>{
     next[key]=Array.isArray(source[key])?source[key].map(item=>item&&typeof item==="object"?{...item}:item):[];
   });
   next.expenseTypes=next.expenseTypes.map((type,index)=>typeof type==="string"?{id:`ET-${String(index+1).padStart(3,"0")}`,name:type,active:true}:{...type,id:type.id||`ET-${String(index+1).padStart(3,"0")}`,active:type.active!==false});
@@ -478,6 +480,44 @@ function orderShippingCompany(db,requested="",fallback="") {
   return company.name;
 }
 
+function postalTariff(db) {
+  return PostalShipping.normalizeTariff(db.settings?.postalTariff || PostalShipping.defaultTariff());
+}
+
+function isPostalCarrier(value) {
+  const carrier=typeof value==="object"?`${value?.carrier||""} ${value?.company||""} ${value?.carrierCode||""}`:String(value||"");
+  return /البريد المصري|egypt\s*post|EGYPT_POST/i.test(carrier);
+}
+
+function packedWeightQuote(db,order,weightInput) {
+  const packedWeightGrams=PostalShipping.normalizeWeightGrams(weightInput);
+  const egyptPost=isPostalCarrier(order.shippingCompany);
+  return {packedWeightGrams,postalCostQuote:egyptPost?PostalShipping.quote(postalTariff(db),order.governorate,packedWeightGrams):null};
+}
+
+function postalMonthSummary(db,month) {
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month||"")))throw Object.assign(new Error("اختر شهرًا صالحًا لكشف البريد."),{status:400});
+  const shipments=(db.shipments||[]).filter(item=>!item.deletedAt&&isPostalCarrier(item)&&String(item.shippedAt||item.createdAt||"").slice(0,7)===month);
+  const charged=shipments.filter(item=>item.postalChargeStatus!=="not_charged");
+  return {month,shipments,charged,expectedCount:charged.length,expectedCost:PostalShipping.roundMoney(charged.reduce((sum,item)=>sum+Number(item.postalCostQuote?.totalCost??item.cost??0),0)),waivedCount:shipments.length-charged.length,unpricedCount:charged.filter(item=>!item.postalCostQuote).length};
+}
+
+function postalOutstanding(db,month="") {
+  const billed=(db.postalStatements||[]).filter(item=>!month||item.month===month).reduce((sum,item)=>sum+toCents(item.netDue),0);
+  const paid=(db.postalPayments||[]).filter(item=>!month||item.month===month).reduce((sum,item)=>sum+toCents(item.amount),0);
+  return fromCents(billed-paid);
+}
+
+function postalFinanceUser(user) {
+  return ["مالك","محاسب"].includes(financeRole(user))||user?.username==="owner";
+}
+
+function moneyInput(value,label) {
+  const number=PostalShipping.numberFromInput(value);
+  if(value===""||value==null||!Number.isFinite(number)||number<0||Math.abs(Math.round(number*100)-number*100)>1e-7)throw Object.assign(new Error(`${label} غير صالح.`),{status:400});
+  return PostalShipping.roundMoney(number);
+}
+
 function createReadyOrderShipment(db,order,payload,user) {
   if(!order||order.deletedAt)throw Object.assign(new Error("الطلب غير موجود."),{status:404,code:"ORDER_NOT_FOUND"});
   const existing=shipmentForOnlineOrder(db,order);
@@ -490,6 +530,9 @@ function createReadyOrderShipment(db,order,payload,user) {
   const duplicate=(db.shipments||[]).find(shipment=>!shipment.deletedAt&&normalizeTrackingNumber(shipment.trackingNumber||shipment.tracking)===trackingNumber);
   if(duplicate)throw Object.assign(new Error("كود التتبع مستخدم في شحنة أخرى."),{status:409,code:"TRACKING_ALREADY_USED",shipmentId:duplicate.id});
   const company=orderShippingCompany(db,payload.company||payload.carrier,order.shippingCompany);
+  const packedWeightGrams=PostalShipping.normalizeWeightGrams(order.packedWeightGrams);
+  const isPostal=isPostalCarrier(company);
+  const postalCostQuote=isPostal?PostalShipping.quote(order.postalCostQuote?.tariffSnapshot||postalTariff(db),order.governorate,packedWeightGrams):null;
   const now=new Date().toISOString(),payment=OrderFinance.calculatePayment(Number(order.total||sale.total||0),Number(order.paidAmount??sale.paidAmount??sale.paid??0));
   const snapshot=sale.customerSnapshot||{};
   const shipment={
@@ -500,13 +543,17 @@ function createReadyOrderShipment(db,order,payload,user) {
     customerId:sale.customerId||order.customerId||"",customer:snapshot.name||order.customerName||"",customerName:snapshot.name||order.customerName||"",
     phone:snapshot.phone||order.phone||"",customerPhone:snapshot.phone||order.phone||"",
     governorate:snapshot.governorate||order.governorate||"",city:snapshot.city||order.city||"",address:snapshot.address||order.address||"",
-    cost:0,productsValue:Math.max(0,Number(sale.total||order.total||0)-Number(sale.shipping||order.shippingCost||0)),
+    cost:postalCostQuote?.totalCost||0,carrierShippingCostExpected:postalCostQuote?.totalCost||0,
+    packedWeightGrams,postalCostQuote:postalCostQuote?{...postalCostQuote,tariffSnapshot:order.postalCostQuote?.tariffSnapshot||postalTariff(db)}:null,
+    postalBillingManaged:isPostal,postalChargeStatus:isPostal?"charged":null,
+    productsValue:Math.max(0,Number(sale.total||order.total||0)-Number(sale.shipping||order.shippingCost||0)),
     customerShippingCharge:Number(sale.shipping||order.shippingCost||0),collectionAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,
     status:"تم الشحن",currentStatus:"تم الشحن",normalizedStatus:"shipped",shippingStatus:"shipped",
     shippedAt:String(payload.shippedAt||now),shippedBy:user.name||user.username,createdAt:now,updatedAt:now,updated:now,deletedAt:null
   };
+  if(isPostal&&(db.postalStatements||[]).some(item=>item.month===shipment.shippedAt.slice(0,7)&&!item.deletedAt))throw Object.assign(new Error("كشف البريد لهذا الشهر معتمد؛ لا يمكن إضافة شحنة إليه بعد الإقفال."),{status:409,code:"POSTAL_MONTH_CLOSED"});
   db.shipments=db.shipments||[];db.shipments.unshift(shipment);
-  Object.assign(sale,{shipmentId:shipment.id,shippingCost:shipment.cost,updatedAt:now});
+  Object.assign(sale,{shipmentId:shipment.id,carrierShippingCostExpected:shipment.cost,updatedAt:now});
   Object.assign(order,{shipmentId:shipment.id,shippingCompany:company,tracking:trackingNumber,trackingNumber,status:"تم الشحن",workflowStage:"shipped",shippedAt:shipment.shippedAt,shippedBy:user.name||user.username,shippedByUsername:user.username,amountDueAtDelivery:payment.remainingAmount,updatedAt:now});
   appendOrderAudit(db,user,order,"تأكيد شحن الطلب",`${company} · ${trackingNumber}`);
   return shipment;
@@ -556,7 +603,7 @@ function shipmentCollectionValues(db,shipment={}) {
   const rate=Number(configured.commissionRate??(egyptPost?0.5:0));
   const minimumCents=toCents(configured.minimumCommission??(egyptPost?5:0));
   const commissionCents=collectionCents<=0?0:Math.max(Math.round(collectionCents*rate/100),minimumCents);
-  const shippingCostCents=toCents(shipment.carrierShippingCostActual??shipment.carrierShippingCostExpected??shipment.cost??0);
+  const shippingCostCents=shipment.postalBillingManaged?0:toCents(shipment.carrierShippingCostActual??shipment.carrierShippingCostExpected??shipment.cost??0);
   return {
     sale,customer,company,
     productsValue:fromCents(productsCents),
@@ -628,7 +675,7 @@ function createOrderCollectionAtomic(db,payload,user) {
       next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
     };
     addExpense(values.expectedCommission,`عمولة تحصيل ${values.company}`,"commission");
-    addExpense(values.shippingCost,`تكلفة شحن ${values.company}`,"shipping-cost");
+    if(!shipment.postalBillingManaged)addExpense(values.shippingCost,`تكلفة شحن ${values.company}`,"shipping-cost");
   }
   AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"تسجيل تحصيل أوردر",entity:"المالية",entityId:collection.id,user:actor.name,username:actor.username,role:actor.role,reference:trackingNumber,details:`${collection.orderId} · ${collection.amount}`});
   return {next,collection};
@@ -683,7 +730,7 @@ function approveSettlementAtomic(db, settlementId, user) {
     if(shipment.financialCollectionStatus==="settled"&&!shipment.settlementId)throw Object.assign(new Error(`الشحنة ${line.trackingNumber||line.shipmentId} دخلت الخزنة سابقًا من تحصيل مباشر.`),{status:409});
   }
   const sumCents=selector=>lines.reduce((total,line)=>total+toCents(selector(line)),0);
-  const collectionCents=sumCents(line=>line.collectionAmount),shippingCents=sumCents(line=>line.carrierShippingCostActual??line.carrierShippingCostExpected),commissionCents=sumCents(line=>line.collectionCommissionActual??line.collectionCommissionExpected);
+  const collectionCents=sumCents(line=>line.collectionAmount),shippingCents=sumCents(line=>next.shipments.find(item=>item.id===line.shipmentId)?.postalBillingManaged?0:(line.carrierShippingCostActual??line.carrierShippingCostExpected)),commissionCents=sumCents(line=>line.collectionCommissionActual??line.collectionCommissionExpected);
   const expected=fromCents(collectionCents-shippingCents-commissionCents-toCents(settlement.otherDeductions||0));
   const actual=fromCents(toCents(settlement.actualNetSettlement||0)),difference=fromCents(toCents(actual)-toCents(expected));
   if(actual<0)throw Object.assign(new Error("لا يمكن اعتماد مبلغ تسوية سالب."),{status:400});
@@ -701,7 +748,8 @@ function approveSettlementAtomic(db, settlementId, user) {
     next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
   };
   for(const line of lines){
-    addExpense(line,line.carrierShippingCostActual??line.carrierShippingCostExpected,`تكلفة شحن ${settlement.company}`,`shipment:${line.shipmentId}:settlement:${settlementId}:shipping-cost`);
+    const billedShipment=next.shipments.find(item=>item.id===line.shipmentId);
+    if(!billedShipment?.postalBillingManaged)addExpense(line,line.carrierShippingCostActual??line.carrierShippingCostExpected,`تكلفة شحن ${settlement.company}`,`shipment:${line.shipmentId}:settlement:${settlementId}:shipping-cost`);
     addExpense(line,line.collectionCommissionActual??line.collectionCommissionExpected,`عمولة تحصيل ${settlement.company}`,`shipment:${line.shipmentId}:settlement:${settlementId}:commission`);
     const shipment=next.shipments.find(item=>item.id===line.shipmentId);
     Object.assign(shipment,{settlementId,financialSettlementStatus:Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية",settledAt:now,settledBy:actor.name,carrierShippingCostActual:Number(line.carrierShippingCostActual??line.carrierShippingCostExpected??0),collectionCommissionActual:Number(line.collectionCommissionActual??line.collectionCommissionExpected??0),actualNetSettlement:Number(line.actualNetSettlement??0)});
@@ -2454,6 +2502,19 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (route === "/api/settings/postal-tariff" && req.method === "PUT") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      if(!["مالك","مدير"].includes(orderRole(user)))return send(res,403,{ok:false,message:"تعديل تعريفة البريد متاح للمالك والمدير فقط."});
+      try{
+        const db=ensureTrackingDb(readDb()),payload=JSON.parse(await readBody(req)||"{}");
+        const previous=postalTariff(db),tariff=PostalShipping.normalizeTariff({version:previous.version+1,source:payload.source||previous.source,extraKgCost:payload.extraKgCost,byGovernorate:payload.byGovernorate,activatedAt:new Date().toISOString()});
+        db.settings.postalTariff=tariff;
+        db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"POSTAL_TARIFF_ACTIVATED",action:"تفعيل تعريفة البريد المصري",entity:"الإعدادات",entityId:`POSTAL-${tariff.version}`,user:user.name||user.username,username:user.username,performedAt:tariff.activatedAt,details:tariff.source});
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"POSTAL_TARIFF_ACTIVATED",performedBy:user.username});
+        return send(res,200,{ok:true,tariff,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||400,{ok:false,code:error.code||"POSTAL_TARIFF_INVALID",message:error.message});}
+    }
+
     if (route === "/api/login" && req.method === "POST") {
       const payload = JSON.parse(await readBody(req) || "{}");
       const user = users().find(item => item.username === payload.username && item.active !== false);
@@ -2897,8 +2958,11 @@ const server = http.createServer(async (req, res) => {
       if(!order.lines?.length||order.lines.some(line=>!(order.preparationChecklist||[]).some(item=>item.bookId===line.bookId&&Number(item.qty)===Number(line.qty)&&item.done)))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
       if(order.preparedAt&&order.workflowStage==="awaiting_shipping"&&shippingOrderInvoice(db,order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       if(!["preparing","awaiting_shipping"].includes(order.workflowStage)||order.shipmentId)return send(res,409,{ok:false,message:"الطلب غير متاح لإكمال التغليف."});
-      try{ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
+      if(!(order.lines||[]).length||(order.lines||[]).some(line=>!(order.preparationChecklist||[]).some(item=>item.bookId===line.bookId&&Number(item.qty)===Number(line.qty)&&item.done)))return send(res,409,{ok:false,code:"PACKING_CHECKLIST_INCOMPLETE",message:"علّم كل كتاب بعد تغليف كميته كاملة أولًا."});
+      let packageWeight;
+      try{const payload=JSON.parse(await readBody(req)||"{}");packageWeight=packedWeightQuote(db,order,payload.packedWeightGrams);ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",status:"تم التجهيز",preparedAt:order.preparedAt||now,preparedBy:order.preparedBy||user.name||user.username,preparedByUsername:order.preparedByUsername||user.username,packedAt:order.packedAt||now,packedBy:order.packedBy||user.name||user.username,updatedAt:now});
+      Object.assign(order,{...packageWeight,postalCostQuote:packageWeight.postalCostQuote?{...packageWeight.postalCostQuote,tariffSnapshot:postalTariff(db)}:null});
       db.notifications=db.notifications||[];if(!db.notifications.some(item=>item.key===`order-shipping-${order.id}`))db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} تم تجهيزه وتغليفه وهو جاهز للشحن`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
       appendOrderAudit(db,user,order,"تم التغليف وإصدار الفاتورة",order.saleId);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKING_WITH_INVOICE",performedBy:user.username});return send(res,200,{ok:true,order,revision:dbRevision()});
     }
@@ -2909,8 +2973,10 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.workflowStage==="awaiting_shipping"&&order.packedAt&&shippingOrderInvoice(db,order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       if(order.workflowStage!=="awaiting_packing")return send(res,409,{ok:false,message:"يجب إكمال التجهيز أولًا."});
-      try{ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
+      let packageWeight;
+      try{const payload=JSON.parse(await readBody(req)||"{}");packageWeight=packedWeightQuote(db,order,payload.packedWeightGrams);ensurePackingInvoice(db,order,user,nextId);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_INVOICE_FAILED",message:error.message});}
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_shipping",packedAt:now,packedBy:user.name||user.username,updatedAt:now});
+      Object.assign(order,{...packageWeight,postalCostQuote:packageWeight.postalCostQuote?{...packageWeight.postalCostQuote,tariffSnapshot:postalTariff(db)}:null});
       db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} جاهز لإنشاء الشحنة`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
       appendOrderAudit(db,user,order,"اكتمال تغليف الطلب",order.saleId);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKING_WITH_INVOICE",performedBy:user.username});return send(res,200,{ok:true,order,revision:dbRevision()});
     }
@@ -2922,9 +2988,24 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});
       if(!order.preparedAt&&!["awaiting_packing","awaiting_shipping"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب لم يكتمل تجهيزه بعد."});
-      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
       appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز","إعادة مراجعة محتويات الطرد");writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/packed-weight") && req.method === "PATCH") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.pack")&&!canOrderAction(db,user,"order.shipping"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل وزن الطرد."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.workflowStage!=="awaiting_shipping"||order.shipmentId)return send(res,409,{ok:false,message:"لا يمكن تغيير الوزن بعد تأكيد الشحن."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),weight=packedWeightQuote(db,order,payload.packedWeightGrams),now=new Date().toISOString();
+        Object.assign(order,{...weight,postalCostQuote:weight.postalCostQuote?{...weight.postalCostQuote,tariffSnapshot:postalTariff(db)}:null,shippingExport:null,updatedAt:now});
+        appendOrderAudit(db,user,order,"تسجيل وزن الطرد",`${weight.packedWeightGrams} جرام`);
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKAGE_WEIGHT_UPDATED",performedBy:user.username});
+        return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||400,{ok:false,message:error.message,code:error.code||"INVALID_PACKAGE_WEIGHT"});}
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/ship") && req.method === "POST") {
@@ -2981,6 +3062,10 @@ const server = http.createServer(async (req, res) => {
         if(payload.carrierCancelled!==true)return send(res,409,{ok:false,code:"CARRIER_CANCELLATION_CONFIRMATION_REQUIRED",message:"ألغِ الشحنة من نظام شركة الشحن أولًا ثم فعّل مربع التأكيد."});
         if(!reason)return send(res,400,{ok:false,message:"اكتب سبب إلغاء الشحنة."});
         if(!["revise_shipment","cancel_order"].includes(resolution))return send(res,400,{ok:false,message:"اختر تعديل الشحنة أو إلغاء الطلب بالكامل."});
+        const postalChargeStatus=isPostalCarrier(shipment)?(payload.postalChargeStatus==="not_charged"?"not_charged":"charged"):null;
+        const postalChargeReason=String(payload.postalChargeReason||"").trim();
+        if(postalChargeStatus==="not_charged"&&!postalChargeReason)return send(res,400,{ok:false,message:"اذكر سبب عدم احتساب البريد لتكلفة الشحنة الملغاة."});
+        if(postalChargeStatus==="not_charged"&&(db.postalStatements||[]).some(item=>item.month===String(shipment.shippedAt||shipment.createdAt||"").slice(0,7)&&!item.deletedAt))return send(res,409,{ok:false,message:"كشف هذا الشهر معتمد؛ لا يمكن استبعاد تكلفة الشحنة بعد الإقفال."});
         const order=(db.onlineOrders||[]).find(item=>item.id===shipment.onlineOrderId),sale=(db.sales||[]).find(item=>item.id===(shipment.invoiceId||shipment.orderId));
         if(!order)return send(res,409,{ok:false,message:"تعذر العثور على الطلب المرتبط بالشحنة."});
         if(resolution==="cancel_order"){
@@ -2990,7 +3075,7 @@ const server = http.createServer(async (req, res) => {
           }
         }
         const now=new Date().toISOString(),tracking=shipment.trackingNumber||shipment.tracking||"";
-        Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:resolution,updatedAt:now,updated:now});
+        Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:resolution,postalChargeStatus,postalChargeReason:postalChargeStatus==="not_charged"?postalChargeReason:"",postalChargeRecordedAt:postalChargeStatus?now:null,postalChargeRecordedBy:postalChargeStatus?(user.name||user.username):"",postalChargeRecordedByUsername:postalChargeStatus?user.username:"",updatedAt:now,updated:now});
         order.previousTrackingNumbers=[...(order.previousTrackingNumbers||[]),{trackingNumber:tracking,shipmentId:shipment.id,cancelledAt:now,reason}];
         if(resolution==="revise_shipment")Object.assign(order,{shipmentId:null,tracking:"",trackingNumber:"",status:"تم التجهيز",workflowStage:"awaiting_shipping",shippedAt:null,shippedBy:null,shippingExport:null,updatedAt:now});
         else Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,updatedAt:now});
@@ -3153,6 +3238,56 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
     }
 
+    if (route === "/api/finance/postal-statement" && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      if(!postalFinanceUser(user))return send(res,403,{ok:false,message:"اعتماد كشف البريد متاح للمالك والمحاسب فقط."});
+      try{
+        const db=ensureFinanceDb(readDb()),payload=JSON.parse(await readBody(req)||"{}"),month=String(payload.month||"");
+        const summary=postalMonthSummary(db,month);
+        if(month>=new Date().toISOString().slice(0,7))return send(res,400,{ok:false,message:"اعتمد كشف البريد بعد انتهاء الشهر فقط."});
+        if(db.postalStatements.some(item=>item.month===month&&!item.deletedAt))return send(res,409,{ok:false,message:"كشف هذا الشهر معتمد بالفعل. لا يمكن اعتماده مرتين."});
+        const billedShipmentCount=PostalShipping.numberFromInput(payload.billedShipmentCount),grossCost=moneyInput(payload.grossCost,"إجمالي تكلفة البريد"),discount=moneyInput(payload.discount,"خصم البريد"),netDue=PostalShipping.statementNet(grossCost,discount),differenceReason=String(payload.differenceReason||"").trim();
+        if(!Number.isInteger(billedShipmentCount)||billedShipmentCount<0)return send(res,400,{ok:false,message:"عدد شحنات الكشف غير صالح."});
+        if((billedShipmentCount!==summary.expectedCount||summary.unpricedCount>0||Math.abs(grossCost-summary.expectedCost)>0.01)&&!differenceReason)return send(res,400,{ok:false,message:"اكتب سبب اختلاف عدد الشحنات أو إجمالي التكلفة عن المتوقع."});
+        const now=new Date().toISOString(),actor=financeActor(user),shipmentIds=new Set(summary.shipments.map(item=>item.id));
+        const previouslyRecognized=PostalShipping.roundMoney(db.expenses.filter(item=>shipmentIds.has(item.shipmentId)&&item.status==="معتمد"&&String(item.expenseType||"").startsWith("تكلفة شحن ")).reduce((sum,item)=>sum+Number(item.amount||0),0));
+        const expenseAdjustment=PostalShipping.roundMoney(netDue-previouslyRecognized);
+        const statement={id:`POSTAL-${month}`,month,expectedCount:summary.expectedCount,expectedCost:summary.expectedCost,waivedCount:summary.waivedCount,unpricedCount:summary.unpricedCount,billedShipmentCount,grossCost,discount,netDue,differenceReason,previouslyRecognized,expenseAdjustment,sourceReference:String(payload.sourceReference||"").trim().slice(0,100),approvedAt:now,approvedBy:actor.name,approvedByUsername:actor.username,createdAt:now};
+        db.postalStatements.push(statement);
+        if(Math.abs(expenseAdjustment)>0.001){
+          db.expenses.push({id:nextId("EXP-",db.expenses),date:`${month}-${new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0).getDate()}`,expenseType:"تكلفة شحن البريد المصري",amount:expenseAdjustment,beneficiary:"البريد المصري",source:"كشف البريد الشهري",sourceKey:`postal-statement:${month}:expense`,postalStatementId:statement.id,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name});
+        }
+        AuditIds.appendAuditRecord(db.audit,{operationType:"POSTAL_STATEMENT_APPROVED",action:"اعتماد كشف البريد المصري",entity:"المالية",entityId:statement.id,user:actor.name,username:actor.username,performedAt:now,details:`${billedShipmentCount} شحنة؛ الإجمالي ${grossCost}؛ الخصم ${discount}؛ الصافي ${netDue}`});
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"POSTAL_STATEMENT_APPROVED",performedBy:user.username});
+        return send(res,200,{ok:true,statement,outstanding:postalOutstanding(db),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"POSTAL_STATEMENT_FAILED",message:error.message});}
+    }
+
+    if (route === "/api/finance/postal-payment" && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
+      if(!postalFinanceUser(user))return send(res,403,{ok:false,message:"سداد البريد متاح للمالك والمحاسب فقط."});
+      try{
+        const db=ensureFinanceDb(readDb()),payload=JSON.parse(await readBody(req)||"{}"),operationKey=String(payload.operationKey||"").trim();
+        if(!/^[a-zA-Z0-9:-]{12,100}$/.test(operationKey))return send(res,400,{ok:false,message:"معرّف عملية السداد غير صالح."});
+        const previous=db.postalPayments.find(item=>item.operationKey===operationKey);
+        if(previous){
+          if(previous.month!==String(payload.month||"").trim()||previous.account!==String(payload.account||"").trim()||previous.date!==String(payload.date||"").trim()||toCents(previous.amount)!==toCents(moneyInput(payload.amount,"مبلغ السداد")))return send(res,409,{ok:false,code:"POSTAL_PAYMENT_KEY_REUSED",message:"معرّف السداد مستخدم لدفعة مختلفة. افتح نموذج سداد جديدًا."});
+          return send(res,200,{ok:true,payment:previous,existing:true,outstanding:postalOutstanding(db),revision:dbRevision()});
+        }
+        const month=String(payload.month||"").trim();
+        if(!db.postalStatements.some(item=>item.month===month&&!item.deletedAt))return send(res,400,{ok:false,message:"اختر شهر كشف بريد معتمدًا للسداد."});
+        const amount=moneyInput(payload.amount,"مبلغ السداد"),outstanding=postalOutstanding(db,month),account=String(payload.account||"").trim();
+        if(amount<=0||toCents(amount)>toCents(outstanding))return send(res,400,{ok:false,message:"مبلغ السداد يجب أن يكون أكبر من صفر ولا يتجاوز المتبقي على كشف هذا الشهر."});
+        if(!(db.cashAccounts||[]).some(item=>!item.deletedAt&&item.active!==false&&item.name===account))return send(res,400,{ok:false,message:"اختر خزنة أو حسابًا نشطًا."});
+        const date=String(payload.date||new Date().toISOString().slice(0,10));if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return send(res,400,{ok:false,message:"تاريخ السداد غير صالح."});
+        const now=new Date().toISOString(),actor=financeActor(user),payment={id:nextId("POSTPAY-",db.postalPayments),operationKey,month,date,account,amount,reference:String(payload.reference||"").trim().slice(0,100),createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
+        db.postalPayments.push(payment);db.cash.push({id:nextId("TX-",db.cash),date,type:"صرف",direction:"out",movementType:"سداد مديونية البريد",account,party:"البريد المصري",amount,category:"سداد مديونية البريد",postalPaymentId:payment.id,sourceKey:`postal-payment:${operationKey}`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
+        AuditIds.appendAuditRecord(db.audit,{operationType:"POSTAL_PAYMENT_RECORDED",action:"سداد مديونية البريد المصري",entity:"المالية",entityId:payment.id,user:actor.name,username:actor.username,performedAt:now,details:`${month} · ${amount} · ${account} · ${payment.reference}`});
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"POSTAL_PAYMENT_RECORDED",performedBy:user.username});
+        return send(res,200,{ok:true,payment,outstanding:postalOutstanding(db),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"POSTAL_PAYMENT_FAILED",message:error.message});}
+    }
+
     if (route === "/api/finance/order-collections" && req.method === "GET") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
@@ -3287,6 +3422,13 @@ const server = http.createServer(async (req, res) => {
         }
       }
       pruneLazyFinanceFields(currentSource,parsed);
+      const protectedChanged=["postalStatements","postalPayments"].some(key=>JSON.stringify(currentDb[key]||[])!==JSON.stringify(parsed[key]||[]))||JSON.stringify(currentDb.settings?.postalTariff||null)!==JSON.stringify(parsed.settings?.postalTariff||null);
+      const oldPostalShipments=new Map((currentDb.shipments||[]).filter(item=>item.postalBillingManaged).map(item=>[item.id,item]));
+      const postalShipmentChanged=[...oldPostalShipments].some(([id,old])=>{const next=(parsed.shipments||[]).find(item=>item.id===id);return !next||["cost","carrierShippingCostExpected","carrierShippingCostActual","postalBillingManaged","postalChargeStatus","postalChargeReason","postalCostQuote","packedWeightGrams"].some(key=>JSON.stringify(old[key]??null)!==JSON.stringify(next[key]??null));});
+      const oldPackedOrders=new Map((currentDb.onlineOrders||[]).filter(item=>item.packedWeightGrams).map(item=>[item.id,item]));
+      const packedOrderChanged=[...oldPackedOrders].some(([id,old])=>{const next=(parsed.onlineOrders||[]).find(item=>item.id===id);return !next||["packedWeightGrams","postalCostQuote"].some(key=>JSON.stringify(old[key]??null)!==JSON.stringify(next[key]??null));});
+      const protectedLedgerRows=[["expenses","postalStatementId"],["cash","postalPaymentId"]].some(([key,marker])=>(currentDb[key]||[]).filter(item=>item[marker]).some(old=>{const next=(parsed[key]||[]).find(item=>item.id===old.id);return !next||JSON.stringify(old)!==JSON.stringify(next);}));
+      if(protectedChanged||postalShipmentChanged||packedOrderChanged||protectedLedgerRows)return send(res,409,{ok:false,code:"POSTAL_LEDGER_PROTECTED",message:"تعريفة وحساب البريد والوزن تُعدّل من شاشاتها المخصصة فقط. حدّث الصفحة ثم أعد المحاولة."});
       const commercialValidation=validateCommercialFields(parsed);
       if(!commercialValidation.ok)return send(res,400,{ok:false,code:commercialValidation.code,message:commercialValidation.message});
       const shippingPermission=validateShippingOverridePermission(currentDb,parsed,user);
@@ -3304,6 +3446,10 @@ const server = http.createServer(async (req, res) => {
       }
       appendNegativeStockAudit(parsed, user, stockValidation.violations);
       pruneLazyFinanceFields(currentSource,parsed);
+      if(fs.existsSync(DB_PATH)&&isDeepStrictEqual(parsed,currentSource)){
+        const snapshot=databasePersistence.read();
+        return send(res,200,{ok:true,unchanged:true,revision:String(snapshot.revision),sha256:snapshot.sha256},"application/json; charset=utf-8",{"X-DB-Revision":String(snapshot.revision)});
+      }
       try {
         const saved = writeDb(parsed, { expectedRevision:expected === undefined ? undefined : Number(expected), operationType:"CLIENT_SAVE", performedBy:user.username });
         return send(res, 200, { ok:true, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });

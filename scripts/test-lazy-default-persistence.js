@@ -100,8 +100,10 @@ function runtimeMaterializedPayload(source) {
     assert(!hasOwn(db,"orderPayments")&&db.onlineOrders.every(order=>!hasOwn(order,"paidAmount")&&!hasOwn(order,"paymentStatus")),"load and read do not materialize payment fields");
 
     const noOp = runtimeMaterializedPayload(db);
+    const initialRevision = Number(db.meta?.dataRevision || 0);
     let result = await request(base, "/api/db", { token, method:"PUT", body:noOp });
     assert(result.status === 200, "no-op general save accepted");
+    assert(result.body.unchanged === true && Number(result.body.revision) === initialRevision, "no-op save keeps the revision unchanged");
     db = (await request(base, "/api/db", { token })).body;
     assert(db.books.every(book => !hasOwn(book, "reservedStock")), "no-op save strips runtime-only reservedStock defaults");
     assert(FINANCE_KEYS.every(key => !hasOwn(db, key)), "no-op save strips runtime-only finance defaults");

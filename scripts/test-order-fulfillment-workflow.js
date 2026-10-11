@@ -21,7 +21,7 @@ db.onlineOrders=db.onlineOrders||[];db.sales=db.sales||[];db.shipments=db.shipme
 const now=new Date().toISOString();
 function fixture(index,{paid=0,stage="awaiting_shipping",prepared=true,withSale=true}={}){
   const orderId=`ORD-WF-${String(index).padStart(2,"0")}`,saleId=`INV-WF-${String(index).padStart(2,"0")}`,total=670;
-  const order={id:orderId,date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone||"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA",source:"whatsapp",status:prepared?"تم التجهيز":"قيد التجهيز",workflowStage:stage,confirmedAt:now,confirmedBy:"QA",preparedAt:prepared?now:null,preparedBy:prepared?"QA":null,lines:[{bookId:book.id,qty:1,price:600,discount:0,discountType:"percent"}],shippingCost:70,subtotal:600,discountTotal:0,total,paidAmount:paid,amountDueAtDelivery:total-paid,saleId,createdAt:now,updatedAt:now,deletedAt:null};
+  const order={id:orderId,date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone||"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA",source:"whatsapp",status:prepared?"تم التجهيز":"قيد التجهيز",workflowStage:stage,confirmedAt:now,confirmedBy:"QA",preparedAt:prepared?now:null,preparedBy:prepared?"QA":null,packedWeightGrams:prepared?1200:null,lines:[{bookId:book.id,qty:1,price:600,discount:0,discountType:"percent"}],shippingCost:70,subtotal:600,discountTotal:0,total,paidAmount:paid,amountDueAtDelivery:total-paid,saleId,createdAt:now,updatedAt:now,deletedAt:null};
   const sale={id:saleId,date:now.slice(0,10),customerId:customer.id,onlineOrderId:orderId,total,shipping:70,paid,paidAmount:paid,remaining:total-paid,remainingAmount:total-paid,customerSnapshot:{name:customer.name,phone:customer.phone||"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA"},lines:order.lines,createdAt:now,updatedAt:now,deletedAt:null};
   db.onlineOrders.push(order);if(withSale)db.sales.push(sale);else order.saleId=null;return order;
 }
@@ -47,6 +47,11 @@ for(let i=1;i<=10;i++)fixture(i,{paid:i===1?670:i===2?200:0});
 db.onlineOrders.find(order=>order.id==="ORD-WF-02").shippingCompany=otherCompany;
 const chosenCarrierOrder=fixture(13);
 chosenCarrierOrder.shippingCompany=otherCompany;
+const postalOrder=fixture(14);
+postalOrder.shippingCompany=preferredCompany;
+const missingWeightOrder=fixture(15);
+missingWeightOrder.shippingCompany=preferredCompany;
+missingWeightOrder.packedWeightGrams=null;
 const cancellable=fixture(11,{stage:"awaiting_preparation",prepared:false,withSale:false});
 const settledCancellable=fixture(12,{paid:670,stage:"awaiting_preparation",prepared:false,withSale:false});
 db.orderPayments=db.orderPayments||[];db.cashAccounts=db.cashAccounts||[];
@@ -156,7 +161,7 @@ async function wait(){
   pass(edited.body.order.inventoryReservation?.lines?.[0]?.qty===2,"edit updates inventory reservation atomically");
   pass((await call(`/api/orders/${prep.id}/prepare/start`,{method:"POST"})).status===200,"start preparation");
   pass((await call(`/api/orders/${prep.id}/prepare/checklist`,{method:"PATCH",body:{doneBookIds:[book.id]}})).status===200,"checklist reads current order item");
-  const completed=await call(`/api/orders/${prep.id}/prepare/complete`,{method:"POST"});
+  const completed=await call(`/api/orders/${prep.id}/prepare/complete`,{method:"POST",body:{packedWeightGrams:1200}});
   pass(completed.status===200&&completed.body.order.workflowStage==="awaiting_shipping"&&completed.body.order.preparedAt,"complete moves directly to ready shipping");
   await call(`/api/orders/${autoPrep.id}/prepare/start`,{method:"POST"});
   const uncheckedSnapshot=fs.readFileSync(dbPath,"utf8");
@@ -168,7 +173,7 @@ async function wait(){
   pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",authToken:accountantLogin.body.token})).status===403,"packing denies unauthorized users");
   pass((await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",revision:-1})).status>=400,"stale packing cannot commit its invoice");
   pass(fs.readFileSync(dbPath,"utf8")===beforePacking,"401, 403 and stale revision preserve all data");
-  const autoCompleted=await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST"});
+  const autoCompleted=await call(`/api/orders/${autoPrep.id}/prepare/complete`,{method:"POST",body:{packedWeightGrams:1200}});
   pass(autoCompleted.status===200&&autoCompleted.body.order.saleId&&autoCompleted.body.order.workflowStage==="awaiting_shipping","packing atomically creates invoice and moves to waiting tracking");
   const packedDb=JSON.parse(fs.readFileSync(dbPath,"utf8")),invoice=packedDb.sales.find(row=>row.id===autoCompleted.body.order.saleId);
   pass(invoice.total===250&&invoice.paidAmount===50&&invoice.remainingAmount===200,"automatic invoice preserves discounts, shipping and paid amount");
@@ -198,6 +203,12 @@ async function wait(){
   const selectedShipment=await call(`/api/orders/${chosenCarrierOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000013EG",cost:999}});
   pass(selectedShipment.status===201&&selectedShipment.body.shipment.company===otherCompany&&selectedShipment.body.order.shippingCompany===otherCompany,"shipping uses the carrier chosen on the order");
   pass(selectedShipment.body.shipment.cost===0&&selectedShipment.body.shipment.customerShippingCharge===70&&selectedShipment.body.shipment.collectionAmount===670,"carrier cost is not guessed from customer shipping charge or COD");
+  const missingWeight=await call(`/api/orders/${missingWeightOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000015EG"}});
+  pass(missingWeight.status===409&&!missingWeight.body.shipmentId,"missing packed weight blocks shipment creation");
+  if(/البريد المصري|egypt\s*post/i.test(preferredCompany)){
+    const postalShipment=await call(`/api/orders/${postalOrder.id}/ship`,{method:"POST",body:{trackingNumber:"WF0000000014EG",cost:999}});
+    pass(postalShipment.status===201&&postalShipment.body.shipment.postalBillingManaged===true&&postalShipment.body.shipment.cost===74.6&&postalShipment.body.shipment.customerShippingCharge===70,"postal shipping uses the measured tariff without changing the customer's shipping charge");
+  }
   const duplicate=await call("/api/orders/shipping/batch",{method:"POST",body:{company,rows:[{orderId:"ORD-WF-01",trackingNumber:"WF0000000001EG"},{orderId:"ORD-WF-02",trackingNumber:"WF0000000001EG"}]}});
   pass(duplicate.body.results.every(x=>!x.ok),"already shipped orders and duplicate attempts are rejected");
   pass(after.onlineOrders.filter(x=>/^ORD-WF-0[1-9]$|^ORD-WF-10$/.test(x.id)).every(x=>x.workflowStage==="shipped"&&x.shipmentId),"shipped orders leave ready queue persistently");
