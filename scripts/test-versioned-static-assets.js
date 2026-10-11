@@ -94,12 +94,13 @@ async function normalReload(base) {
   });
   const generatedManifest = JSON.parse(fs.readFileSync(path.join(generatedRoot, "build-manifest.json"), "utf8"));
   pass(generatedManifest.build === "5c08d9984132", "static build manifest contains target build ID");
+  pass(Boolean(generatedManifest.assets["postal-shipping.js"]), "postal shipping module is versioned in the production build");
   for (const [sourceName, versionedName] of Object.entries(generatedManifest.assets)) {
     pass(fs.existsSync(path.join(generatedRoot, versionedName)), `generated ${sourceName} exists with versioned filename`);
   }
   const generatedHtml = fs.readFileSync(path.join(generatedRoot, "index.html"), "utf8");
   pass(Object.values(generatedManifest.assets).every(name => generatedHtml.includes(name)), "generated index references every versioned asset");
-  pass(!/(?:src|href)=["'](?:app|styles|order-finance)\.(?:js|css)(?:[?"'])/.test(generatedHtml), "generated index has no legacy main asset reference");
+  pass(!/(?:src|href)=["'](?:app|styles|order-finance|postal-shipping)\.(?:js|css)(?:[?"'])/.test(generatedHtml), "generated index has no legacy main asset reference");
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
 
