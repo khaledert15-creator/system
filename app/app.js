@@ -3277,11 +3277,17 @@ function quickPaymentStatusLabel(value) {
 
 function quickOrderMessage(confirmed=false) {
   const totals=quickOrderTotalsNow(),payment=quickOrderPaymentNow(totals),order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null;
-  const rows=totals.lines.map((line,index)=>{
-    const book=getBook(line.bookId);
-    return `${index+1}. ${book?.name||line.bookId} × ${line.qty}\nقبل الخصم: ${line.unitOriginalPrice.toFixed(2)} ج.م\nبعد الخصم: ${line.unitFinalPrice.toFixed(2)} ج.م`;
-  }).join("\n\n");
-  return `${confirmed?"✅ تم تأكيد الطلب":"📚 مراجعة الطلب"}${confirmed&&order?` · ${order.id}`:""}\n\nالكتب المطلوبة:\n${rows||"—"}\n\n────────────\nالإجمالي بعد الخصم: ${totals.total.toFixed(2)} ج.م\nالمدفوع: ${payment.paidAmount.toFixed(2)} ج.م\nالمتبقي: ${payment.remainingAmount.toFixed(2)} ج.م`;
+  const amount=value=>Number(Number(value || 0).toFixed(2)).toString();
+  const rows=totals.lines.map(line=>{
+    const book=getBook(line.bookId),name=String(book?.name||line.bookId).replace(/\s+/g," ").trim();
+    const discounted=line.unitFinalPrice < line.unitOriginalPrice;
+    const price=discounted ? `${amount(line.unitFinalPrice)} بدل ${amount(line.unitOriginalPrice)} ج` : `${amount(line.unitFinalPrice)} ج`;
+    return line.qty > 1
+      ? `• ${line.qty} * ${name} | النسخة ${price} | الإجمالي ${amount(line.lineFinalAmount)} ج`
+      : `• ${name} | ${price}`;
+  }).join("\n");
+  const orderDiscount=totals.orderDiscountAmount ? `خصم الطلب: ${amount(totals.orderDiscountAmount)} ج\n` : "";
+  return `${confirmed?"✅ تم تأكيد الطلب":"📚 ملخص الطلب"}${confirmed&&order?` · ${order.id}`:""}\n${rows||"—"}\n\n${orderDiscount}قيمة الكتب: ${amount(totals.goods)} ج | الشحن: ${amount(totals.shipping)} ج\nالإجمالي: ${amount(totals.total)} ج\nالمدفوع: ${amount(payment.paidAmount)} ج | المتبقي: ${amount(payment.remainingAmount)} ج`;
 }
 
 function quickOrderBookResults() {

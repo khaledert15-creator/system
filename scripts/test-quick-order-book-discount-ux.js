@@ -25,7 +25,7 @@ const checks=[
   ["wide screens use a sticky fulfilment rail",/@media\(min-width:1200px\)[\s\S]*grid-template-areas:"customer customer" "products side"[\s\S]*\.quick-order-side\{grid-area:side;position:sticky/],
   ["accounting strip replaces the large summary tiles",/quick-accounting-strip[\s\S]*إجمالي الفاتورة[\s\S]*data-quick-summary="remaining"/],
   ["accounting values stay connected to live summary fields",/data-quick-summary="subtotal"[\s\S]*data-quick-summary="discountTotal"[\s\S]*data-quick-summary="goods"[\s\S]*id="quick-order-shipping-cost"[\s\S]*data-quick-summary="total"[\s\S]*data-quick-summary="paid"/],
-  ["review message contains only requested accounting content",/(?=[\s\S]*الكتب المطلوبة:)(?=[\s\S]*قبل الخصم:)(?=[\s\S]*بعد الخصم:)(?=[\s\S]*الإجمالي بعد الخصم:)(?=[\s\S]*المدفوع:)(?=[\s\S]*المتبقي:)/],
+  ["review message contains only requested accounting content",/(?=[\s\S]*📚 ملخص الطلب)(?=[\s\S]*بدل)(?=[\s\S]*قيمة الكتب:)(?=[\s\S]*الشحن:)(?=[\s\S]*المدفوع:)(?=[\s\S]*المتبقي:)/],
   ["review panel sits in the fulfilment rail",/quick-order-side[\s\S]*quick-order-summary card[\s\S]*<\/aside>\s*<\/div>\s*<\/div><\/div>/]
 ];
 for(const [name,pattern] of checks){const source=["columns","mobile","compact","screens","hierarchy"].some(token=>name.includes(token))?css:app;assert(pattern.test(source),name);console.log(`PASS ${name}`);}
