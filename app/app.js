@@ -6371,6 +6371,19 @@ function navigateToRecord(kind, id, mode = "view") {
   }
 }
 
+function bookEditFingerprint(book) {
+  if (!book) return "";
+  const textFields=["id","name","author","publisher","category","grade","shelf","barcode","extraBarcode","supplierId","returnDeadline","deletedAt"];
+  return JSON.stringify([
+    ...textFields.map(key=>String(book[key] || "")),
+    book.itemType || (String(book.category || "").includes("كتب") || book.author || book.publisher || book.grade ? "كتاب" : "صنف عام"),
+    book.unit || "قطعة", book.owned !== false,
+    Number(book.coverPrice ?? book.purchaseListPrice ?? book.price ?? 0),
+    Number(book.defaultSellingPrice ?? book.price ?? 0),
+    Number(book.stock || 0), Number(book.reservedStock || 0), Number(book.reorder || 0)
+  ]);
+}
+
 function addBookModal(book = null) {
   const summary = book ? productInventorySummary(book.id) : null;
   const coverPrice = Number(book?.coverPrice ?? book?.purchaseListPrice ?? book?.price ?? 0);
@@ -6379,7 +6392,7 @@ function addBookModal(book = null) {
   const selectedType = itemTypeLabel(book);
   const selectedUnit = itemUnitLabel(book);
   openModal(book ? "تعديل بيانات الصنف" : "إضافة صنف جديد", "الأصناف والمخزون", `
-    <form id="book-form" data-edit-id="${book?.id || ""}">
+    <form id="book-form" data-edit-id="${book?.id || ""}" data-edit-snapshot="${esc(bookEditFingerprint(book))}">
       <div class="form-grid three">
         <div class="form-field full"><label class="required">اسم الصنف / المنتج</label><input name="name" required value="${esc(book?.name || "")}" placeholder="مثال: كتاب الأضواء، كشكول سلك، قلم أزرق، سبلايز"></div>
         <div class="form-field"><label class="required">نوع الصنف</label><input name="itemType" list="item-type-list" required value="${esc(selectedType)}" placeholder="كتاب / كراسة / كشكول / سبلايز"><datalist id="item-type-list">${itemTypeOptions(selectedType)}</datalist><small>اكتب نوع جديد لو غير موجود.</small></div>
@@ -8568,9 +8581,10 @@ modalBody.addEventListener("submit", async event => {
     await saveQueue;
     if (lastSaveError) throw new Error(saveFailureMessage());
     const previousBook = getBook(form.dataset.editId);
+    const editSnapshot = form.dataset.editSnapshot ?? bookEditFingerprint(previousBook);
     const latest = await fetchLatestDatabaseForPurchase();
     const latestBook = latest.data.books.find(book => book.id === form.dataset.editId);
-    if (previousBook && JSON.stringify(previousBook) !== JSON.stringify(latestBook)) throw new Error("تم تعديل الصنف على جهاز آخر. أعد فتح الصنف لمراجعة أحدث كمية.");
+    if (form.dataset.editId && editSnapshot !== bookEditFingerprint(latestBook)) throw new Error("تم تعديل الصنف على جهاز آخر. أعد فتح الصنف لمراجعة أحدث كمية.");
     data = latest.data;
     dbRevision = latest.revision;
     beforeBookSave = snapshotClientData();
@@ -8611,8 +8625,8 @@ modalBody.addEventListener("submit", async event => {
     if (index >= 0) data.books[index] = { ...data.books[index], ...item };
     else data.books.push(item);
     const book = getBook(item.id);
-    const reference = `ADJ-${globalThis.crypto.randomUUID()}`;
-    const adjustment = synchronizeStockAdjustment(book, targetStock, reference);
+    const reference = `ADJ-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    const adjustment = targetStock === book.stock ? {difference:0} : synchronizeStockAdjustment(book, targetStock, reference);
     if (adjustment.difference) recordStockMovement(book, index >= 0 ? "تسوية مخزون" : "رصيد افتتاحي", adjustment.difference, adjustment.before, adjustment.after, reference, "تسجيل كمية الصنف");
     const saved = await saveData(index >= 0 ? "تعديل صنف" : "إضافة صنف", "الأصناف", item.id);
     if (!saved) throw new Error(saveFailureMessage());

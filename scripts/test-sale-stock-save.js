@@ -15,7 +15,7 @@ function context() {
   c.fetchLatestDatabaseForPurchase=async()=>({data:structuredClone(c.data),revision:"new"});
   c.createInventoryBatch=({productId,qty,unitCost})=>c.data.inventoryBatches.push({id:`batch-${c.data.inventoryBatches.length}`,productId,remainingQty:qty,unitCost});
   vm.createContext(c);
-  vm.runInContext(fn("synchronizeStockAdjustment"),c);
+  vm.runInContext(fn("synchronizeStockAdjustment")+"\n"+fn("bookEditFingerprint"),c);
   return c;
 }
 async function run() {
@@ -35,6 +35,20 @@ async function run() {
     }
   }
   console.log("PASS item quantities update batches and movements; failed saves roll back");
+  const edited=context();vm.runInContext(bookHandler,edited);
+  edited.data.books=[{id:"B1",name:"Book",stock:2,price:10,lastPurchasePrice:null}];
+  edited.data.inventoryBatches=[{id:"batch",productId:"B1",remainingQty:2}];
+  const originalFingerprint=edited.bookEditFingerprint(edited.data.books[0]);
+  edited.fetchLatestDatabaseForPurchase=async()=>({revision:"new",data:{...structuredClone(edited.data),books:[{lastPurchasePrice:0,reservedStock:0,unit:"قطعة",defaultSellingPrice:10,coverPrice:10,itemType:"صنف عام",...edited.data.books[0],lastPurchasePrice:0}]}});
+  edited.globalThis={};
+  const editForm={id:"book-form",dataset:{editId:"B1",editSnapshot:originalFingerprint},querySelector:()=>({disabled:false})};
+  await edited.submitBook(editForm,{name:"Updated",stock:"3",defaultSellingPrice:"12",coverPrice:"10"});
+  assert.equal(edited.data.books[0].name,"Updated");assert.equal(edited.data.books[0].stock,3);assert.equal(edited.data.inventoryBatches.reduce((n,b)=>n+b.remainingQty,0),3);
+  const fresh=structuredClone(edited.data);edited.fetchLatestDatabaseForPurchase=async()=>({revision:"newer",data:fresh});
+  await edited.submitBook(editForm,{name:"Overwrite",stock:"1"});
+  assert.equal(edited.data.books[0].name,"Updated");assert.match(edited.messages.at(-1),/جهاز آخر/);
+  console.log("PASS normalized record edits save without randomUUID; genuinely stale forms remain blocked");
+
   const c=context();vm.runInContext(fn("saveSale"),c);
   c.data.books=[{id:"B1",stock:8}];
   c.fetchLatestDatabaseForPurchase=async()=>({data:{...fixture(),books:[{id:"B1",stock:1}]},revision:"latest"});
