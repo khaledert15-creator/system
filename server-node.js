@@ -33,7 +33,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "true").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -114,10 +114,14 @@ function readDb() {
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
 }
 
+const liveClients = new Set();
+
 function writeDb(db, options = {}) {
   const current = fs.existsSync(DB_PATH) ? readDb() : {};
   SeasonDataManagement.linkNewRecordsToActiveSeason(current, db);
-  return databasePersistence.write(db, options);
+  const result = databasePersistence.write(db, options);
+  for (const client of liveClients) { try { client.publish(); } catch { liveClients.delete(client); } }
+  return result;
 }
 
 function canManageSeasonData(db, user, action) {
@@ -2490,6 +2494,23 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const route = decodeURIComponent(url.pathname);
+
+    if (["/api/events", "/api/live-revision"].includes(route) && req.method === "GET") {
+      if (!sessionUser(req)) return send(res, 401, {message:"Authentication required."});
+      if (route === "/api/live-revision") return send(res, 200, {revision:dbRevision()}, "application/json; charset=utf-8", {"Cache-Control":"no-store"});
+      res.writeHead(200, {"Content-Type":"text/event-stream; charset=utf-8", "Cache-Control":"no-cache, no-transform", "Connection":"keep-alive", "X-Accel-Buffering":"no"});
+      res.flushHeaders();
+      const client = {publish() {
+        if (!sessionUser(req)) { res.end(); return; }
+        if (res.destroyed || res.writableEnded) return;
+        if (!res.write(`data: ${JSON.stringify({revision:dbRevision()})}\n\n`)) res.end();
+      }};
+      liveClients.add(client);
+      client.publish();
+      const heartbeat = setInterval(() => client.publish(), 15000);
+      res.on("close", () => { clearInterval(heartbeat); liveClients.delete(client); });
+      return;
+    }
 
     if (route === "/api/health" && req.method === "GET") {
       return send(res, 200, { ok:true, database: fs.existsSync(DB_PATH), time: new Date().toISOString() }, "application/json; charset=utf-8", { "X-App-Build":APP_BUILD_ID });

@@ -265,6 +265,102 @@ const modalBody = document.getElementById("modal-body");
 const modalTitle = document.getElementById("modal-title");
 const modalEyebrow = document.getElementById("modal-eyebrow");
 
+// Server revisions are applied only after local writes settle. Drafts live outside `data`.
+let liveConnection = null, liveRefreshTimer = null, liveTargetRevision = null;
+let liveRefreshRunning = false, liveMutationCount = 0, liveMutationEpoch = 0;
+const liveDirtyControls = new WeakSet();
+const originalFetch = window.fetch.bind(window);
+window.fetch = async function(input, options = {}) {
+  const method = String(options.method || input?.method || "GET").toUpperCase();
+  const mutation = !["GET", "HEAD", "OPTIONS"].includes(method);
+  if (mutation) { liveMutationCount++; liveMutationEpoch++; }
+  try { return await originalFetch(input, options); }
+  finally {
+    if (mutation) setTimeout(() => { liveMutationCount--; scheduleLiveRefresh(); }, 0);
+  }
+};
+for (const eventName of ["input", "change"]) document.addEventListener(eventName, event => {
+  if (event.target.matches?.("input,select,textarea")) liveDirtyControls.add(event.target);
+}, true);
+
+function liveControlKey(control) {
+  return JSON.stringify([control.id, control.name, control.className, control.type, {...control.dataset}, control.closest("form")?.id, control.closest("[data-book-id]")?.dataset.bookId]);
+}
+
+function renderLiveData() {
+  const active = document.activeElement;
+  const values = new Map();
+  root.querySelectorAll("input,select,textarea").forEach(control => {
+    if (control.type === "file" || (!liveDirtyControls.has(control) && control !== active)) return;
+    values.set(liveControlKey(control), {value:control.value, checked:control.checked, active:control === active, start:control.selectionStart, end:control.selectionEnd});
+  });
+  const x=window.scrollX, y=window.scrollY;
+  const scrolls=[...root.querySelectorAll(".table-wrap, .invoice-lines")].map(el=>({el,top:el.scrollTop,left:el.scrollLeft}));
+  // render() scrolls to the page top; call the view renderer directly for live updates.
+  const renders={dashboard:renderDashboard,books:renderBooks,sales:renderSales,onlineOrders:renderOnlineOrders,purchases:renderPurchases,returns:renderReturns,parties:renderParties,shipping:renderShipping,accounting:renderAccounting,reports:renderReports,hr:renderHr,settings:renderSettings};
+  renders[currentView]?.();
+  root.querySelectorAll("input,select,textarea").forEach(control => {
+    const saved=values.get(liveControlKey(control));
+    if (!saved) return;
+    control.value=saved.value; control.checked=saved.checked; liveDirtyControls.add(control);
+    if (saved.active) { control.focus({preventScroll:true}); if (saved.start != null && control.setSelectionRange) try { control.setSelectionRange(saved.start,saved.end); } catch {} }
+  });
+  [...root.querySelectorAll(".table-wrap, .invoice-lines")].forEach((el,i)=>{if(scrolls[i]){el.scrollTop=scrolls[i].top;el.scrollLeft=scrolls[i].left;}});
+  if (currentView === "books") filterBooks();
+  if (currentView === "shipping") filterShipments();
+  if (currentView === "sales" && document.getElementById("sale-total")) updateSaleSummary();
+  updateNotificationBadge(); updateSidebarBadges(); scheduleStickyTableScrollbar();
+  window.scrollTo({left:x,top:y,behavior:"instant"});
+}
+
+function scheduleLiveRefresh(delay = 80) {
+  if (liveTargetRevision == null || !sessionToken) return;
+  clearTimeout(liveRefreshTimer);
+  liveRefreshTimer=setTimeout(applyLiveRevision,delay);
+}
+
+async function applyLiveRevision() {
+  if (!sessionToken || !serverConnected || liveTargetRevision == null) return;
+  if (liveRefreshRunning || liveMutationCount || saleSaveInFlight || lastSaveError) { scheduleLiveRefresh(300); return; }
+  if (String(dbRevision) === String(liveTargetRevision)) { liveTargetRevision=null; return; }
+  liveRefreshRunning=true;
+  try {
+    await saveQueue;
+    if (liveMutationCount || saleSaveInFlight || lastSaveError) { scheduleLiveRefresh(300); return; }
+    const before=JSON.stringify(data), revision=dbRevision, epoch=liveMutationEpoch, token=sessionToken;
+    const response=await fetch('/api/db?live=1',{headers:authHeaders(),cache:'no-store',signal:AbortSignal.timeout(15000)});
+    if (response.status === 401) { stopLiveUpdates(); orderAuthenticationError(401); return; }
+    if (!response.ok) throw new Error('Live refresh unavailable');
+    const remote=await response.json();
+    if (token !== sessionToken) return;
+    if (liveMutationCount || saleSaveInFlight || epoch !== liveMutationEpoch || revision !== dbRevision || before !== JSON.stringify(data)) { scheduleLiveRefresh(150); return; }
+    data=normalizeData(remote);
+    dbRevision=response.headers.get('X-DB-Revision') || String(remote.meta?.dataRevision || '');
+    if (Number(dbRevision) >= Number(liveTargetRevision)) liveTargetRevision=null;
+    cacheDataLocally();
+    renderLiveData();
+    setStorageStatus("البيانات محدثة لحظيًا",true);
+  } catch { scheduleLiveRefresh(2000); }
+  finally { liveRefreshRunning=false; if(liveTargetRevision != null) scheduleLiveRefresh(300); }
+}
+
+function stopLiveUpdates() {
+  liveConnection?.stop(); liveConnection=null;
+  clearTimeout(liveRefreshTimer); liveTargetRevision=null;
+}
+
+function startLiveUpdates() {
+  stopLiveUpdates();
+  if (!sessionToken) return;
+  liveConnection=LiveUpdates.create({fetch:(...args)=>fetch(...args),headers:authHeaders,
+    onRevision(revision){liveTargetRevision=revision;scheduleLiveRefresh();},
+    onUnauthorized(){stopLiveUpdates();orderAuthenticationError(401);}
+  });
+  liveConnection.start();
+}
+window.addEventListener("online",()=>{if(sessionToken) startLiveUpdates();});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden && sessionToken) startLiveUpdates();});
+
 function loadFallbackData() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -488,6 +584,7 @@ async function initializeAuth() {
 }
 
 function showLogin(message = "") {
+  stopLiveUpdates();
   document.getElementById("login-screen").hidden = false;
   document.getElementById("app-shell").hidden = true;
   document.getElementById("login-message").textContent = message;
@@ -987,6 +1084,7 @@ async function initializeDatabase() {
       lastShipmentRefresh = new Date();
       updateDashboardShipmentCard(false);
       startShipmentAutoRefresh();
+      startLiveUpdates();
       openRequestedDialog();
       scheduleSelfTest();
       return;
@@ -1001,6 +1099,7 @@ async function initializeDatabase() {
       lastShipmentRefresh = new Date();
       updateDashboardShipmentCard(false);
       startShipmentAutoRefresh();
+      startLiveUpdates();
       openRequestedDialog();
       scheduleSelfTest();
       return;
