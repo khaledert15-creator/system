@@ -72,7 +72,6 @@
     if (request.executionEnabled !== true) throw Object.assign(new Error("التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط."), { code:"FACTORY_RESET_DISABLED" });
     if (!resetPreview.executable) throw Object.assign(new Error(resetPreview.blockedReason), { code:"OWNER_REQUIRED" });
     if (!request.authorized) throw Object.assign(new Error("صلاحية factory_reset_system مطلوبة."), { code:"PERMISSION_DENIED" });
-    if (request.confirmationPhrase !== CONFIRMATION_PHRASE) throw Object.assign(new Error("عبارة التأكيد غير مطابقة."), { code:"CONFIRMATION_REQUIRED" });
     if (!request.currentUsername || request.currentUsername !== request.performedByUsername) throw Object.assign(new Error("اسم المستخدم الحالي غير مطابق."), { code:"IDENTITY_CONFIRMATION_FAILED" });
     if (!String(request.operationKey || "").trim()) throw Object.assign(new Error("Operation Key مطلوب."), { code:"OPERATION_KEY_REQUIRED" });
     assertBackup(request.backup);
@@ -82,11 +81,11 @@
   function confirmExecution(db, prepared = {}, request = {}, now = Date.now()) {
     validateRequest(db, { ...request, backup:prepared.backup });
     const confirmedAt = Number(now), executeAfter = confirmedAt + CONFIRMATION_DELAY_MS;
-    return { ...prepared, confirmationPhrase:request.confirmationPhrase, currentUsername:request.currentUsername, operationKey:String(request.operationKey || ""), confirmedAt, executeAfter };
+    return { ...prepared, currentUsername:request.currentUsername, operationKey:String(request.operationKey || ""), confirmedAt, executeAfter };
   }
 
   function assertConfirmedExecution(prepared = {}, request = {}, now = Date.now()) {
-    if (!prepared.confirmedAt || !prepared.executeAfter || prepared.confirmationPhrase !== request.confirmationPhrase || prepared.currentUsername !== request.currentUsername || prepared.operationKey !== String(request.operationKey || "")) throw Object.assign(new Error("التأكيد الثاني مطلوب قبل التنفيذ."), { code:"SECOND_CONFIRMATION_REQUIRED" });
+    if (!prepared.confirmedAt || !prepared.executeAfter || prepared.currentUsername !== request.currentUsername || prepared.operationKey !== String(request.operationKey || "")) throw Object.assign(new Error("التأكيد الثاني مطلوب قبل التنفيذ."), { code:"SECOND_CONFIRMATION_REQUIRED" });
     if (Number(now) < prepared.executeAfter) throw Object.assign(new Error("انتظر اكتمال مهلة التأكيد قبل التنفيذ."), { code:"CONFIRMATION_DELAY_ACTIVE", executeAfter:prepared.executeAfter });
     return true;
   }
@@ -129,7 +128,7 @@
       operationType:request.resetType === RESET_TYPES.FACTORY ? "SYSTEM_FACTORY_RESET" : "BUSINESS_DATA_RESET",
       resetType:request.resetType, previewCounts:resetPreview.summary, deletedCounts:resetPreview.deletedCounts,
       preservedCounts:resetPreview.preservedCounts, backupReference:request.backup.reference,
-      confirmationPhraseUsed:true, performedBy:request.performedBy || request.performedByUsername,
+      confirmationPhraseUsed:false, performedBy:request.performedBy || request.performedByUsername,
       performedByUsername:request.performedByUsername, performedAt, createdAt:performedAt,
       result:"success", postResetValidation:validation
     };

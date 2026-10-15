@@ -35,7 +35,7 @@ const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
 const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
-const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED || "").trim().toLowerCase() === "true";
+const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "true").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
 
 function contentHash(fileName) {
@@ -2592,7 +2592,7 @@ const server = http.createServer(async (req, res) => {
       const payload = JSON.parse(await readBody(req) || "{}"), preparationId = String(payload.preparationId || ""), prepared = resetPreparations.get(preparationId);
       if (!prepared || prepared.expiresAt < Date.now() || prepared.username !== user.username || prepared.resetType !== payload.resetType || prepared.revision !== dbRevision()) return send(res, 409, { ok:false, code:"RESET_PREPARATION_INVALID", message:"انتهت صلاحية المعاينة أو تغيرت البيانات؛ أنشئ Preview وBackup جديدين." });
       try {
-        const confirmed = FactoryReset.confirmExecution(db, prepared, { resetType:payload.resetType, confirmationPhrase:payload.confirmationPhrase, currentUsername:payload.currentUsername, performedByUsername:user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true }, Date.now());
+        const confirmed = FactoryReset.confirmExecution(db, prepared, { resetType:payload.resetType, currentUsername:payload.currentUsername, performedByUsername:user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true }, Date.now());
         resetPreparations.set(preparationId, confirmed);
         console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"FACTORY_RESET_REQUESTED", resetType:payload.resetType, performedBy:user.username, operationKey:String(payload.operationKey || ""), preparationId }));
         return send(res, 200, { ok:true, confirmed:true, executeAfter:confirmed.executeAfter, countdownSeconds:Math.ceil(FactoryReset.CONFIRMATION_DELAY_MS / 1000) });
@@ -2609,7 +2609,7 @@ const server = http.createServer(async (req, res) => {
       if (!prepared || prepared.expiresAt < Date.now() || prepared.username !== user.username || prepared.resetType !== payload.resetType || prepared.revision !== dbRevision()) return send(res, 409, { ok:false, code:"RESET_PREPARATION_INVALID", message:"انتهت صلاحية المعاينة أو تغيرت البيانات؛ أنشئ Preview وBackup جديدين." });
       try {
         FactoryReset.assertConfirmedExecution(prepared, payload, Date.now());
-        const result = FactoryReset.execute(db, { resetType:payload.resetType, confirmationPhrase:payload.confirmationPhrase, currentUsername:payload.currentUsername, performedByUsername:user.username, performedBy:user.name || user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true, backup:prepared.backup });
+        const result = FactoryReset.execute(db, { resetType:payload.resetType, currentUsername:payload.currentUsername, performedByUsername:user.username, performedBy:user.name || user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true, backup:prepared.backup });
         writeDb(result.db, { expectedRevision:Number(prepared.revision), operationType:payload.resetType === "factory" ? "FACTORY_RESET_EXECUTED" : "BUSINESS_RESET_EXECUTED", performedBy:user.username }); resetPreparations.delete(String(payload.preparationId || ""));
         sessions.clear();
         return send(res, 200, { ok:true, deletedCounts:result.deletedCounts, postResetValidation:result.validation, backupReference:prepared.backup.reference, idempotent:result.idempotent, revision:dbRevision() });
