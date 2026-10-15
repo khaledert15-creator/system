@@ -1628,7 +1628,8 @@ async function persistToServer() {
   const response = await fetch("/api/db", {
     method: "PUT",
     headers: authHeaders({ "Content-Type": "application/json; charset=utf-8", ...(dbRevision ? { "If-Match": dbRevision } : {}) }),
-    body: JSON.stringify(data)
+    body: JSON.stringify(data),
+    signal: AbortSignal.timeout(20000)
   });
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));
@@ -2915,14 +2916,14 @@ function renderSaleInvoice() {
     const book = getBook(line.bookId);
     const computed = totals.lines[index] || {};
     const listId = `sale-book-options-${index}`;
-    const availableStock = book ? productInventorySummary(book.id).currentStockQty : 0;
+    const availableStock = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0)) : 0;
     const stockWarning = book && Number(line.qty || 0) > availableStock;
     return `<article class="quick-order-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
       <div class="quick-line-book sale-book-cell"><span class="quick-book-avatar" aria-hidden="true">${esc((book?.name || "ك").trim().charAt(0))}</span><div>
         <input class="sale-book-picker" data-index="${index}" list="${listId}" value="${esc(bookPickerLabel(book))}" placeholder="ابحث باسم الصنف أو الباركود..." aria-label="الصنف">
         ${bookPickerDatalist(listId)}
         <small>${book ? `${esc(book.barcode || book.sku || book.id)} · ${availableStock} متاح` : "اختر الصنف"}</small>
-        ${stockWarning ? `<span class="inline-stock-warning">الكمية أكبر من الرصيد المتاح</span>` : ""}
+        <span class="inline-stock-warning" ${stockWarning ? "" : "hidden"}>الكمية أكبر من الرصيد المتاح</span>
       </div></div>
       <label class="quick-line-qty"><span>الكمية</span><input class="sale-qty" data-index="${index}" type="number" min="1" value="${line.qty}"></label>
       <label class="quick-price-cell sale-price-cell"><small>السعر الأساسي</small><input class="sale-price" data-index="${index}" type="number" min="0" value="${line.price || productDefaultSellingPrice(book) || 0}"></label>
@@ -4093,12 +4094,25 @@ function updateSaleSummary() {
   const el = id => document.getElementById(id);
   if (!el("sale-total")) return;
   totals.lines.forEach((line, index) => {
-    const row = document.querySelector(`.invoice-line[data-line="${index}"] .sale-line-net`);
+    const lineElement = document.querySelector(`.quick-sale-line[data-line="${index}"]`);
+    const draftLine = draftSale.lines[index];
+    const book = getBook(draftLine.bookId);
+    const available = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0)) : 0;
+    const requested = draftSale.lines.filter(item => item.bookId === draftLine.bookId).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const insufficient = Boolean(book && requested > available);
+    lineElement?.classList.toggle("stock-warning", insufficient);
+    const stockLabel = lineElement?.querySelector(".sale-book-cell small");
+    if (stockLabel && book) stockLabel.textContent = `${book.barcode || book.sku || book.id} · ${available} متاح`;
+    const warning = lineElement?.querySelector(".inline-stock-warning");
+    if (warning) warning.hidden = !insufficient;
+    const quantity = lineElement?.querySelector(".sale-qty");
+    quantity?.setAttribute("aria-invalid", String(insufficient));
+    const row = document.querySelector(`.quick-sale-line[data-line="${index}"] .sale-line-net`);
     if (row) row.textContent = money(line.finalNet || 0);
     const pricing = commercialUnitPricing(line, "sale");
     const percent = document.querySelector(`.sale-discount-percent[data-index="${index}"]`);
     const amount = document.querySelector(`.sale-discount-amount[data-index="${index}"]`);
-    const after = document.querySelector(`.invoice-line[data-line="${index}"] .sale-unit-after`);
+    const after = document.querySelector(`.quick-sale-line[data-line="${index}"] .sale-unit-after`);
     if (percent && document.activeElement !== percent) percent.value = pricing.discountPercent;
     if (amount && document.activeElement !== amount) amount.value = pricing.discountAmount;
     if (after) after.textContent = money(pricing.after);
@@ -6169,10 +6183,22 @@ function updateSidebarBadges() {
   });
 }
 
-function navigate(view) {
+async function navigate(view) {
   if (!canView(view)) return toast("ليس لديك صلاحية للوصول إلى هذه الصفحة.", "error");
   if (view === "sales") salesScreenMode = "main";
   currentView = view;
+  if (["books", "sales"].includes(view) && serverConnected && !saleSaveInFlight) {
+    try {
+      await saveQueue;
+      if (!lastSaveError) {
+        const latest = await fetchLatestDatabaseForPurchase();
+        if (currentView !== view) return;
+        data = latest.data;
+        dbRevision = latest.revision;
+        cacheDataLocally();
+      }
+    } catch { toast("تعذر تحديث المخزون من الخادم. حاول مرة أخرى قبل البيع.", "error"); }
+  }
   document.getElementById("sidebar").classList.remove("open");
   render();
 }
@@ -8426,6 +8452,21 @@ modalBody.addEventListener("submit", async event => {
     return;
   }
   if (form.id === "book-form") {
+    const button = form.querySelector('[type="submit"]');
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
+    let beforeBookSave;
+    try {
+    if (!serverConnected) throw new Error("إضافة الأصناف وتعديل المخزون يتطلبان اتصالًا بالخادم.");
+    await saveQueue;
+    if (lastSaveError) throw new Error(saveFailureMessage());
+    const previousBook = getBook(form.dataset.editId);
+    const latest = await fetchLatestDatabaseForPurchase();
+    const latestBook = latest.data.books.find(book => book.id === form.dataset.editId);
+    if (previousBook && JSON.stringify(previousBook) !== JSON.stringify(latestBook)) throw new Error("تم تعديل الصنف على جهاز آخر. أعد فتح الصنف لمراجعة أحدث كمية.");
+    data = latest.data;
+    dbRevision = latest.revision;
+    beforeBookSave = snapshotClientData();
     const now = new Date().toISOString();
     const item = {
       id: form.dataset.editId || nextId("B", data.books),
@@ -8457,12 +8498,27 @@ modalBody.addEventListener("submit", async event => {
     const identityConflicts = PurchaseInventoryIntegrity.productIdentityConflicts(data.books, item, form.dataset.editId || "");
     if (identityConflicts.length) return toast(`يوجد صنف مطابق بالفعل: ${identityConflicts.map(book => `${book.name} (${book.barcode || book.id})`).join("، ")}. عدّل السجل الموجود بدل إنشاء نسخة مكررة.`, "error");
     const index = data.books.findIndex(b => b.id === item.id);
+    const targetStock = item.stock;
+    if (!Number.isFinite(targetStock) || targetStock < 0) throw new Error("أدخل كمية صحيحة لا تقل عن صفر.");
+    item.stock = index >= 0 ? Number(data.books[index].stock || 0) : 0;
     if (index >= 0) data.books[index] = { ...data.books[index], ...item };
     else data.books.push(item);
-    saveData(index >= 0 ? "تعديل صنف" : "إضافة صنف", "الأصناف", item.id);
+    const book = getBook(item.id);
+    const reference = `ADJ-${globalThis.crypto.randomUUID()}`;
+    const adjustment = synchronizeStockAdjustment(book, targetStock, reference);
+    if (adjustment.difference) recordStockMovement(book, index >= 0 ? "تسوية مخزون" : "رصيد افتتاحي", adjustment.difference, adjustment.before, adjustment.after, reference, "تسجيل كمية الصنف");
+    const saved = await saveData(index >= 0 ? "تعديل صنف" : "إضافة صنف", "الأصناف", item.id);
+    if (!saved) throw new Error(saveFailureMessage());
     closeModal();
     renderBooks();
     toast(index >= 0 ? "تم تحديث بيانات الصنف." : "تمت إضافة الصنف وتوليد ملف المخزون.");
+    } catch (error) {
+      if (beforeBookSave) { restoreClientData(beforeBookSave); lastSaveError = null; }
+      toast(error.message || "تعذر حفظ الصنف. لم يتم اعتماد التغيير.", "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+    return;
   }
   if (form.id === "party-form") {
     const dataBeforePartySave = structuredClone(data);
@@ -9278,8 +9334,35 @@ function shipmentFromOrderModal(order, sale) {
     </form>`);
 }
 
-async function saveSale({ printAfter = false } = {}) {
-  if(saleSaveInFlight)return toast("جارٍ حفظ الفاتورة بالفعل...", "warning");
+async function saveSale(options = {}) {
+  if (saleSaveInFlight) return toast("جارٍ حفظ الفاتورة بالفعل...", "warning");
+  saleSaveInFlight = true;
+  let beforeData;
+  const beforeDraft = structuredClone(draftSale);
+  try {
+    if (!serverConnected) throw new Error("لا يمكن حفظ الفاتورة دون اتصال بالخادم.");
+    await saveQueue;
+    if (lastSaveError) throw new Error(saveFailureMessage());
+    const latest = await fetchLatestDatabaseForPurchase();
+    data = latest.data;
+    dbRevision = latest.revision;
+    cacheDataLocally();
+    beforeData = snapshotClientData();
+    updateSaleSummary();
+    return await commitSale(options);
+  } catch (error) {
+    if (beforeData) { restoreClientData(beforeData); lastSaveError = null; }
+    draftSale = beforeDraft;
+    renderSaleInvoice();
+    const inventoryError = ["INSUFFICIENT_BATCH_STOCK", "INVENTORY_BATCH_STOCK_MISMATCH"].includes(error.code);
+    toast(inventoryError ? "تعذر اعتماد الفاتورة: كمية دفعات المخزون غير كافية أو غير متطابقة. راجع رصيد الصنف." : (error.message || "تعذر حفظ الفاتورة. يمكنك إعادة المحاولة."), "error");
+    return null;
+  } finally {
+    saleSaveInFlight = false;
+  }
+}
+
+async function commitSale({ printAfter = false } = {}) {
   const totals = saleTotals();
   const validEntries = draftSale.lines
     .map((line, index) => ({ line, computed: totals.lines[index] || {} }))
@@ -9291,6 +9374,10 @@ async function saveSale({ printAfter = false } = {}) {
   if (!customerId || !customer) return toast("يجب اختيار عميل مسجل وربط الفاتورة برقم Customer ID.", "error");
   for (const { line, computed } of validEntries) {
     const book = getBook(line.bookId);
+    if (!book || book.deletedAt) return toast("أحد أصناف الفاتورة لم يعد متاحًا. راجع الأصناف.", "error");
+    const requested = validLines.filter(item => item.bookId === book.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const available = Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0));
+    if (requested > available) return toast(`الرصيد المتاح من «${book.name}» هو ${available} والكمية المطلوبة ${requested}.`, "error");
     const netUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.price) * Number(line.qty || 0))) / Number(line.qty || 1) : 0;
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن بيع «${book.name}» بأقل من متوسط التكلفة.`, "error");
@@ -9342,7 +9429,6 @@ async function saveSale({ printAfter = false } = {}) {
     deletedAt: null
   };
   const beforeData=snapshotClientData(),beforeDraft=JSON.parse(JSON.stringify(draftSale));
-  saleSaveInFlight=true;
   sale.lines.forEach(line => recordNegativeStockOverride(getBook(line.bookId), line.qty, sale.id));
   validEntries.forEach(({ line }, index) => {
     const book = getBook(line.bookId);
@@ -9363,9 +9449,9 @@ async function saveSale({ printAfter = false } = {}) {
   if (customer.type === "تجزئة") { sale.pointsAwarded = Math.floor(totals.total / 10); customer.points = (customer.points || 0) + sale.pointsAwarded; }
   data.sales.push(sale);
   const saved=await saveData("إنشاء فاتورة بيع", "المبيعات", sale.id);
-  saleSaveInFlight=false;
   if(!saved){
     restoreClientData(beforeData);
+    lastSaveError = null;
     draftSale=beforeDraft;
     renderSaleInvoice();
     return null;
@@ -9379,7 +9465,7 @@ async function saveSale({ printAfter = false } = {}) {
 }
 
 async function fetchLatestDatabaseForPurchase() {
-  const response = await fetch(`/api/db?purchase-preflight=${Date.now()}`, { headers:authHeaders(), cache:"no-store" });
+  const response = await fetch(`/api/db?purchase-preflight=${Date.now()}`, { headers:authHeaders(), cache:"no-store", signal:AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error("تعذر جلب أحدث بيانات النظام قبل اعتماد الفاتورة.");
   return { data:normalizeData(await response.json()), revision:response.headers.get("X-DB-Revision") || "" };
 }
