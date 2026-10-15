@@ -1989,3 +1989,5 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 @media(max-width:620px){.packing-weight-grid,.postal-account-summary,#postal-statement-form .form-grid,#postal-payment-form .form-grid{grid-template-columns:1fr}.shipping-price-tabs .tab{flex:1}}
 .shipping-batch-toolbar .batch-preview-list>div{grid-template-columns:22px minmax(0,1fr) minmax(0,1fr) auto}.batch-preview-list>div.ignored{background:#f2f4f7;color:#657080}.batch-preview-list small{overflow-wrap:anywhere}
 @media(max-width:760px){.shipping-batch-toolbar .batch-preview-list>div{grid-template-columns:22px minmax(0,1fr)}.shipping-batch-toolbar .batch-preview-list button{grid-column:2;justify-self:start}}
+
+.inline-stock-warning[hidden] { display: none; }
