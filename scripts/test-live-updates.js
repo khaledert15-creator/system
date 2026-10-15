@@ -38,7 +38,7 @@ async function until(fn){for(let i=0;i<100;i++){if(await fn())return;await sleep
   console.log('PASS remote refresh defers writes and never overwrites edits made during fetch');
   const makeControl=value=>({id:'sale-notes',name:'',className:'',type:'text',dataset:{},value,checked:false,selectionStart:3,selectionEnd:3,closest:()=>null,focus(){this.focused=true;},setSelectionRange(a,b){this.selectionStart=a;this.selectionEnd=b;}});
   const original=makeControl('unsaved note');let controls=[original];
-  const ui={currentView:'sales',liveDirtyControls:new WeakSet([original]),document:{activeElement:original,getElementById:()=>null},root:{querySelectorAll:selector=>selector==='input,select,textarea'?controls:[]},window:{scrollX:0,scrollY:123,scrollTo(o){ui.scroll=o;}},updateNotificationBadge(){},updateSidebarBadges(){},scheduleStickyTableScrollbar(){}};
+  const ui={liveRendering:false,currentView:'sales',liveDirtyControls:new WeakSet([original]),document:{activeElement:original,getElementById:()=>null},root:{querySelectorAll:selector=>selector==='input,select,textarea'?controls:[]},window:{scrollX:0,scrollY:123,scrollTo(o){ui.scroll=o;}},updateNotificationBadge(){},updateSidebarBadges(){},scheduleStickyTableScrollbar(){}};
   for(const name of ['Dashboard','Books','Sales','OnlineOrders','Purchases','Returns','Parties','Shipping','Accounting','Reports','Hr','Settings'])ui['render'+name]=()=>{controls=[makeControl('server default')];};
   vm.createContext(ui);vm.runInContext(fn('liveControlKey')+'\n'+fn('renderLiveData'),ui);ui.renderLiveData();
   assert.equal(controls[0].value,'unsaved note');assert.equal(controls[0].focused,true);assert.equal(controls[0].selectionStart,3);assert.equal(ui.scroll.top,123);

@@ -267,6 +267,7 @@ const modalEyebrow = document.getElementById("modal-eyebrow");
 
 // Server revisions are applied only after local writes settle. Drafts live outside `data`.
 let liveConnection = null, liveRefreshTimer = null, liveTargetRevision = null;
+let liveRendering = false;
 let liveRefreshRunning = false, liveMutationCount = 0, liveMutationEpoch = 0;
 const liveDirtyControls = new WeakSet();
 const originalFetch = window.fetch.bind(window);
@@ -298,7 +299,8 @@ function renderLiveData() {
   const scrolls=[...root.querySelectorAll(".table-wrap, .invoice-lines")].map(el=>({el,top:el.scrollTop,left:el.scrollLeft}));
   // render() scrolls to the page top; call the view renderer directly for live updates.
   const renders={dashboard:renderDashboard,books:renderBooks,sales:renderSales,onlineOrders:renderOnlineOrders,purchases:renderPurchases,returns:renderReturns,parties:renderParties,shipping:renderShipping,accounting:renderAccounting,reports:renderReports,hr:renderHr,settings:renderSettings};
-  renders[currentView]?.();
+  liveRendering = true;
+  try { renders[currentView]?.(); } finally { liveRendering = false; }
   root.querySelectorAll("input,select,textarea").forEach(control => {
     const saved=values.get(liveControlKey(control));
     if (!saved) return;
@@ -3070,7 +3072,7 @@ function renderSaleInvoice() {
         </details>
       </aside>
     </div>`;
-  setTimeout(() => { if (modal.hidden) document.getElementById("sale-book-search")?.focus(); }, 30);
+  if (!liveRendering) setTimeout(() => { if (modal.hidden) document.getElementById("sale-book-search")?.focus(); }, 30);
   const saleShippingInput=document.getElementById("sale-shipping-cost");
   if(saleShippingInput&&!canAction("order.shipping.override")){
     saleShippingInput.readOnly=true;
@@ -3394,7 +3396,7 @@ function renderQuickOrderScreen() {
   const confirmed=Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt),canOverride=canAction("order.discount.override"),canShippingOverride=canAction("order.shipping.override"),canReceive=canAction("order.payment.receive"),customerInsight=quickOrderCustomerInsight(customer);
   if(!quickOrderContextRender&&quickOrderAutofocusPending){
     quickOrderAutofocusPending=false;
-    setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
+    if (!liveRendering) setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
   }
   return `${workflowModeTabs("quick")}
   <div class="section-title quick-order-heading"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>طلب واتساب سريع</h2><p>سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل.</p></div>${confirmed?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
@@ -3840,7 +3842,7 @@ function renderOnlineOrders() {
   if(onlineOrdersMode==="quick"&&canAction("order.quick.create")){root.innerHTML=renderQuickOrderScreen();return;}
   if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();return;}
   if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();return;}
-  if(onlineOrdersMode==="quick-shipping"){root.innerHTML=renderQuickShippingScreen();setTimeout(()=>document.getElementById("quick-shipping-order-code")?.focus(),0);return;}
+  if(onlineOrdersMode==="quick-shipping"){root.innerHTML=renderQuickShippingScreen();if (!liveRendering) setTimeout(()=>document.getElementById("quick-shipping-order-code")?.focus(),0);return;}
   const active = data.onlineOrders.filter(order => !order.deletedAt);
   const visible = active.filter(order => onlineOrderMatchesQuickFilter(order));
   const quickLabel = onlineOrderQuickFilterLabel();
@@ -4956,7 +4958,7 @@ function renderOrderCollections() {
   const content=orderCollectionMode==="batch"?renderOrderCollectionBatch():`<article class="card collection-entry-card"><div class="card-header"><div><h3>تسجيل تحصيل سريع</h3><p>أدخل كود الشحنة والقيمة الواردة من شركة الشحن.</p></div></div>
     <form id="order-collection-search-form"><div class="collection-entry-grid"><div class="form-field"><label>كود الشحنة</label><input id="order-collection-code" name="trackingNumber" dir="ltr" autocomplete="off" value="${esc(orderCollectionDraft.trackingNumber)}" placeholder="ENO123456789EG"></div><div class="form-field"><label>قيمة التحصيل</label><input ${numericFieldAttributes({id:"order-collection-amount",name:"amount",value:orderCollectionDraft.amount||""})}></div><div class="form-field"><label>تاريخ التحصيل</label><input name="collectionDate" type="date" value="${orderCollectionDraft.collectionDate||today()}"></div><div class="form-field"><label>شركة الشحن</label><input value="${esc(preview?.shipment?.company||preview?.shipment?.carrier||"تُحدد تلقائيًا")}" disabled></div><button class="btn" type="submit">بحث عن الأوردر</button></div></form>
   </article>${renderOrderCollectionCard(preview)}`;
-  setTimeout(()=>document.getElementById("order-collection-code")?.focus(),0);
+  if (!liveRendering) setTimeout(()=>document.getElementById("order-collection-code")?.focus(),0);
   return `${financeTabsMarkup()}<div class="collection-mode-tabs"><button class="tab ${orderCollectionMode==="single"?"active":""}" data-action="collection-mode" data-mode="single">تسجيل فردي</button><button class="tab ${orderCollectionMode==="batch"?"active":""}" data-action="collection-mode" data-mode="batch">إدخال مجموعة تحصيلات</button></div>${content}
     <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th>الروابط</th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td><div class="row-actions">${item.onlineOrderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(item.onlineOrderId)}">${esc(item.onlineOrderId)}</button>`:""}${item.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(item.invoiceId)}">${esc(item.invoiceId)}</button>`:""}${item.shipmentId?`<button class="row-action" data-action="view-shipment" data-id="${esc(item.shipmentId)}">${esc(item.shipmentId)}</button>`:""}${item.settlementId?`<button class="row-action" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button>`:""}${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
