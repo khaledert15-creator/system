@@ -6328,7 +6328,7 @@ function render() {
 }
 
 function updateSidebarBadges() {
-  const pendingOrders = (data.onlineOrders || []).filter(item => !item.deletedAt && !["تم التسليم", "ملغي"].includes(item.status)).length;
+  const pendingOrders = (data.onlineOrders || []).filter(item => !item.deletedAt && ["new", "preparing", "ready"].includes(onlineOrderWorkflowStage(item))).length;
   const pendingShipping = (data.shipments || []).filter(item => !item.deletedAt && !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status)).length;
   [["nav-orders-badge", pendingOrders], ["nav-shipping-badge", pendingShipping]].forEach(([id, count]) => {
     const element = document.getElementById(id);
