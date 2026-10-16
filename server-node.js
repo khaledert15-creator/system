@@ -2378,15 +2378,42 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
   }
 }
 
+let trackingAgentWasOffline = true;
+
 function scheduleTrackingWorker() {
   if (trackingTimer) clearTimeout(trackingTimer);
-  const intervalHours = 1;
+  const intervalMs = TRACKING_RPA_ENABLED ? 60 * 1000 : 60 * 60 * 1000;
   trackingRuntime.running = true;
-  trackingRuntime.nextRun = new Date(Date.now() + intervalHours * 3600000).toISOString();
+  trackingRuntime.nextRun = new Date(Date.now() + intervalMs).toISOString();
   trackingTimer = setTimeout(async () => {
-    await runTrackingCycle({ manual: false });
-    scheduleTrackingWorker();
-  }, Math.max(1, intervalHours) * 3600000);
+    try {
+      if (TRACKING_RPA_ENABLED) {
+        const agent = await getLocalRpaHealth();
+        if (!agent.connected || !agent.browserAvailable) {
+          trackingAgentWasOffline = true;
+          trackingRuntime.lastError = "خدمة التتبع غير متصلة؛ ستتم إعادة المحاولة عند عودتها.";
+          return;
+        }
+        const db = ensureTrackingDb(readDb());
+        const recovering = trackingAgentWasOffline;
+        trackingAgentWasOffline = false;
+        const now = Date.now();
+        const pendingIds = activeTrackableShipments(db, { manual: true })
+          .filter(shipment => shipment.trackingRetryPending && (recovering || !shipment.nextTrackingAt || new Date(shipment.nextTrackingAt).getTime() <= now))
+          .map(shipment => shipment.id);
+        if (pendingIds.length) {
+          await runTrackingCycle({ manual: true, shipmentIds: pendingIds });
+          return;
+        }
+        if (!activeTrackableShipments(db).length) return;
+      }
+      await runTrackingCycle({ manual: false });
+    } catch (error) {
+      trackingRuntime.lastError = error.message || String(error);
+    } finally {
+      scheduleTrackingWorker();
+    }
+  }, intervalMs);
 }
 
 function users() {

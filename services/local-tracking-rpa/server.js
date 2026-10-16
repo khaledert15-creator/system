@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { parseEgyptPostSteps } = require("./tracking-parser");
 
 const PORT = 8788;
 const HOST = "127.0.0.1";
@@ -211,41 +212,6 @@ function classifyBlock(text = "", title = "", url = "") {
   return "";
 }
 
-function normalizeStatus(text = "") {
-  const lower = String(text || "").toLowerCase();
-  if (/برجاء إدخال|ادخل باركود|كيفية الاستخدام|المكان المخصص|please enter|enter tracking/i.test(lower)) return "unknown";
-  if (/delivered|تم\s+(?:ال)?تسليم|التسليم والتحصيل|اكتمل|اكتمال/.test(lower)) return "delivered";
-  if (/out for delivery|خارج للتسليم|خرج للتوصيل/.test(lower)) return "out_for_delivery";
-  if (/transit|نقل|معالجة|في الطريق|الشحن/.test(lower)) return "in_transit";
-  if (/registered|accepted|تسجيل|استلام/.test(lower)) return "registered";
-  if (/return|مرتجع|رجوع|عودة/.test(lower)) return "returned";
-  return "unknown";
-}
-
-function isInstructionalText(line = "") {
-  return /برجاء إدخال|ادخل باركود|يمكنك إدخال|كيفية الاستخدام|المكان المخصص|مثال|تتبع شحنتك|please enter|enter tracking|how to use/i.test(String(line || ""));
-}
-
-function extractTimelineFromText(text = "", trackingNumber = "") {
-  const lines = String(text || "")
-    .split(/\r?\n+/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(line => line !== trackingNumber);
-  const meaningful = lines
-    .filter(line => !isInstructionalText(line))
-    .filter(line => /(تسجيل|الشحن|نقل|معالجة|تسليم|اكتمل|delivered|transit|registered|accepted|arrival|departure)/i.test(line));
-  const baseTime = Date.now();
-  const timeline = meaningful.slice(0, 20).map((line, index) => ({
-    statusText: line,
-    normalizedStatus: normalizeStatus(line),
-    location: "",
-    eventAt: new Date(baseTime + index * 1000).toISOString(),
-    sourceIndex: index
-  }));
-  return timeline.filter(item => item.normalizedStatus !== "unknown");
-}
-
 async function findInput(page) {
   const selectors = [
     "textarea:visible",
@@ -264,6 +230,7 @@ async function findInput(page) {
 
 async function findSubmitButton(page) {
   const candidates = [
+    page.locator(".trackTraceInput .custBtn:not(.disableBtn .custBtn)").first(),
     page.getByRole("button", { name: /تتبع|track|بحث|search/i }).first(),
     page.locator("button:visible, input[type='button']:visible, input[type='submit']:visible, a:visible, [role='button']:visible").filter({ hasText: /تتبع|track|بحث|search/i }).first(),
     page.locator("input[type='submit']:visible").first(),
@@ -352,16 +319,20 @@ async function realTrack(payload) {
     await input.fill("");
     await input.type(trackingNumber, { delay: 80 });
     let submitMethod = "";
-    await input.press("Enter").then(() => { submitMethod = "enter"; }).catch(() => {});
-    await page.waitForTimeout(1000);
     const button = await findSubmitButton(page);
+    const resultResponse = page.waitForResponse(response => response.url().includes("/TrackTrace/GetShipmentDetails"), { timeout: 45000 }).catch(() => null);
     if (button) {
       await button.click();
       submitMethod = "button";
     }
-    if (!submitMethod) await input.press("Enter").then(() => { submitMethod = "enter"; }).catch(() => {});
-    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(5000);
+    const providerResponse = submitMethod ? await resultResponse : null;
+    if (providerResponse?.status() === 429) {
+      return baseResponse({ trackingNumber, failureCode: "SITE_RATE_LIMITED", failureMessage: "موقع البريد حدّد عدد طلبات التتبع مؤقتًا؛ ستتم إعادة المحاولة.", manualReviewRequired: false });
+    }
+    if (providerResponse && providerResponse.status() >= 400) {
+      return baseResponse({ trackingNumber, failureCode: "SITE_UNAVAILABLE", failureMessage: "موقع البريد لا يعرض بيانات التتبع حاليًا؛ ستتم إعادة المحاولة.", manualReviewRequired: false });
+    }
+    await page.locator(".ordersListingItem__title h3").filter({ hasText: trackingNumber }).first().waitFor({ state: "visible", timeout: 30000 }).catch(() => {});
 
     title = await page.title().catch(() => "");
     bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => "");
@@ -378,7 +349,12 @@ async function realTrack(payload) {
       return baseResponse({ trackingNumber, failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
     }
 
-    const timeline = extractTimelineFromText(bodyText, trackingNumber);
+    const steps = await page.locator(".ordersListingItem__title h3").filter({ hasText: trackingNumber }).first().count()
+      ? await page.locator(".ordersListingItem .order__container").evaluateAll(nodes => nodes.map(node => ({
+          fields: Array.from(node.querySelectorAll(".ordersListingItem__item__data > p"), item => item.textContent.trim())
+        })))
+      : [];
+    const timeline = parseEgyptPostSteps(steps, trackingNumber);
     if (!timeline.length) {
       const diagnostics = await saveDiagnostics({
         page,

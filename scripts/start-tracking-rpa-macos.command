@@ -39,4 +39,7 @@ if [[ ! -d node_modules/playwright ]]; then
 fi
 
 echo "تم بدء خدمة التتبع محليًا على 127.0.0.1:8788."
+if command -v caffeinate >/dev/null 2>&1; then
+  exec caffeinate -i npm start
+fi
 exec npm start
