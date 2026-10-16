@@ -3566,15 +3566,85 @@ async function copyQuickOrderMessage() {
   catch{toast("تعذر النسخ تلقائيًا. حدد النص وانسخه.","error");}
 }
 
+const ORDER_CANCEL_REASONS=["العميل ألغى الطلب","العميل لا يرد","طلب مكرر","نفاد المخزون","خطأ في بيانات الطلب","أخرى"];
+const PRE_HANDOVER_SHIPMENT_STATUSES=["","shipped","created","pending","label_created"];
+
+function activeOrderShipment(order) {
+  return (data.shipments||[]).find(item=>!item.deletedAt&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
+}
+
+function canCancelOrderDirectly(order) {
+  if(!canAction("order.quick.edit"))return false;
+  const stage=onlineOrderWorkflowStage(order);
+  if(["delivered","cancelled"].includes(stage))return false;
+  const shipment=activeOrderShipment(order);
+  return !shipment||PRE_HANDOVER_SHIPMENT_STATUSES.includes(String(shipment.normalizedStatus||""));
+}
+
 async function cancelOnlineOrder(id) {
   const order=getOnlineOrder(id);if(!order)return;
+  if(!canCancelOrderDirectly(order))return toast("الطلب لدى شركة الشحن أو مكتمل؛ استخدم المرتجعات بدل الإلغاء.","error");
   try{
-    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET"});
-    if(result.financial.paid>0)return openCancellationSettlement("order",id,result.financial);
-    if(!confirm(`هل تريد إلغاء الطلب ${id} وتحرير الكميات المحجوزة؟`))return;
-    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel`,{body:{reason:"إلغاء يدوي من شاشة الطلبات"}});renderOnlineOrders();toast("تم إلغاء الطلب وتحرير المخزون المحجوز.");
+    const {financial}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET"});
+    const shipment=activeOrderShipment(order),sale=order.saleId&&(data.sales||[]).find(item=>item.id===order.saleId&&item.status!=="ملغاة");
+    const postal=shipment&&/البريد المصري|egypt\s*post|EGYPT_POST/i.test(`${shipment.carrier||""} ${shipment.company||""} ${shipment.carrierCode||""}`);
+    const defaultAccount=(financial.payments||[]).find(item=>item.cashAccountId)?.cashAccountId||"";
+    const steps=[
+      shipment?`إلغاء الشحنة ${esc(shipment.trackingNumber||shipment.tracking||shipment.id)}`:"",
+      financial.outstanding>0?`رد المبلغ المدفوع للعميل (${money(financial.outstanding)})`:"",
+      sale?`إبطال الفاتورة ${esc(sale.id)} وإرجاع الكميات للمخزون`:"",
+      order.inventoryReservation?.status==="active"?"تحرير الكميات المحجوزة":"",
+      "تحويل الطلب إلى «ملغي»"
+    ].filter(Boolean);
+    openModal(`إلغاء الطلب ${order.id}`,"إلغاء بخطوة واحدة",`<form id="order-cancel-complete-form" data-id="${esc(order.id)}" data-outstanding="${financial.outstanding}">
+      <div class="finance-callout"><strong>${esc(order.customerName||financial.customerName||"")}</strong><span>${esc(order.id)}${sale?` · ${esc(sale.id)}`:""} · الإجمالي ${money(financial.total)} · المدفوع ${money(financial.paid)}</span></div>
+      <p class="muted">سيتم تنفيذ الآتي معًا، وإذا فشل أي جزء لن يتغير شيء:</p>
+      <ol class="cancel-steps">${steps.map(step=>`<li>${step}</li>`).join("")}</ol>
+      <div class="form-grid">
+        <div class="form-field"><label>سبب الإلغاء</label><select name="reason" required><option value="">اختر السبب...</option>${ORDER_CANCEL_REASONS.map(reason=>`<option>${reason}</option>`).join("")}</select></div>
+        <div class="form-field"><label>ملاحظة (اختياري)</label><input name="note" maxlength="200"></div>
+        ${financial.outstanding>0?`<div class="form-field"><label>المبلغ المردود للعميل</label><input name="refundAmount" type="number" min="0" max="${financial.outstanding}" step="0.01" value="${financial.outstanding}" required></div>
+        <div class="form-field"><label>يُرد من خزنة</label><select name="cashAccountId" required>${refundCashAccountOptions(defaultAccount)}</select></div>
+        <p class="muted" id="cancel-credit-hint" hidden></p>`:""}
+        ${shipment?`<label class="permission-check"><input type="checkbox" name="carrierCancelled" required><span><strong>تم إلغاء البوليصة لدى شركة الشحن</strong><small>${esc(shipment.carrier||shipment.company||"")} · ${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label>`:""}
+        ${postal?`<div class="form-field"><label>تكلفة البريد للشحنة الملغاة</label><select name="postalChargeStatus"><option value="charged">البريد سيحتسبها</option><option value="not_charged">البريد لن يحتسبها</option></select></div>`:""}
+      </div>
+      <div class="form-actions"><button class="btn danger" type="submit">تأكيد الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
+    </form>`);
   }catch(error){toast(error.message,"error");}
 }
+
+function updateCancelCreditHint(form) {
+  const hint=form.querySelector("#cancel-credit-hint"),input=form.elements.refundAmount;if(!hint||!input)return;
+  const credit=Math.max(0,Number(form.dataset.outstanding||0)-Number(input.value||0));
+  hint.hidden=!(credit>0);hint.textContent=`الباقي (${money(credit)}) سيتحول إلى رصيد دائن في حساب العميل.`;
+  const account=form.elements.cashAccountId;if(account)account.required=Number(input.value||0)>0;
+}
+
+async function submitOrderCancelComplete(form) {
+  const values=Object.fromEntries(new FormData(form)),id=form.dataset.id,button=form.querySelector('button[type="submit"]');
+  if(button?.disabled)return;
+  if(button){button.disabled=true;button.textContent="جارٍ الإلغاء...";}
+  try{
+    const reason=[values.reason,String(values.note||"").trim()].filter(Boolean).join(" — ");
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel-complete`,{body:{reason,refundAmount:values.refundAmount===undefined?undefined:Number(values.refundAmount),cashAccountId:values.cashAccountId||"",carrierCancelled:values.carrierCancelled==="on",postalChargeStatus:values.postalChargeStatus||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`cancel-${id}-${Date.now()}`)}});
+    closeModal();renderOnlineOrders();
+    toast(result.existing?`الطلب ${id} ملغي بالفعل.`:`تم إلغاء الطلب ${id}${result.steps?.length?`: ${result.steps.join("، ")}`:""}.`);
+  }catch(error){
+    if(button){button.disabled=false;button.textContent="تأكيد الإلغاء";}
+    toast(error.message,"error");
+  }
+}
+
+document.addEventListener("input", event => {
+  const form=event.target.closest?.("#order-cancel-complete-form");
+  if(form&&event.target.name==="refundAmount")updateCancelCreditHint(form);
+});
+document.addEventListener("submit", event => {
+  if (event.target.id !== "order-cancel-complete-form") return;
+  event.preventDefault();
+  submitOrderCancelComplete(event.target);
+});
 
 function cancellationEndpoint(kind,id,suffix){return `/api/${kind==="sale"?"sales":"orders"}/${encodeURIComponent(id)}/${suffix}`;}
 
@@ -3760,7 +3830,7 @@ function readyShippingRow(order) {
   const shipment=data.shipments.find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
   const hasWeight=Number(order.packedWeightGrams)>0;
   const canWeight=canAction("order.pack")||canAction("order.shipping"),canShip=canWeight,canRepack=canAction("order.prepare");
-  const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${canRepack?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${esc(order.id)}">إعادة للتغليف</button>`:""}</div>`;
+  const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${canRepack?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${esc(order.id)}">إعادة للتغليف</button>`:""}${canCancelOrderDirectly(order)?`<button type="button" class="row-action text-danger" data-action="cancel-online-order" data-id="${esc(order.id)}">إلغاء الطلب</button>`:""}</div>`;
   return `<tr><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
 }
 
@@ -3931,7 +4001,7 @@ function onlineOrderMoreActions(order) {
     ${order.source==="whatsapp"&&canAction("order.quick.edit")&&!order.saleId&&!terminal?`<button class="row-action" data-action="edit-quick-order" data-id="${order.id}">تعديل الطلب</button>`:""}
     ${order.saleId?`<button class="row-action" data-action="convert-order-sale" data-id="${order.id}">عرض الفاتورة</button>`:""}
     ${order.preparedAt&&!order.shipmentId?`<button class="row-action" data-action="reopen-order-preparation" data-id="${order.id}">إعادة فتح للتجهيز</button>`:""}
-    ${!order.saleId&&!terminal&&canAction("order.quick.edit")?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء الطلب</button>`:""}
+    ${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء الطلب</button>`:""}
   </div></details>`;
 }
 

@@ -512,6 +512,47 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
   }
 }
 
+const PRE_HANDOVER_SHIPMENT_STATUSES=new Set(["","shipped","created","pending","label_created"]);
+
+function activeOrderShipment(db,order) {
+  return (db.shipments||[]).find(item=>!item.deletedAt&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
+}
+
+function voidSaleRecord(db,sale,user,note) {
+  const now=new Date().toISOString();
+  for(const line of sale.lines||[]){
+    const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));
+    if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note,user:user.name||user.username,username:user.username});}
+    for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}
+  }
+  const customer=(db.customers||[]).find(item=>item.id===sale.customerId);
+  if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));
+  Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});
+}
+
+// Settles everything still paid on the order: `refundAmount` goes back in cash, the rest becomes customer credit.
+function settleOrderForCancellation(db,order,user,{refundAmount,cashAccountId,operationKey,reason}) {
+  const preview=OrderRefunds.cancellationPreview(db,{orderId:order.id});
+  if(preview.outstanding<=0)return [];
+  const cash=OrderRefunds.round(Math.min(Math.max(0,Number(refundAmount??preview.outstanding)),preview.outstanding));
+  let cashLeft=cash,creditLeft=OrderRefunds.round(preview.outstanding-cash);
+  const created=[];
+  for(const payment of preview.payments){
+    const settledOnPayment=preview.refunds.filter(row=>row.paymentId===payment.id).reduce((sum,row)=>sum+Number(row.amount||0),0);
+    let capacity=OrderRefunds.round(Number(payment.amount||0)-settledOnPayment);
+    for(const [type,take] of [["cash_refund",()=>cashLeft],["customer_credit",()=>creditLeft]]){
+      const amount=OrderRefunds.round(Math.min(capacity,take()));
+      if(!(amount>0))continue;
+      const accountId=type==="cash_refund"?(cashAccountId||payment.cashAccountId||""):"";
+      const result=OrderRefunds.createSettlement(db,{orderId:order.id},{settlementType:type,amount,paymentId:payment.id,cashAccountId:accountId,operationKey:`${operationKey}:${type}:${payment.id}`,reason},user,()=>crypto.randomUUID());
+      created.push(result.settlement);
+      capacity=OrderRefunds.round(capacity-amount);
+      if(type==="cash_refund")cashLeft=OrderRefunds.round(cashLeft-amount);else creditLeft=OrderRefunds.round(creditLeft-amount);
+    }
+  }
+  return created;
+}
+
 function appendOrderAudit(db,user,order,action,details="") {
   const now=new Date().toISOString();
   db.audit=db.audit||[];
@@ -2945,6 +2986,42 @@ const server = http.createServer(async (req, res) => {
       Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});
       appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLED",performedBy:user.username});
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/cancel-complete") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.cancelledAt||order.workflowStage==="cancelled"||["ملغي","cancelled","canceled"].includes(String(order.status||"").toLowerCase()))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب تم تسليمه؛ استخدم المرتجعات بدل الإلغاء."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),reason=String(payload.reason||"").trim(),operationKey=String(payload.operationKey||"").trim();
+        if(!reason)return send(res,400,{ok:false,code:"REASON_REQUIRED",message:"اختر سبب الإلغاء."});
+        if(!operationKey)return send(res,400,{ok:false,code:"OPERATION_KEY_REQUIRED",message:"Operation Key مطلوب."});
+        const now=new Date().toISOString(),steps=[];
+        const shipment=activeOrderShipment(db,order);
+        if(shipment){
+          if(!PRE_HANDOVER_SHIPMENT_STATUSES.has(String(shipment.normalizedStatus||"")))return send(res,409,{ok:false,code:"SHIPMENT_WITH_CARRIER",message:"الشحنة بالفعل لدى شركة الشحن؛ استخدم المرتجعات بدل الإلغاء."});
+          if(payload.carrierCancelled!==true)return send(res,409,{ok:false,code:"CARRIER_CANCELLATION_CONFIRMATION_REQUIRED",message:"ألغِ البوليصة من نظام شركة الشحن أولًا ثم فعّل مربع التأكيد."});
+          const postalChargeStatus=isPostalCarrier(shipment)?(payload.postalChargeStatus==="not_charged"?"not_charged":"charged"):null;
+          const tracking=shipment.trackingNumber||shipment.tracking||"";
+          Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:"cancel_order",postalChargeStatus,postalChargeReason:postalChargeStatus==="not_charged"?reason:"",postalChargeRecordedAt:postalChargeStatus?now:null,postalChargeRecordedBy:postalChargeStatus?(user.name||user.username):"",postalChargeRecordedByUsername:postalChargeStatus?user.username:"",updatedAt:now,updated:now});
+          order.previousTrackingNumbers=[...(order.previousTrackingNumbers||[]),{trackingNumber:tracking,shipmentId:shipment.id,cancelledAt:now,reason}];
+          steps.push(`إلغاء الشحنة ${tracking||shipment.id}`);
+        }
+        const settlements=settleOrderForCancellation(db,order,user,{refundAmount:payload.refundAmount,cashAccountId:String(payload.cashAccountId||""),operationKey,reason:`إلغاء الطلب: ${reason}`});
+        for(const row of settlements)steps.push(`${row.settlementType==="cash_refund"?"رد نقدي":"رصيد دائن"} ${row.amount}`);
+        const sale=order.saleId&&(db.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
+        if(sale&&sale.status!=="ملغاة"){voidSaleRecord(db,sale,user,`إلغاء الطلب ${order.id}: ${reason}`);steps.push(`إبطال الفاتورة ${sale.id}`);}
+        if(releaseOrderInventory(db,order,user,reason))steps.push("تحرير الكميات المحجوزة");
+        const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});
+        if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"تعذر تسوية المبلغ المدفوع بالكامل.",financial});
+        Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,cancellationOperationKey:operationKey,updatedAt:now});
+        appendOrderAudit(db,user,order,"إلغاء الطلب بخطوة واحدة",[reason,...steps].join(" · "));
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLED_COMPLETE",performedBy:user.username});
+        return send(res,200,{ok:true,order,steps,settlements,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"ORDER_CANCELLATION_FAILED",message:error.message});}
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/cancellation/preview") && req.method === "GET") {

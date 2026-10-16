@@ -9,7 +9,7 @@ const rowSource = app.match(/function readyShippingRow\(order\) \{[\s\S]*?\n\}/)
 assert(rowSource, "readyShippingRow is missing");
 
 function renderRow(order, permissions = ["order.prepare", "order.pack", "order.shipping", "convert-order-sale"]) {
-  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", `${rowSource}; return readyShippingRow;`);
+  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", `${rowSource}; return readyShippingRow;`);
   const render = factory(
     { calculatePayment: () => ({ remainingAmount: 100 }) },
     { shipments: [] },
@@ -17,12 +17,15 @@ function renderRow(order, permissions = ["order.prepare", "order.pack", "order.s
     new Set(),
     value => String(value ?? ""),
     value => `${value} ج.م`,
-    value => String(value)
+    value => String(value),
+    () => permissions.includes("order.quick.edit")
   );
   return render({ id: "ORD-TEST", customerName: "عميل", phone: "01000000000", governorate: "القاهرة", lines: [{ qty: 1 }], total: 100, paidAmount: 0, saleId: "INV-TEST", ...order });
 }
 
 const noWeight = renderRow({ packedWeightGrams: null });
+assert.doesNotMatch(noWeight, /data-action="cancel-online-order"/);
+assert.match(renderRow({ packedWeightGrams: null }, ["order.quick.edit"]), /data-action="cancel-online-order"[^>]*>إلغاء الطلب/);
 assert.match(noWeight, /data-action="packed-weight-edit"[^>]*>تسجيل الوزن/);
 assert.match(noWeight, /data-action="ship-ready-order"[^>]*disabled[^>]*>سجّل الوزن أولًا/);
 assert.match(noWeight, /data-action="reopen-order-preparation"/);
