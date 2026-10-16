@@ -2337,7 +2337,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       if (result.changed) summary.changed += 1;
       else summary.unchanged += 1;
       const delayMs = Math.max(settings.rateLimitMs || 0, settings.minDelaySeconds * 1000);
-      if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+      if (delayMs > 0 && summary.checked < list.length) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     summary.finishedAt = new Date().toISOString();
     db.trackingRuns = db.trackingRuns || [];
@@ -2379,6 +2379,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
 }
 
 let trackingAgentWasOffline = true;
+let trackingRecoveryQueue = new Set();
 
 function scheduleTrackingWorker() {
   if (trackingTimer) clearTimeout(trackingTimer);
@@ -2391,21 +2392,30 @@ function scheduleTrackingWorker() {
         const agent = await getLocalRpaHealth();
         if (!agent.connected || !agent.browserAvailable) {
           trackingAgentWasOffline = true;
+          trackingRecoveryQueue.clear();
           trackingRuntime.lastError = "خدمة التتبع غير متصلة؛ ستتم إعادة المحاولة عند عودتها.";
           return;
         }
+        if (trackingRunning) return;
         const db = ensureTrackingDb(readDb());
         const recovering = trackingAgentWasOffline;
         trackingAgentWasOffline = false;
         const now = Date.now();
-        const pendingIds = activeTrackableShipments(db, { manual: true })
-          .filter(shipment => shipment.trackingRetryPending && (recovering || !shipment.nextTrackingAt || new Date(shipment.nextTrackingAt).getTime() <= now))
+        const pendingShipments = activeTrackableShipments(db, { manual: true })
+          .filter(shipment => shipment.trackingRetryPending);
+        if (recovering) trackingRecoveryQueue = new Set(pendingShipments.map(shipment => shipment.id));
+        const pendingIds = pendingShipments
+          .filter(shipment => trackingRecoveryQueue.has(shipment.id) || !shipment.nextTrackingAt || new Date(shipment.nextTrackingAt).getTime() <= now)
           .map(shipment => shipment.id);
         if (pendingIds.length) {
-          await runTrackingCycle({ manual: true, shipmentIds: pendingIds });
+          trackingRecoveryQueue.delete(pendingIds[0]);
+          await runTrackingCycle({ manual: true, shipmentId: pendingIds[0] });
           return;
         }
-        if (!activeTrackableShipments(db).length) return;
+        const due = activeTrackableShipments(db);
+        if (!due.length) return;
+        await runTrackingCycle({ manual: false, shipmentId: due[0].id });
+        return;
       }
       await runTrackingCycle({ manual: false });
     } catch (error) {
