@@ -1991,3 +1991,5 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 @media(max-width:760px){.shipping-batch-toolbar .batch-preview-list>div{grid-template-columns:22px minmax(0,1fr)}.shipping-batch-toolbar .batch-preview-list button{grid-column:2;justify-self:start}}
 
 .inline-stock-warning[hidden] { display: none; }
+
+.table-actions-menu[open] > .table-actions-popover { position: fixed; z-index: 1000; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }

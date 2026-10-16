@@ -2323,6 +2323,37 @@ function toast(message, type = "") {
   setTimeout(() => item.remove(), 3200);
 }
 
+function positionTableActionsMenu(menu) {
+  const summary=menu.querySelector("summary"),panel=menu.querySelector(".table-actions-popover");
+  if (!menu.open || !summary || !panel) return;
+  const anchor=summary.getBoundingClientRect(),gap=6,padding=8;
+  panel.style.position="fixed";
+  panel.style.insetInlineEnd="auto";
+  panel.style.right="auto";
+  panel.style.maxWidth=`${Math.max(0,window.innerWidth-padding*2)}px`;
+  panel.style.maxHeight=`${Math.max(0,window.innerHeight-padding*2)}px`;
+  const bounds=panel.getBoundingClientRect();
+  const below=window.innerHeight-anchor.bottom-gap-padding,above=anchor.top-gap-padding;
+  const opensAbove=bounds.height>below && above>below;
+  const height=Math.min(bounds.height,Math.max(0,opensAbove?above:below));
+  panel.style.maxHeight=`${height}px`;
+  panel.style.left=`${Math.max(padding,Math.min(anchor.left,window.innerWidth-bounds.width-padding))}px`;
+  panel.style.top=`${Math.max(padding,opensAbove?anchor.top-gap-height:anchor.bottom+gap)}px`;
+}
+
+document.addEventListener("toggle", event => {
+  const menu=event.target;
+  if (!menu.matches?.("details.table-actions-menu") || !menu.open) return;
+  document.querySelectorAll("details.table-actions-menu[open]").forEach(other=>{if(other!==menu)other.open=false;});
+  positionTableActionsMenu(menu);
+},true);
+window.addEventListener("resize",closeAllDropdowns);
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  const menu=document.querySelector("details.table-actions-menu[open]");
+  if(menu){closeAllDropdowns();menu.querySelector("summary")?.focus();}
+});
+
 function closeAllDropdowns() {
   document.querySelectorAll("details.table-actions-menu[open]").forEach(menu => menu.removeAttribute("open"));
 }
@@ -7049,6 +7080,7 @@ document.addEventListener("click", event => {
 }, true);
 
 document.addEventListener("scroll", event => {
+  if(event.target?.closest?.(".table-actions-popover"))return;
   closeAllDropdowns();
   if (event.target?.classList?.contains("table-wrap")) {
     if (stickyTableScroll.syncing) return;
