@@ -3458,7 +3458,7 @@ function renderQuickOrderScreen() {
     if (!liveRendering) setTimeout(()=>document.getElementById(quickOrderDraft.phone?"quick-order-book-search":"quick-order-phone")?.focus({preventScroll:true}),0);
   }
   return `${workflowModeTabs("quick")}
-  <div class="section-title quick-order-heading"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>طلب واتساب سريع</h2><p>سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل.</p></div>${confirmed?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
+  <div class="section-title quick-order-heading"><div><span class="eyebrow">خدمة العملاء · واتساب</span><h2>${confirmed?`تعديل الطلب ${esc(quickOrderDraft.savedOrderId)}`:"طلب واتساب سريع"}</h2><p>${confirmed?"عدّل البيانات ثم احفظ التغييرات على الطلب نفسه.":"سجل الطلب أثناء المحادثة ثم انسخ الملخص للعميل."}</p></div>${confirmed&&canAction("order.quick.create")?`<button class="btn" data-action="quick-order-new">طلب جديد</button>`:""}</div>
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
@@ -3481,7 +3481,7 @@ function renderQuickOrderScreen() {
     </article>
     <aside class="quick-order-summary card"><div class="card-header"><div><h3>مراجعة وحفظ الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ الرسالة.":"مراجعة سريعة ثم الحفظ أو التأكيد."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
-    <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":"📋 نسخ ملخص الطلب"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-new">طلب جديد</button>`}</div>
+    <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":"📋 نسخ ملخص الطلب"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-save">حفظ التعديلات</button>${canAction("order.quick.create")?`<button class="btn ghost" data-action="quick-order-new">طلب جديد</button>`:""}`}</div>
     </aside>
     </div>
   </div></div>`;
@@ -3586,7 +3586,7 @@ async function saveQuickOrderDraft({silent=false}={}) {
     ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:payload})
     : await orderWorkflowRequest("/api/orders/quick",{body:payload});
   quickOrderDraft.savedOrderId=result.order.id;
-  if(!silent)toast(`تم حفظ المسودة ${result.order.id}.`);
+  if(!silent)toast(result.order.confirmedAt?`تم حفظ تعديلات الطلب ${result.order.id}.`:`تم حفظ المسودة ${result.order.id}.`);
   return result.order;
 }
 
@@ -4022,7 +4022,7 @@ async function submitReadyOrderShipment(orderId,payload,{silent=false}={}) {
 
 function renderOnlineOrders() {
   closeAllDropdowns();
-  if(onlineOrdersMode==="quick"&&canAction("order.quick.create")){root.innerHTML=renderQuickOrderScreen();return;}
+  if(onlineOrdersMode==="quick"&&(canAction("order.quick.create")||(quickOrderDraft.savedOrderId&&canAction("order.quick.edit")))){root.innerHTML=renderQuickOrderScreen();return;}
   if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();return;}
   if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();return;}
   if(onlineOrdersMode==="shortages"){root.innerHTML=renderShortagesScreen();return;}
