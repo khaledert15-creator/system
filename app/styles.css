@@ -2000,3 +2000,5 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 
 .table-actions-menu[open] > .table-actions-popover { position: fixed; z-index: 1000; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
 .cancel-steps{margin:0 0 14px;padding-inline-start:20px;display:grid;gap:4px;color:var(--text);font-weight:600}
+.preorder-tag{display:inline-block;margin-inline-start:6px;padding:1px 8px;border-radius:999px;background:var(--warning-soft);color:var(--warning);font-size:11px;font-style:normal;font-weight:700;white-space:nowrap}.preorder-tag.ok{background:#e7f6ee;color:var(--success)}
+.shortage-lines{display:grid;gap:4px}.shortage-line{white-space:nowrap}

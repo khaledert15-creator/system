@@ -437,17 +437,24 @@ function activeReservation(order={}) {
   return order.inventoryReservation?.status==="active"?order.inventoryReservation:null;
 }
 
-function reserveOrderInventory(db,order,user,newLines=order.lines||[]) {
+// With allowBackorder, reserves what is available and records the shortfall in order.backorderLines
+// instead of failing. Returns the shortfall lines.
+function reserveOrderInventory(db,order,user,newLines=order.lines||[],{allowBackorder=false}={}) {
   const oldReservation=activeReservation(order);
   const oldQuantities=aggregateOrderLines(oldReservation?.lines||[]);
   const nextQuantities=aggregateOrderLines(newLines);
+  const shortages=[];
   for(const [bookId,quantity] of nextQuantities){
     const book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
     if(!book)throw Object.assign(new Error(`الصنف ${bookId} غير موجود.`),{status:400});
     const ownReserved=oldQuantities.get(bookId)||0;
     const availableForOrder=availableStock(book)+ownReserved;
-    if(quantity>availableForOrder)throw Object.assign(new Error(`المتاح للبيع من «${book.name}» هو ${availableForOrder}.`),{status:409,code:"INSUFFICIENT_AVAILABLE_STOCK",bookId,available:availableForOrder});
+    if(quantity<=availableForOrder)continue;
+    if(!allowBackorder)throw Object.assign(new Error(`المتاح للبيع من «${book.name}» هو ${availableForOrder}.`),{status:409,code:"INSUFFICIENT_AVAILABLE_STOCK",bookId,available:availableForOrder});
+    shortages.push({bookId,qty:quantity-Math.max(0,availableForOrder)});
+    nextQuantities.set(bookId,Math.max(0,availableForOrder));
   }
+  for(const [bookId,quantity] of [...nextQuantities])if(!quantity)nextQuantities.delete(bookId);
   const allBookIds=new Set([...oldQuantities.keys(),...nextQuantities.keys()]);
   for(const bookId of allBookIds){
     const book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
@@ -464,7 +471,21 @@ function reserveOrderInventory(db,order,user,newLines=order.lines||[]) {
     reservedBy:user.name||user.username,
     reservedByUsername:user.username
   };
-  return order.inventoryReservation;
+  order.backorderLines=shortages;
+  return shortages;
+}
+
+// Moves a confirmed order between "waiting for stock" and the preparation queue.
+function applyBackorderStage(order,user,now=new Date().toISOString()) {
+  const waiting=(order.backorderLines||[]).some(line=>Number(line.qty)>0);
+  if(waiting){
+    Object.assign(order,{status:"حجز مسبق",workflowStage:"awaiting_stock",backorderSince:order.backorderSince||now,updatedAt:now});
+    return "awaiting_stock";
+  }
+  const wasWaiting=order.workflowStage==="awaiting_stock";
+  Object.assign(order,{status:"قيد التجهيز",workflowStage:"awaiting_preparation",backorderLines:[],updatedAt:now});
+  if(wasWaiting)Object.assign(order,{backorderCompletedAt:now,backorderCompletedBy:user.name||user.username});
+  return "awaiting_preparation";
 }
 
 function releaseOrderInventory(db,order,user,reason="إلغاء الطلب") {
@@ -507,6 +528,10 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
     }
     if(previous.confirmedAt&&!previous.saleId){
       order.inventoryReservation=previous.inventoryReservation?JSON.parse(JSON.stringify(previous.inventoryReservation)):order.inventoryReservation;
+      if(previous.workflowStage==="awaiting_stock"){
+        for(const key of ["workflowStage","status","backorderLines","backorderSince"])order[key]=previous[key]===undefined?undefined:JSON.parse(JSON.stringify(previous[key]));
+        continue;
+      }
       reserveOrderInventory(nextDb,order,user,order.lines||[]);
     }
   }
@@ -2891,7 +2916,6 @@ const server = http.createServer(async (req, res) => {
         const book=db.books.find(item=>item.id===line.bookId&&!item.deletedAt);
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
         const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
-        if(qty>availableStock(book))return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)}.`});
         try{lines.push(quickOrderBookLine(db,book,line,user));}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       }
       let totals,normalizedNote;
@@ -2930,7 +2954,7 @@ const server = http.createServer(async (req, res) => {
         if(!book)return send(res,400,{ok:false,message:"أحد الكتب لم يعد موجودًا."});
         const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
         const ownReserved=aggregateOrderLines(activeReservation(order)?.lines||[]).get(book.id)||0;
-        if(qty>availableStock(book)+ownReserved)return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)+ownReserved}.`});
+        if(["preparing","needs_review"].includes(order.workflowStage)&&qty>availableStock(book)+ownReserved)return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)+ownReserved}.`});
         try{lines.push(quickOrderBookLine(db,book,line,user));}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       }
       let totals,normalizedNote;
@@ -2943,7 +2967,7 @@ const server = http.createServer(async (req, res) => {
       const preparationStarted=["preparing","needs_review"].includes(order.workflowStage);
       const paidBefore=confirmedOrderPayments(db,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
       if(paidBefore>totals.total)return send(res,409,{ok:false,code:"PAID_EXCEEDS_NEW_TOTAL",message:"القيمة الجديدة للطلب أقل من المبلغ المدفوع. راجع الاسترداد أو المعالجة المالية قبل الحفظ."});
-      if(order.confirmedAt)reserveOrderInventory(db,order,user,lines);
+      if(order.confirmedAt){reserveOrderInventory(db,order,user,lines,{allowBackorder:!["preparing","needs_review"].includes(order.workflowStage)});if(["awaiting_preparation","awaiting_stock"].includes(order.workflowStage))applyBackorderStage(order,user);}
       Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,updatedAt:now});
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
@@ -2966,9 +2990,10 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.confirmedAt&&activeReservation(order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
-      try{reserveOrderInventory(db,order,user,order.lines||[]);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INSUFFICIENT_AVAILABLE_STOCK",message:error.message,bookId:error.bookId,available:error.available});}
-      const now=new Date().toISOString();Object.assign(order,{status:"قيد التجهيز",workflowStage:"awaiting_preparation",confirmedAt:order.confirmedAt||now,confirmedBy:order.confirmedBy||user.name||user.username,confirmedByUsername:order.confirmedByUsername||user.username,updatedAt:now});
-      appendOrderAudit(db,user,order,"تأكيد الطلب وحجز المخزون","انتقل إلى قائمة التجهيز");writeDb(db);
+      try{reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INSUFFICIENT_AVAILABLE_STOCK",message:error.message,bookId:error.bookId,available:error.available});}
+      const now=new Date().toISOString();Object.assign(order,{confirmedAt:order.confirmedAt||now,confirmedBy:order.confirmedBy||user.name||user.username,confirmedByUsername:order.confirmedByUsername||user.username});
+      const stage=applyBackorderStage(order,user,now);
+      appendOrderAudit(db,user,order,"تأكيد الطلب وحجز المخزون",stage==="awaiting_stock"?`حجز مسبق: ${(order.backorderLines||[]).map(line=>`${line.bookId}×${line.qty}`).join("، ")}`:"انتقل إلى قائمة التجهيز");writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -2986,6 +3011,21 @@ const server = http.createServer(async (req, res) => {
       Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:String(payload.reason||""),updatedAt:now});
       appendOrderAudit(db,user,order,"إلغاء الطلب وتحرير الحجز",order.cancellationReason);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLED",performedBy:user.username});
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/backorder/allocate") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.workflowStage!=="awaiting_stock")return send(res,409,{ok:false,code:"ORDER_NOT_WAITING_FOR_STOCK",message:"الطلب ليس في انتظار توفر كتب."});
+      const before=JSON.stringify(order.backorderLines||[]);
+      reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});
+      if(JSON.stringify(order.backorderLines||[])===before)return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:"لا توجد كمية جديدة متاحة لهذا الطلب.",order});
+      const stage=applyBackorderStage(order,user);
+      appendOrderAudit(db,user,order,stage==="awaiting_preparation"?"اكتمال الحجز المسبق والانتقال للتجهيز":"حجز جزء من الكتب الناقصة",(order.backorderLines||[]).map(line=>`${line.bookId}×${line.qty}`).join("، ")||"كل الكتب متوفرة");
+      writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_BACKORDER_ALLOCATED",performedBy:user.username});
+      return send(res,200,{ok:true,order,stage,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/cancel-complete") && req.method === "POST") {
