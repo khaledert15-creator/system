@@ -14,7 +14,7 @@ services:
     volumes:
       - app_data:/app/data
     ports:
-      - "${APP_PORT:-8765}:${APP_PORT:-8765}"
+      - "${PORT_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8765}:${APP_PORT:-8765}"
 
   postgres:
     image: postgres:16-alpine
@@ -61,7 +61,7 @@ services:
     volumes:
       - omni_uploads:/app/storage/uploads
     ports:
-      - "${OMNICHANNEL_PORT:-8775}:${OMNICHANNEL_PORT:-8775}"
+      - "${PORT_BIND_ADDRESS:-127.0.0.1}:${OMNICHANNEL_PORT:-8775}:${OMNICHANNEL_PORT:-8775}"
     command: ["sh", "-c", "npx prisma migrate deploy && node src/server.js"]
 
 volumes:
