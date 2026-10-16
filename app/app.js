@@ -22,6 +22,7 @@ let saveConflict = false;
 let lastSuccessfulSaveAt = "";
 let lastSaveError = null;
 let saleSaveInFlight = false;
+let quickOrderConfirmPending = false;
 let purchaseRetryState = null;
 let purchaseOtherTabDetected = false;
 let systemTabChannel = null;
@@ -3500,16 +3501,24 @@ async function saveQuickOrderDraft({silent=false}={}) {
 }
 
 async function saveAndConfirmQuickOrder() {
+  if(quickOrderConfirmPending)return;
   if(!validateQuickOrderCustomerFields())return;
   if(quickOrderDraft.savedOrderId){
     const existing=getOnlineOrder(quickOrderDraft.savedOrderId);
     if(existing?.confirmedAt)return toast("تم تأكيد هذا الطلب من قبل.");
   }
+  quickOrderConfirmPending=true;
   try{
     await saveQuickOrderDraft({silent:true});
     await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/confirm`);
-    renderOnlineOrders();toast(`تم تأكيد الطلب ${quickOrderDraft.savedOrderId} وانتقل للتجهيز.`);
+    const confirmedId=quickOrderDraft.savedOrderId;
+    quickOrderDraft=emptyQuickOrderDraft();
+    quickOrderSearch="";
+    quickOrderAutofocusPending=true;
+    onlineOrdersMode="quick";
+    renderOnlineOrders();toast(`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد.`);
   }catch(error){toast(error.message,"error");}
+  finally{quickOrderConfirmPending=false;}
 }
 
 function editQuickOrder(id) {

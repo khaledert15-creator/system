@@ -1,0 +1,9 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync('app/app.js','utf8'),start=source.indexOf('async function saveAndConfirmQuickOrder()'),fn=source.slice(start,source.indexOf('\n}',start)+2);
+function context(){const c={quickOrderConfirmPending:false,quickOrderDraft:{phone:'010',lines:[{bookId:'B1'}]},quickOrderSearch:'book',quickOrderAutofocusPending:false,onlineOrdersMode:'quick',validateQuickOrderCustomerFields:()=>true,getOnlineOrder:()=>null,emptyQuickOrderDraft:()=>({phone:'',lines:[],savedOrderId:''}),renderOnlineOrders(){c.rendered=true;},toast:m=>{c.message=m;}};c.saveQuickOrderDraft=async()=>{c.quickOrderDraft.savedOrderId='O1';};c.orderWorkflowRequest=async()=>({ok:true});vm.createContext(c);vm.runInContext(fn,c);return c;}
+(async()=>{
+const c=context();await c.saveAndConfirmQuickOrder();assert.equal(c.quickOrderDraft.phone,'');assert.equal(c.quickOrderDraft.lines.length,0);assert.equal(c.quickOrderSearch,'');assert.equal(c.quickOrderAutofocusPending,true);assert(c.message.includes('O1'));assert.equal(c.quickOrderConfirmPending,false);
+const fail=context();fail.orderWorkflowRequest=async()=>{throw new Error('failed');};await fail.saveAndConfirmQuickOrder();assert.equal(fail.quickOrderDraft.savedOrderId,'O1');assert.equal(fail.quickOrderDraft.lines.length,1);assert.equal(fail.quickOrderConfirmPending,false);
+const pending=context();let finish,calls=0;pending.orderWorkflowRequest=()=>{calls++;return new Promise(r=>finish=r);};const first=pending.saveAndConfirmQuickOrder();await new Promise(r=>setImmediate(r));await pending.saveAndConfirmQuickOrder();assert.equal(calls,1);finish();await first;
+console.log('PASS confirmation opens empty draft, failure preserves order, duplicate clicks are blocked');
+})().catch(e=>{console.error(e);process.exitCode=1;});
