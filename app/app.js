@@ -3278,6 +3278,14 @@ function quickPaymentStatusLabel(value) {
 function quickOrderMessage(confirmed=false) {
   const totals=quickOrderTotalsNow(),payment=quickOrderPaymentNow(totals),order=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null;
   const amount=value=>Number(Number(value || 0).toFixed(2)).toString();
+  const compact=value=>String(value || "").replace(/\s+/g," ").trim();
+  const customerName=compact(quickOrderDraft.customerName || quickOrderCustomer()?.name);
+  const phones=[...new Set([quickOrderDraft.phone,quickOrderDraft.alternativePhone].map(compact).filter(Boolean))];
+  const contact=[customerName ? `👤 ${customerName}` : "",phones.length ? `📞 ${phones.join(" / ")}` : ""].filter(Boolean).join(" | ");
+  const address=[...new Set([quickOrderDraft.governorate,quickOrderDraft.city,quickOrderDraft.address].map(compact).filter(Boolean))].join("، ");
+  const landmark=compact(quickOrderDraft.addressMark);
+  const location=[address,landmark ? `علامة: ${landmark}` : ""].filter(Boolean).join(" · ");
+  const customerDetails=[contact,location ? `📍 ${location}` : ""].filter(Boolean).join("\n");
   const rows=totals.lines.map(line=>{
     const book=getBook(line.bookId),name=String(book?.name||line.bookId).replace(/\s+/g," ").trim();
     const discounted=line.unitFinalPrice < line.unitOriginalPrice;
@@ -3287,7 +3295,7 @@ function quickOrderMessage(confirmed=false) {
       : `• ${name} | ${price}`;
   }).join("\n");
   const orderDiscount=totals.orderDiscountAmount ? `خصم الطلب: ${amount(totals.orderDiscountAmount)} ج\n` : "";
-  return `${confirmed?"✅ تم تأكيد الطلب":"📚 ملخص الطلب"}${confirmed&&order?` · ${order.id}`:""}\n${rows||"—"}\n\n${orderDiscount}قيمة الكتب: ${amount(totals.goods)} ج | الشحن: ${amount(totals.shipping)} ج\nالإجمالي: ${amount(totals.total)} ج\nالمدفوع: ${amount(payment.paidAmount)} ج | المتبقي: ${amount(payment.remainingAmount)} ج`;
+  return `${confirmed?"✅ تم تأكيد الطلب":"📚 ملخص الطلب"}${confirmed&&order?` · ${order.id}`:""}\n${customerDetails ? `${customerDetails}\n\n` : ""}${rows||"—"}\n\n${orderDiscount}قيمة الكتب: ${amount(totals.goods)} ج | الشحن: ${amount(totals.shipping)} ج\nالإجمالي: ${amount(totals.total)} ج\nالمدفوع: ${amount(payment.paidAmount)} ج | المتبقي: ${amount(payment.remainingAmount)} ج`;
 }
 
 function quickOrderBookResults() {
@@ -7573,8 +7581,10 @@ root.addEventListener("input", event => {
   }
   if(event.target.id==="quick-order-book-search"){quickOrderSearch=event.target.value;refreshQuickOrderBookResults();return;}
   if(event.target.id==="quick-order-governorate-search"){clearQuickOrderFieldError("governorate");openQuickGovernorateList(true);filterQuickGovernorates(event.target.value);return;}
-  if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");return;}
-  if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");return;}
+  if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");refreshQuickOrderComputedUi();return;}
+  if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");refreshQuickOrderComputedUi();return;}
+  const quickContactFields={"quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address-mark":"addressMark"};
+  if(quickContactFields[event.target.id]){quickOrderDraft[quickContactFields[event.target.id]]=event.target.value;refreshQuickOrderComputedUi();return;}
   if(event.target.matches("[data-quick-order-qty]")){
     event.target.value=normalizeArabicNumericText(event.target.value).replace(/[^0-9]/g,"");
     const index=Number(event.target.dataset.quickOrderQty),line=quickOrderDraft.lines[index],book=getBook(line?.bookId);if(!line)return;
@@ -7700,7 +7710,7 @@ root.addEventListener("change", event => {
   if(event.target.id==="quick-shipping-company"){shippingSessionCompany=event.target.value;return;}
   if(event.target.id==="quick-order-shipping-company"){quickOrderDraft.shippingCompany=event.target.value;return;}
   const quickFieldMap={"quick-order-name":"customerName","quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address":"address","quick-order-address-mark":"addressMark"};
-  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);return;}
+  if(quickFieldMap[event.target.id]){quickOrderDraft[quickFieldMap[event.target.id]]=event.target.value;clearQuickOrderFieldError(quickFieldMap[event.target.id]);refreshQuickOrderComputedUi();return;}
   if(event.target.id==="quick-order-order-discount-type"){quickOrderDraft.orderDiscountType=event.target.value==="amount"?"amount":"percent";quickOrderDraft.orderDiscount=0;renderQuickOrderPreservingContext();return;}
   if(event.target.id==="quick-order-payment-plan"){quickOrderDraft.paymentPlan=event.target.value;quickOrderDraft.paymentMethod=paymentPlanLabel(event.target.value);if(event.target.value==="cash_on_delivery"){quickOrderDraft.paidAmount=0;quickOrderDraft.paymentConfirmed=false;}if(event.target.value==="prepaid_full")quickOrderDraft.paidAmount=quickOrderTotalsNow().total;renderQuickOrderPreservingContext();return;}
   if(event.target.id==="quick-order-payment-confirmed"){quickOrderDraft.paymentConfirmed=event.target.checked;renderQuickOrderPreservingContext();return;}
