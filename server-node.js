@@ -35,7 +35,7 @@ const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
 const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
-const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "true").trim().toLowerCase() === "true";
+const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
 
 function contentHash(fileName) {
@@ -110,6 +110,49 @@ function passwordHash(salt, password) {
   return crypto.createHash("sha256").update(`${salt}:${password || ""}`, "utf8").digest("hex");
 }
 
+const PASSWORD_MIN_LENGTH = 8;
+const CREDENTIAL_FIELDS = ["salt", "passwordHash", "passwordAlgorithm"];
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  return { salt, passwordHash:crypto.scryptSync(String(password), salt, 64).toString("hex"), passwordAlgorithm:"scrypt" };
+}
+
+function verifyPassword(user, password) {
+  if (!user || typeof user.passwordHash !== "string") return false;
+  const actual = user.passwordAlgorithm === "scrypt"
+    ? crypto.scryptSync(String(password || ""), user.salt || "", 64).toString("hex")
+    : passwordHash(user.salt || "", password);
+  const a = Buffer.from(actual, "utf8"), b = Buffer.from(user.passwordHash, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function withoutCredentials(db) {
+  if (!Array.isArray(db?.users)) return db;
+  return { ...db, users:db.users.map(user => Object.fromEntries(Object.entries(user).filter(([key]) => !CREDENTIAL_FIELDS.includes(key)))) };
+}
+
+const loginFailures = new Map();
+const LOGIN_FAILURE_LIMIT = 10;
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+
+function loginThrottleKey(req, username) {
+  return `${req.socket?.remoteAddress || ""}|${String(username || "").toLowerCase()}`;
+}
+
+function loginBlocked(key) {
+  const entry = loginFailures.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.first > LOGIN_FAILURE_WINDOW_MS) { loginFailures.delete(key); return false; }
+  return entry.count >= LOGIN_FAILURE_LIMIT;
+}
+
+function recordLoginFailure(key) {
+  const entry = loginFailures.get(key);
+  if (!entry || Date.now() - entry.first > LOGIN_FAILURE_WINDOW_MS) loginFailures.set(key, { first:Date.now(), count:1 });
+  else entry.count += 1;
+}
+
 function readDb() {
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
 }
@@ -129,6 +172,14 @@ function canManageSeasonData(db, user, action) {
   if (user?.username === "owner" || ["مالك", "Super Admin"].includes(role)) return true;
   const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
   return Array.isArray(configured) && configured.includes(action) && ["مالك", "Super Admin"].includes(role);
+}
+
+function canManagePermissions(db, user, action) {
+  const role = ({ owner:"مالك", manager:"مدير", superadmin:"Super Admin" }[user?.role] || user?.role || "");
+  if (user?.username === "owner" || ["مالك", "Super Admin"].includes(role)) return true;
+  const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
+  if (Array.isArray(configured)) return configured.includes(action);
+  return role === "مدير";
 }
 
 function canPartyAction(db, user, action) {
@@ -2575,10 +2626,14 @@ const server = http.createServer(async (req, res) => {
 
     if (route === "/api/login" && req.method === "POST") {
       const payload = JSON.parse(await readBody(req) || "{}");
+      const throttleKey = loginThrottleKey(req, payload.username);
+      if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات دخول خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
       const user = users().find(item => item.username === payload.username && item.active !== false);
-      if (!user || passwordHash(user.salt || "", payload.password) !== user.passwordHash) {
+      if (!user || !verifyPassword(user, payload.password)) {
+        recordLoginFailure(throttleKey);
         return send(res, 401, { ok:false, message:"Invalid username or password." });
       }
+      loginFailures.delete(throttleKey);
       const token = crypto.randomUUID().replace(/-/g, "");
       const publicUser = safeUser(user);
       sessions.set(token, { user: publicUser, expires: Date.now() + SESSION_HOURS * 60 * 60 * 1000 });
@@ -2594,6 +2649,35 @@ const server = http.createServer(async (req, res) => {
       const token = req.headers["x-session-token"];
       if (token) sessions.delete(token);
       return send(res, 200, { ok:true });
+    }
+
+    if (route === "/api/account/password" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const currentPassword = String(payload.currentPassword || "");
+      const newPassword = String(payload.newPassword || "");
+      const throttleKey = loginThrottleKey(req, user.username);
+      if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
+      if (newPassword.length < PASSWORD_MIN_LENGTH) return send(res, 400, { ok:false, code:"PASSWORD_TOO_SHORT", message:`كلمة المرور الجديدة يجب ألا تقل عن ${PASSWORD_MIN_LENGTH} أحرف.` });
+      if (newPassword === currentPassword) return send(res, 400, { ok:false, code:"PASSWORD_UNCHANGED", message:"كلمة المرور الجديدة يجب أن تختلف عن الحالية." });
+      if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
+      const next = readDb();
+      if (!Array.isArray(next.users) || !next.users.length) next.users = JSON.parse(JSON.stringify(defaultUsers));
+      const record = next.users.find(item => item.username === user.username && item.active !== false);
+      if (!record || !verifyPassword(record, currentPassword)) {
+        recordLoginFailure(throttleKey);
+        return send(res, 401, { ok:false, code:"CURRENT_PASSWORD_INVALID", message:"كلمة المرور الحالية غير صحيحة." });
+      }
+      loginFailures.delete(throttleKey);
+      Object.assign(record, hashPassword(newPassword), { passwordChangedAt:new Date().toISOString() });
+      const now = new Date().toISOString();
+      next.audit = Array.isArray(next.audit) ? next.audit : [];
+      AuditIds.appendAuditRecord(next.audit,{ date:now, createdAt:now, action:"PASSWORD_CHANGED", operationType:"PASSWORD_CHANGED", entity:"المستخدمون", entityId:record.id || user.username, user:user.name || user.username, username:user.username, role:user.role });
+      const saved = writeDb(next, { operationType:"PASSWORD_CHANGED", performedBy:user.username });
+      const currentToken = req.headers["x-session-token"];
+      for (const [token, session] of sessions) if (token !== currentToken && session.user?.username === user.username) sessions.delete(token);
+      return send(res, 200, { ok:true, revision:String(saved.revision) }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
     }
 
     if (route === "/api/admin/season-data" && req.method === "GET") {
@@ -2693,7 +2777,7 @@ const server = http.createServer(async (req, res) => {
       if (!SEASON_PURGE_ENABLED) return send(res, 403, { ok:false, code:"PURGE_DISABLED", message:"تنفيذ الحذف معطّل في بيئة التطوير. المعاينة فقط متاحة." });
       const payload = JSON.parse(await readBody(req) || "{}");
       const credential = users().find(item => item.username === user.username);
-      if (!credential || passwordHash(credential.salt || "", payload.password) !== credential.passwordHash) return send(res, 401, { ok:false, code:"IDENTITY_CONFIRMATION_FAILED", message:"تعذر تأكيد هوية المالك." });
+      if (!credential || !verifyPassword(credential, payload.password)) return send(res, 401, { ok:false, code:"IDENTITY_CONFIRMATION_FAILED", message:"تعذر تأكيد هوية المالك." });
       const preview = SeasonDataManagement.buildDemoPreview(db);
       if (preview.blockedRecords.length) return send(res, 409, { ok:false, code:"MIXED_RECORDS_BLOCKED", message:"توجد سجلات مختلطة تمنع الحذف.", blockedRecords:preview.blockedRecords });
       const backup = verifiedDatabaseBackup("pre-demo-purge");
@@ -3414,7 +3498,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/db" && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
-      return send(res, 200, fs.readFileSync(DB_PATH), "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
+      return send(res, 200, withoutCredentials(readDb()), "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
     }
 
     const supplierDeleteMatch = route.match(/^\/api\/suppliers\/([^/]+)$/);
@@ -3460,6 +3544,14 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
       const currentSource = fs.existsSync(DB_PATH) ? readDb() : { books:[], sales:[], settings:{} };
       const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
+      if (Array.isArray(currentSource.users) && currentSource.users.length) parsed.users = JSON.parse(JSON.stringify(currentSource.users));
+      else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
+      const permissionScope = (permissions, key) => permissions?.[key] || {};
+      for (const [key, action] of [["roles", "customize-role"], ["users", "customize-user"]]) {
+        if (!isDeepStrictEqual(permissionScope(currentDb.settings?.permissions, key), permissionScope(parsed.settings?.permissions, key)) && !canManagePermissions(currentDb, user, action)) {
+          return send(res, 403, { ok:false, code:"PERMISSIONS_CHANGE_FORBIDDEN", message:"ليس لديك صلاحية تعديل صلاحيات المستخدمين أو الأدوار." });
+        }
+      }
       try { parsed.audit = AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || []); }
       catch (error) { return send(res, 409, { ok:false, code:error.code || "AUDIT_HISTORY_INVALID", message:error.message, index:error.index }); }
       const currentBookIds = new Set((currentDb.books || []).map(book => String(book.id || "")));

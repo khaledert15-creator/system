@@ -6884,6 +6884,46 @@ async function approveCarrierSettlement(id) {
 }
 document.getElementById("logout-btn").addEventListener("click", logout);
 
+function openPasswordChange() {
+  openModal("تغيير كلمة المرور", "حسابي", `<form id="password-change-form" class="form-grid">
+    <div class="form-field"><label>كلمة المرور الحالية</label><input name="currentPassword" type="password" autocomplete="current-password" required></div>
+    <div class="form-field"><label>كلمة المرور الجديدة</label><input name="newPassword" type="password" autocomplete="new-password" minlength="8" required></div>
+    <div class="form-field"><label>تأكيد كلمة المرور الجديدة</label><input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></div>
+    <p class="muted">8 أحرف على الأقل. سيتم تسجيل خروج حسابك من الأجهزة الأخرى.</p>
+    <div class="form-actions"><button class="btn" type="submit">حفظ كلمة المرور</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+  </form>`);
+}
+
+async function submitPasswordChange(form) {
+  const values = Object.fromEntries(new FormData(form));
+  if (values.newPassword !== values.confirmPassword) return toast("تأكيد كلمة المرور غير مطابق.", "error");
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/account/password", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json; charset=utf-8" }),
+      body: JSON.stringify({ currentPassword: values.currentPassword, newPassword: values.newPassword })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "تعذر تغيير كلمة المرور.");
+    closeModal();
+    await reloadRemoteData();
+    toast("تم تغيير كلمة المرور بنجاح.");
+  } catch (error) {
+    toast(error.message || "تعذر تغيير كلمة المرور.", "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+document.getElementById("change-password-btn").addEventListener("click", openPasswordChange);
+document.addEventListener("submit", event => {
+  if (event.target.id !== "password-change-form") return;
+  event.preventDefault();
+  submitPasswordChange(event.target);
+});
+
 document.getElementById("menu-btn").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
 document.getElementById("notification-btn").addEventListener("click", showNotificationCenter);
 document.getElementById("close-modal").addEventListener("click", closeModal);
