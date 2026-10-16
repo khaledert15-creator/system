@@ -170,6 +170,7 @@ let currentView = ["dashboard", "books", "sales", "onlineOrders", "purchases", "
   ? requestedView
   : "dashboard";
 let partyTab = "customers";
+let partySearchTerm = "";
 let salesScreenMode = "main";
 let salesDateFilter = "today";
 let salesFilterFrom = today();
@@ -4702,6 +4703,39 @@ function renderReturns() {
     </article>`;
 }
 
+function partyRow(item, isCustomers, partyKind) {
+  return `<tr>
+            <td><strong>${esc(item.name)}</strong><br><span class="muted">${item.id}</span></td>
+            <td>${esc(item.phone || "—")}</td>
+            <td>${isCustomers ? badge(item.type, item.type === "جملة" ? "blue" : "") : `${item.terms || 0} يوم`}</td>
+            <td class="money">${money(item.creditLimit)}</td>
+            <td class="money ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</td>
+            ${isCustomers ? `<td>${item.points || 0}</td>` : ""}
+            <td><div class="row-actions"><button class="row-action" data-action="statement" data-id="${item.id}" data-kind="${partyKind}">كشف حساب</button><button class="row-action" data-action="party-voucher" data-id="${item.id}" data-kind="${partyKind}" data-voucher-type="استلام">استلام</button><button class="row-action" data-action="party-voucher" data-id="${item.id}" data-kind="${partyKind}" data-voucher-type="دفع">دفع</button><button class="row-action" data-action="edit-party" data-id="${item.id}" data-kind="${partyKind}">تعديل</button><button class="row-action text-danger" data-action="delete-party" data-id="${item.id}" data-kind="${partyKind}">حذف</button></div></td>
+          </tr>`;
+}
+
+function partyMatchesSearch(item, term) {
+  if (!term) return true;
+  const haystack = normalizeArabicDigits(`${item.name || ""} ${item.phone || ""} ${item.alternativePhone || item.phone2 || ""} ${item.id || ""} ${item.governorate || ""} ${item.city || ""}`).toLowerCase();
+  return haystack.includes(term);
+}
+
+function filterParties() {
+  const input = document.getElementById("party-search");
+  partySearchTerm = input?.value || "";
+  const isCustomers = partyTab === "customers";
+  const list = isCustomers ? data.customers : data.suppliers;
+  const partyKind = isCustomers ? "customer" : "supplier";
+  const term = normalizeArabicDigits(partySearchTerm.trim()).toLowerCase();
+  const matches = list.filter(item => partyMatchesSearch(item, term));
+  const body = document.getElementById("party-table-body");
+  if (body) body.innerHTML = matches.length ? matches.map(item => partyRow(item, isCustomers, partyKind)).join("") : `<tr><td colspan="${isCustomers ? 7 : 6}" class="muted">لا توجد نتائج مطابقة.</td></tr>`;
+  const count = document.getElementById("party-search-count");
+  if (count) count.textContent = term ? `${matches.length} من ${list.length}` : "";
+  scheduleStickyTableScrollbar();
+}
+
 function renderParties() {
   const isCustomers = partyTab === "customers";
   const list = isCustomers ? data.customers : data.suppliers;
@@ -4723,24 +4757,18 @@ function renderParties() {
     <article class="card">
       <div class="metric-strip">
         <div class="mini-metric"><span>عدد ${isCustomers ? "العملاء" : "الموردين"}</span><strong>${list.length}</strong></div>
-        <div class="mini-metric"><span>إجمالي المديونية</span><strong>${money(list.reduce((s, i) => s + i.balance, 0))}</strong></div>
+        <div class="mini-metric"><span>إجمالي المديونية</span><strong>${money(list.reduce((s, i) => s + (Number(i.balance) || 0), 0))}</strong></div>
         <div class="mini-metric"><span>حدود ائتمانية</span><strong>${list.filter(i => i.creditLimit > 0).length}</strong></div>
       </div>
+      <div class="toolbar"><div class="search"><input id="party-search" type="search" placeholder="بحث بالاسم أو الهاتف أو الكود" value="${esc(partySearchTerm)}" autocomplete="off"></div><span class="muted" id="party-search-count"></span></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>الاسم</th><th>الهاتف</th><th>${isCustomers ? "الفئة" : "مدة السداد"}</th><th>الحد الائتماني</th><th>الرصيد</th>${isCustomers ? "<th>النقاط</th>" : ""}<th></th></tr></thead>
-          <tbody>${list.map(item => `<tr>
-            <td><strong>${esc(item.name)}</strong><br><span class="muted">${item.id}</span></td>
-            <td>${esc(item.phone || "—")}</td>
-            <td>${isCustomers ? badge(item.type, item.type === "جملة" ? "blue" : "") : `${item.terms || 0} يوم`}</td>
-            <td class="money">${money(item.creditLimit)}</td>
-            <td class="money ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</td>
-            ${isCustomers ? `<td>${item.points || 0}</td>` : ""}
-            <td><div class="row-actions"><button class="row-action" data-action="statement" data-id="${item.id}" data-kind="${partyKind}">كشف حساب</button><button class="row-action" data-action="party-voucher" data-id="${item.id}" data-kind="${partyKind}" data-voucher-type="استلام">استلام</button><button class="row-action" data-action="party-voucher" data-id="${item.id}" data-kind="${partyKind}" data-voucher-type="دفع">دفع</button><button class="row-action" data-action="edit-party" data-id="${item.id}" data-kind="${partyKind}">تعديل</button><button class="row-action text-danger" data-action="delete-party" data-id="${item.id}" data-kind="${partyKind}">حذف</button></div></td>
-          </tr>`).join("")}</tbody>
+          <tbody id="party-table-body"></tbody>
         </table>
       </div>
     </article>`;
+  filterParties();
 }
 
 function shippingQuickFilterLabel(filter = shippingQuickFilter) {
@@ -7761,6 +7789,7 @@ root.addEventListener("input", event => {
   if (event.target.id === "book-search" || event.target.id === "book-category" || event.target.id === "book-stock-filter") filterBooks();
   if (event.target.id === "shipment-search" || event.target.id === "shipment-status" || event.target.id === "shipment-tracking-filter") filterShipments();
   if (event.target.id === "online-order-search") filterOnlineOrders();
+  if (event.target.id === "party-search") filterParties();
   if (event.target.id === "old-sales-search") updateSalesHistorySearch();
   if (event.target.id === "purchase-history-search") updatePurchaseHistorySearch();
   if (event.target.id === "sale-book-search") {
