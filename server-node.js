@@ -2434,6 +2434,16 @@ function activeTrackableShipments(db, { manual = false } = {}) {
   });
 }
 
+// Raw agent replies (rawResult/parsedResult) are only kept for the latest runs and recent failures; nothing reads
+// them back and the agent keeps full diagnostics files. This keeps trackingRuns, and every database load, small.
+const TRACKING_RUNS_WITH_RAW = 50;
+const FAILED_TRACKING_RUNS_WITH_RAW = 100;
+function slimTrackingRuns(runs = []) {
+  const keep = new Set(runs.slice(-TRACKING_RUNS_WITH_RAW));
+  for (const run of runs.filter(item => item.status && !["success", "postponed"].includes(item.status)).slice(-FAILED_TRACKING_RUNS_WITH_RAW)) keep.add(run);
+  return runs.map(run => keep.has(run) || (run.rawResult === undefined && run.parsedResult === undefined) ? run : (({ rawResult, parsedResult, ...rest }) => rest)(run));
+}
+
 function buildTrackingRunRecord(settings, shipment, startedAt, result) {
   const finishedAt = new Date().toISOString();
   const debug = result.debug || (!result.ok ? shipment.trackingDebug : {}) || {};
@@ -2445,7 +2455,7 @@ function buildTrackingRunRecord(settings, shipment, startedAt, result) {
     shipmentId: shipment.id,
     startedAt,
     finishedAt,
-    status: result.ok ? "success" : (result.manualIntervention ? "manual_review_required" : "failed"),
+    status: result.ok ? "success" : result.transient ? "postponed" : (result.manualIntervention ? "manual_review_required" : "failed"),
     success: Boolean(result.ok),
     failureCode: result.ok ? "" : (result.failureCode || shipment.trackingDiagnostics?.failureCode || ""),
     failureMessage: result.ok ? "" : (result.error || shipment.trackingError || ""),
@@ -2504,8 +2514,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       if (delayMs > 0 && summary.checked < list.length) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     summary.finishedAt = new Date().toISOString();
-    db.trackingRuns = db.trackingRuns || [];
-    db.trackingRuns = db.trackingRuns.slice(-500);
+    db.trackingRuns = slimTrackingRuns((db.trackingRuns || []).slice(-500));
     db.trackingRunBatches = db.trackingRunBatches || [];
     db.trackingRunBatches.push({ id: summary.batchId, ...summary, manual, provider: settings.providerName });
     db.trackingRunBatches = db.trackingRunBatches.slice(-100);
@@ -3738,6 +3747,10 @@ const server = http.createServer(async (req, res) => {
       const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
       if (Array.isArray(currentSource.users) && currentSource.users.length) parsed.users = JSON.parse(JSON.stringify(currentSource.users));
       else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
+      // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.
+      for (const key of ["trackingRuns", "trackingRunBatches"]) {
+        if (Array.isArray(currentSource[key])) parsed[key] = currentSource[key];
+      }
       const permissionScope = (permissions, key) => permissions?.[key] || {};
       for (const [key, action] of [["roles", "customize-role"], ["users", "customize-user"]]) {
         if (!isDeepStrictEqual(permissionScope(currentDb.settings?.permissions, key), permissionScope(parsed.settings?.permissions, key)) && !canManagePermissions(currentDb, user, action)) {

@@ -29,6 +29,7 @@ const rateLimitBuckets = new Map();
 const KEEP_WINDOW = process.env.LOCAL_TRACKING_RPA_KEEP_OPEN !== "false";
 let sharedContext = null;
 let sharedPage = null;
+let windowMinimized = false;
 // The server retries a request with the same X-Request-ID when its connection drops; the retry gets the
 // original result (or waits for it) instead of searching the site again or being refused as busy.
 const recentRequests = new Map();
@@ -71,6 +72,7 @@ async function setWindowState(page, windowState) {
     const session = await page.context().newCDPSession(page);
     const { windowId } = await session.send("Browser.getWindowForTarget");
     await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState } });
+    windowMinimized = windowState === "minimized";
     await session.detach().catch(() => {});
   } catch {}
 }
@@ -199,12 +201,18 @@ async function saveDiagnostics({ page, trackingNumber, shipmentId, failureCode, 
   let html = "";
   try { html = page ? await page.content() : ""; }
   catch (error) { html = `<!-- failed to capture html: ${String(error.message || error).slice(0, 300)} -->`; }
-  try {
-    if (page) await page.screenshot({ path: meta.screenshotPath, fullPage: true });
-    else fs.writeFileSync(meta.screenshotPath, Buffer.alloc(0));
-  } catch (error) {
-    fs.writeFileSync(meta.screenshotPath, Buffer.alloc(0));
-    diagnostics.screenshotCaptureError = error.message || String(error);
+  // Chrome cannot capture a minimized window: page.screenshot waits its full 30 s timeout and then fails, which
+  // slowed every tracking request. While minimized the HTML snapshot is the page record and no image is taken.
+  let screenshotFile = "";
+  if (!page) diagnostics.screenshotSkipped = "no_page";
+  else if (windowMinimized) diagnostics.screenshotSkipped = "window_minimized";
+  else {
+    try {
+      const image = await page.screenshot({ fullPage: true, timeout: 5000 });
+      if (image && image.length > 1024) { fs.writeFileSync(meta.screenshotPath, image); screenshotFile = meta.screenshotFile; }
+    } catch (error) {
+      diagnostics.screenshotCaptureError = error.message || String(error);
+    }
   }
   fs.writeFileSync(meta.htmlPath, html, "utf8");
   const body = {
@@ -216,7 +224,7 @@ async function saveDiagnostics({ page, trackingNumber, shipmentId, failureCode, 
     browserMode: "headed_chrome",
     profilePath: PROFILE_ROOT,
     ...diagnostics,
-    screenshotFile: meta.screenshotFile,
+    screenshotFile,
     htmlFile: meta.htmlFile,
     jsonFile: meta.jsonFile
   };
@@ -354,7 +362,6 @@ async function realTrack(payload) {
         await setWindowState(page, "normal");
         await page.bringToFront().catch(() => {});
         await page.waitForTimeout(Number(process.env.LOCAL_TRACKING_RPA_HUMAN_WAIT_MS || 60000));
-        await setWindowState(page, "minimized");
       }
       title = await page.title().catch(() => title);
       bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => bodyText);
@@ -467,6 +474,8 @@ async function realTrack(payload) {
     return baseResponse({ trackingNumber, failureCode: diagnostics.failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
   } finally {
     if (context && !KEEP_WINDOW) await context.close().catch(() => {});
+    // Diagnostics (including a screenshot of a verification page) are saved first; then the window goes back down.
+    else if (page && !page.isClosed() && !windowMinimized) await setWindowState(page, "minimized");
   }
 }
 
