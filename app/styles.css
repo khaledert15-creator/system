@@ -1953,7 +1953,7 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .packing-customer span,.packing-customer small{color:var(--muted);overflow-wrap:anywhere}
 .packing-progress{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-weight:700;font-size:13px}
 .packing-progress span{font-weight:400;color:var(--muted)}
-.packing-columns,.packing-line{display:grid;grid-template-columns:28px minmax(0,1fr) 64px 112px;gap:12px;align-items:center;padding:10px 14px}
+.packing-columns,.packing-line{display:grid;grid-template-columns:28px 64px minmax(0,1fr) 112px;gap:12px;align-items:center;padding:10px 14px}
 .packing-columns{background:#eef4fb;border-radius:8px;font-size:12px;font-weight:700;color:#526679}
 .packing-lines{max-height:42vh;overflow:auto}
 .packing-line{border:1px solid var(--line);border-radius:10px;cursor:pointer;min-height:72px;background:#fff}
@@ -1964,7 +1964,7 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .packing-qty b{font-size:18px}.packing-price b{font-size:14px;white-space:nowrap;color:#18794e}
 .packing-totals{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:12px;background:#f5f8fc;border-radius:10px}.packing-totals span{display:grid;gap:4px;font-size:12px}.packing-totals b{font-size:15px}
 .packing-footer{border-top:1px solid var(--line);padding-top:12px}.packing-footer>small{color:var(--muted)}.packing-footer .form-actions{margin-top:10px;flex-wrap:wrap}
-@media(max-width:600px){.packing-columns,.packing-line{grid-template-columns:24px minmax(0,1fr) 40px 78px;gap:6px;padding:10px 6px}.packing-columns{font-size:10px}.packing-price b{font-size:12px}.packing-totals{grid-template-columns:repeat(2,minmax(0,1fr))}.packing-footer .btn{width:100%}}
+@media(max-width:600px){.packing-columns,.packing-line{grid-template-columns:24px 52px minmax(0,1fr) 78px;gap:6px;padding:10px 6px}.packing-columns{font-size:10px}.packing-price b{font-size:12px}.packing-totals{grid-template-columns:repeat(2,minmax(0,1fr))}.packing-footer .btn{width:100%}}
 .order-journey{display:grid;gap:10px;margin-top:14px}
 .order-journey>div{display:grid;gap:0}
 .order-journey>div>span{position:relative;display:grid;grid-template-columns:26px minmax(0,1fr);gap:3px 10px;align-items:start;padding:0 0 18px}
@@ -2004,3 +2004,5 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .shortage-lines{display:grid;gap:4px}.shortage-line{white-space:nowrap}
 .order-issue-note{display:grid;gap:2px;margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--danger-soft);color:var(--danger);font-size:12px;line-height:1.5;max-width:320px}.order-issue-note strong{font-weight:800}.order-issue-note span{color:var(--text)}.order-issue-note small{color:var(--muted)}.order-issue-note.full{max-width:none;margin:10px 0;padding:10px 12px;font-size:13px}
 .issue-missing-books{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--canvas)}.issue-missing-books p{margin:0 0 8px;font-size:13px}.issue-missing-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--line)}.issue-missing-line input{width:90px}
+.packing-qty-badge{display:grid;place-items:center;gap:0;min-height:52px;border-radius:12px;background:#eef4fb;color:var(--primary);line-height:1.1}.packing-qty-badge b{font-size:26px;font-weight:800}.packing-qty-badge small{font-size:11px;color:var(--muted)}.packing-qty-badge.multi{background:var(--warning-soft);color:var(--warning);outline:2px solid #f1c27d}
+.packing-line.is-packed .packing-qty-badge{background:#dff3e8;color:#18794e;outline:none}

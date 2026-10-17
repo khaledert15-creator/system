@@ -3818,14 +3818,60 @@ async function openPreparationOrder(id,start=false) {
         <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc(order.phone||"")} · ${esc(order.governorate||"")}</span><small>${esc(order.address||"")}</small></div>
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
-        <div class="packing-progress">تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
-        <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكتاب</span><span>الكمية</span><span>إجمالي الصنف</span></div>
-        <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-qty"><small>الكمية</small><b>${item.qty}</b></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
+        <div class="packing-progress"><b data-packing-progress>تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف · ${checklist.reduce((sum,item)=>sum+Number(item.qty||0),0)} نسخة</b> <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
+        <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكمية</span><span>الكتاب</span><span>إجمالي الصنف</span></div>
+        <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${item.qty} × ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-qty-badge ${Number(item.qty)>1?"multi":""}" aria-hidden="true"><b>${item.qty}</b><small>${Number(item.qty)>1?"نسخ":"نسخة"}</small></span><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
         <div class="packing-totals"><span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(order.paidAmount||0)}</b></span><span>المتبقي <b>${money(Math.max(0,totals.total-Number(order.paidAmount||0)))}</b></span></div>
         ${orderIssueNote(order,{full:true})}
         <div class="packing-footer"><small>عند الإكمال تُصدر الفاتورة تلقائيًا، ويُنتظر كود التتبع دون إنشاء شحنة.</small><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-complete" data-id="${esc(order.id)}" ${checklist.length&&checklist.every(item=>item.done)?"":"disabled"}>إتمام التغليف وإصدار الفاتورة</button><button type="button" class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${esc(order.id)}">تعذر التغليف</button></div></div>
       </div>`);
   }catch(error){toast(error.message,"error");}
+}
+
+// Ticking a book updates the sheet at once; the server is told in the background (latest state wins) without
+// reloading the whole database, so packing stays responsive and a fast second tap is never lost.
+const packingChecklistSync=new Map();
+
+function packingDoneIds(sheet){return [...sheet.querySelectorAll("[data-preparation-book]:checked")].map(input=>input.dataset.preparationBook);}
+
+function refreshPackingSheet(sheet){
+  const boxes=[...sheet.querySelectorAll("[data-preparation-book]")],done=boxes.filter(box=>box.checked).length;
+  const progress=sheet.querySelector("[data-packing-progress]");
+  if(progress)progress.textContent=progress.textContent.replace(/تم تأكيد \d+ من \d+/,`تم تأكيد ${done} من ${boxes.length}`);
+  const complete=sheet.querySelector('[data-action="prepare-order-complete"]');
+  if(complete)complete.disabled=!(boxes.length&&done===boxes.length);
+}
+
+function schedulePackingChecklistSync(orderId,sheet){
+  const state=packingChecklistSync.get(orderId)||{timer:null,running:null,dirty:false};
+  state.dirty=true;state.sheet=sheet;
+  clearTimeout(state.timer);
+  state.timer=setTimeout(()=>flushPackingChecklist(orderId),350);
+  packingChecklistSync.set(orderId,state);
+}
+
+async function flushPackingChecklist(orderId){
+  const state=packingChecklistSync.get(orderId);
+  if(!state)return;
+  clearTimeout(state.timer);
+  if(state.running){await state.running;if(!state.dirty)return;}
+  if(!state.dirty)return;
+  state.dirty=false;
+  const doneBookIds=state.sheet?.isConnected?packingDoneIds(state.sheet):(getOnlineOrder(orderId)?.preparationChecklist||[]).filter(item=>item.done).map(item=>item.bookId);
+  state.running=(async()=>{
+    const response=await fetch(`/api/orders/${encodeURIComponent(orderId)}/prepare/checklist`,{method:"PATCH",credentials:"same-origin",headers:authHeaders({"Content-Type":"application/json"}),body:JSON.stringify({doneBookIds})});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.message||"تعذر حفظ حالة التغليف.");
+    if(result.revision)dbRevision=String(result.revision);
+    const order=getOnlineOrder(orderId);if(order&&result.order)Object.assign(order,{preparationChecklist:result.order.preparationChecklist,updatedAt:result.order.updatedAt});
+  })().catch(async error=>{
+    toast(error.message,"error");
+    await reloadRemoteData().catch(()=>{});
+    if(state.sheet?.isConnected)openPreparationOrder(orderId);
+    throw error;
+  }).finally(()=>{state.running=null;});
+  await state.running;
+  if(state.dirty)return flushPackingChecklist(orderId);
 }
 
 function openPackingWeightModal(id,existingPacked=false){
@@ -7232,7 +7278,7 @@ document.addEventListener("click", event => {
   }
   if(action==="prepare-order-issue")preparationIssueModal(target.dataset.id);
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
-  if(action==="prepare-order-complete"&&!target.disabled)openPackingWeightModal(target.dataset.id);
+  if(action==="prepare-order-complete"&&!target.disabled&&!target.dataset.pending){target.dataset.pending="true";target.disabled=true;flushPackingChecklist(target.dataset.id).then(()=>openPackingWeightModal(target.dataset.id)).catch(()=>{}).finally(()=>{delete target.dataset.pending;});}
   if(action==="packing-weight-back"){if(target.dataset.existing==="true")closeModal();else openPreparationOrder(target.dataset.id);}
   if(action==="pack-order-complete")openPackingWeightModal(target.dataset.id);
 });
@@ -8466,9 +8512,9 @@ modalBody.addEventListener("change", event => {
   if(event.target.matches("[data-preparation-book]")){
     const sheet=event.target.closest("[data-packing-order]"),orderId=sheet?.dataset.packingOrder;
     if(!orderId)return;
-    const controls=[...sheet.querySelectorAll("input,button")],doneBookIds=[...sheet.querySelectorAll("[data-preparation-book]:checked")].map(input=>input.dataset.preparationBook);
-    controls.forEach(control=>{control.disabled=true;});
-    orderWorkflowRequest(`/api/orders/${encodeURIComponent(orderId)}/prepare/checklist`,{method:"PATCH",body:{doneBookIds}}).then(()=>{if(sheet.isConnected)openPreparationOrder(orderId);}).catch(error=>{if(sheet.isConnected)openPreparationOrder(orderId);toast(error.message,"error");});
+    event.target.closest(".packing-line")?.classList.toggle("is-packed",event.target.checked);
+    refreshPackingSheet(sheet);
+    schedulePackingChecklistSync(orderId,sheet);
     return;
   }
   if (event.target.closest("#sale-customer-return-form") && event.target.matches("[name='settlement']")) {
@@ -8702,11 +8748,12 @@ modalBody.addEventListener("submit", async event => {
     catch(error){button.disabled=false;toast(error.message,"error");}return;
   }
   if(form.id==="packing-weight-form"){
+    if(form.dataset.pending==="true")return;
     const button=form.querySelector('button[type="submit"]');let packedWeightGrams;
     try{packedWeightGrams=PostalShipping.normalizeWeightGrams(form.elements.grams.value);}catch(error){return toast(error.message,"error");}
-    button.disabled=true;
+    button.disabled=true;form.dataset.pending="true";
     try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/${form.dataset.existing==="true"?"packed-weight":"prepare/complete"}`,{method:form.dataset.existing==="true"?"PATCH":"POST",body:{packedWeightGrams}});closeModal();onlineOrdersMode="ready-shipping";renderOnlineOrders();toast(form.dataset.existing==="true"?"تم تحديث الوزن؛ أعد تصدير الطلب لشركة الشحن.":"تم التغليف وربط الفاتورة وتسجيل وزن الطرد.");}
-    catch(error){button.disabled=false;toast(error.message,"error");}return;
+    catch(error){button.disabled=false;delete form.dataset.pending;toast(error.message,"error");}return;
   }
   if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
   const formData = Object.fromEntries(new FormData(form).entries());
