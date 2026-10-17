@@ -29,6 +29,21 @@ const rateLimitBuckets = new Map();
 const KEEP_WINDOW = process.env.LOCAL_TRACKING_RPA_KEEP_OPEN !== "false";
 let sharedContext = null;
 let sharedPage = null;
+// The server retries a request with the same X-Request-ID when its connection drops; the retry gets the
+// original result (or waits for it) instead of searching the site again or being refused as busy.
+const recentRequests = new Map();
+const RECENT_REQUEST_TTL_MS = 15 * 60 * 1000;
+
+function trackOnce(requestId, payload) {
+  const now = Date.now();
+  for (const [id, entry] of recentRequests) if (now - entry.at > RECENT_REQUEST_TTL_MS) recentRequests.delete(id);
+  const existing = requestId && recentRequests.get(requestId);
+  if (existing) return { promise: existing.promise, repeated: true };
+  const promise = track(payload);
+  if (requestId) recentRequests.set(requestId, { promise, at: now });
+  promise.catch(() => recentRequests.delete(requestId));
+  return { promise, repeated: false };
+}
 
 // Returns the bundle id of the app the user is working in, so focus can be handed back after Chrome opens.
 function frontmostBundleId() {
@@ -514,8 +529,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/track" && req.method === "POST") {
       const payload = await readBody(req);
-      const result = await track(payload);
-      console.log(JSON.stringify({ event: "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
+      const { promise, repeated } = trackOnce(requestId, payload);
+      const result = await promise;
+      console.log(JSON.stringify({ event: repeated ? "tracking_result_resent" : "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
       return json(res, 200, { ...result, requestId }, requestId);
     }
     return json(res, 404, { status: "not_found", requestId }, requestId);

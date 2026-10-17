@@ -1306,15 +1306,25 @@ function localRpaTimelineToEvents(result = {}, shipment = {}) {
   }).filter(event => event.statusText || event.location);
 }
 
+const LOCAL_RPA_RETRY_ATTEMPTS = 2;
+// Agent answers that only mean "try again shortly"; they are not tracking failures.
+const TRANSIENT_TRACKING_CODES = new Set(["BUSY", "RATE_LIMITED"]);
+const TRANSIENT_RETRY_MINUTES = 15;
+
 async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false } = {}) {
   trackingLog("agent_request", { requestId, shipmentId:shipment.id });
-  const { statusCode, data } = await requestLocalRpa("/track", {
-    shipmentId: shipment.id,
-    trackingNumber,
-    provider: "egypt_post",
-    requestId,
-    force: Boolean(manual)
-  }, TRACKING_RPA_TIMEOUT_MS, requestId);
+  const trackPayload = { shipmentId: shipment.id, trackingNumber, provider: "egypt_post", requestId, force: Boolean(manual) };
+  // The tunnel to the local agent can drop a long request while the agent keeps working. Asking again with the
+  // same request id returns the agent's finished (or in-progress) result instead of starting a new search.
+  let statusCode, data;
+  for (let attempt = 0; ; attempt += 1) {
+    try { ({ statusCode, data } = await requestLocalRpa("/track", trackPayload, TRACKING_RPA_TIMEOUT_MS, requestId)); break; }
+    catch (error) {
+      if (error.code !== "TRACKING_AGENT_OFFLINE" || error.httpStatus || attempt >= LOCAL_RPA_RETRY_ATTEMPTS) throw error;
+      trackingLog("agent_retry", { requestId, shipmentId:shipment.id, message:`attempt ${attempt + 2}` });
+      await new Promise(resolve => setTimeout(resolve, 4000));
+    }
+  }
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
     error.code = data.failureCode || "LOCAL_RPA_FAILED";
@@ -2285,7 +2295,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     }
     trackingLog("history_updated", { requestId, shipmentId:shipment.id, ok:true, eventCount:newHistoryFingerprints.length });
     if (confirmedStatus) {
-      shipment.trackingError = "";
+      shipment.trackingError = ""; shipment.trackingNotice = "";
       shipment.trackingErrorCount = 0;
       shipment.trackingRetryPending = false;
       shipment.trackingFailureCode = "";
@@ -2330,6 +2340,15 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
   } catch (error) {
     trackingLog("tracking_failed", { requestId, shipmentId:shipment.id, ok:false, level:"error", message:error.code || "TRACKING_FAILED" });
     const offline = error.code === "TRACKING_AGENT_OFFLINE" || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT"].includes(error.code);
+    if (TRANSIENT_TRACKING_CODES.has(error.code)) {
+      shipment.trackingError = "";
+      shipment.trackingNotice = error.code === "BUSY" ? "خدمة التتبع كانت مشغولة بشحنة أخرى؛ ستُعاد المحاولة خلال دقائق." : "تم تتبع الشحنة مؤخرًا؛ ستُحدَّث في الدورة القادمة.";
+      shipment.trackingRetryPending = true;
+      shipment.trackingFailureCode = "";
+      shipment.nextTrackingAt = new Date(Date.now() + TRANSIENT_RETRY_MINUTES * 60000).toISOString();
+      shipment.updatedAt = new Date().toISOString();
+      return { ok:false, changed:false, transient:true, error:shipment.trackingNotice, failureCode:error.code, manualIntervention:false, debug:null, diagnostics:null, rawResult:error.payload || null, parsedResult:null };
+    }
     shipment.trackingError = offline ? "خدمة التتبع المحلية غير متصلة حاليًا، وسيتم إعادة المحاولة تلقائيًا." : (error.message || "تعذر تحديث التتبع");
     if (!shipment.trackingError || /تعذر|Tracking request/i.test(shipment.trackingError)) shipment.trackingError = error.message || "تعذر تحديث التتبع";
     shipment.lastTrackingHttpStatus = error.httpStatus || error.statusCode || "";
@@ -2419,7 +2438,7 @@ function buildTrackingRunRecord(settings, shipment, startedAt, result) {
 }
 
 async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds = [], requestId = crypto.randomUUID() } = {}) {
-  if (trackingRunning) return { ok: false, message: "Tracking worker is already running." };
+  if (trackingRunning) return { ok: false, code: "TRACKING_ALREADY_RUNNING", message: "التتبع التلقائي يعمل الآن على الشحنات؛ ستُحدَّث هذه الشحنة ضمن الدورة الحالية، أو أعد المحاولة بعد دقائق." };
   trackingRunning = true;
   const startedAt = new Date().toISOString();
   const batchId = `TRB-${Date.now()}`;
@@ -2452,6 +2471,7 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       db.trackingRuns.push(run);
       persistenceExpectations.push({ shipmentId:shipment.id, runId:run.id, successful:result.ok, fingerprints:result.newHistoryFingerprints || [], lastTrackedAt:shipment.lastTrackedAt || "" });
       if (result.ok) summary.successful += 1;
+      else if (result.transient) summary.postponed = (summary.postponed || 0) + 1;
       else {
         summary.failed += 1;
         if (result.manualIntervention) summary.manualIntervention += 1;
