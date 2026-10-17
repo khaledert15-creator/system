@@ -56,7 +56,7 @@ const ACTION_ROLES = {
   "manage-finance-types": ["مالك","مدير"], "reverse-financial-transaction": ["مالك","مدير"],
   "view-financial-reports": ["مالك","مدير","محاسب"], "approve-settlement-difference": ["مالك","مدير"],
   "add-cash-account": ["مالك","مدير"], "edit-cash-account": ["مالك","مدير"],
-  "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"],
+  "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"], "manage-users": ["مالك"],
   "show-tracking-debug": ["مالك","مدير"],
   "omni-refresh": ["مالك","مدير","كاشير","شحن"], "omni-open": ["مالك","مدير","كاشير","شحن"],
   "omni-claim": ["مالك","مدير","كاشير","شحن"], "omni-send": ["مالك","مدير","كاشير","شحن"],
@@ -102,7 +102,7 @@ const PERMISSION_ACTIONS = [
   ["المالية", [["finance.collection.view","عرض تحصيل الأوردرات"],["finance.collection.create","تسجيل تحصيل لدى شركة الشحن"],["finance.collection.settle","استلام تحصيل في الخزنة"],["finance.collection.reverse","عكس تحصيل أوردر"],["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
   ["مركز خدمة العملاء", [["omni-refresh","تحديث مركز خدمة العملاء"],["omni-open","فتح محادثة"],["omni-claim","استلام محادثة"],["omni-send","إرسال رد"],["omni-simulate-whatsapp","اختبار WhatsApp رقم 2"],["omni-simulate-messenger","اختبار Messenger"]]],
-  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["manage_seasons","إدارة المواسم"],["purge_demo_data","تنظيف البيانات التجريبية"],["factory_reset_system","إعادة ضبط النظام بالكامل"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"]]]
+  ["الموظفون والإعدادات", [["add-employee","إضافة موظف"],["view-employee","عرض موظف"],["edit-employee","تعديل موظف"],["delete-employee","حذف موظف"],["save-settings","حفظ الإعدادات"],["backup-db","نسخة احتياطية"],["restore-db","استعادة نسخة"],["manage_seasons","إدارة المواسم"],["purge_demo_data","تنظيف البيانات التجريبية"],["factory_reset_system","إعادة ضبط النظام بالكامل"],["audit-log","سجل العمليات"],["export-audit-log","تصدير سجل العمليات"],["customize-role","تخصيص دور"],["customize-user","تخصيص مستخدم"],["manage-users","إدارة حسابات المستخدمين"]]]
 ];
 
 const seed = {
@@ -625,6 +625,7 @@ async function login(username, password, quiet = false) {
     sessionStorage.setItem(SESSION_KEY, sessionToken);
     showApplication();
     await initializeDatabase();
+    if ((data.users || []).find(item => item.username === currentUser.username)?.passwordTemporary) openPasswordChange(true);
     return true;
   } catch (error) {
     showLogin(error.message || "تعذر الاتصال بالخادم.");
@@ -6122,6 +6123,7 @@ function renderSettings() {
         <div class="form-field"><label>اختبار الاتصال</label><button class="btn secondary" type="button" data-action="test-tracking-connection">اختبار اتصال</button><small id="tracking-test-result">مصدر بيانات التتبع المستخدم فعليًا: ${esc(data.settings.tracking.providerEndpoint || "Not Available")}</small></div>
       </div>
     </article>
+    ${userAccountsMarkup()}
     <article class="card" style="margin-top:18px"><div class="card-header"><div><h3>صلاحيات المستخدمين</h3><p>تحكم مباشر في صلاحيات كل حساب: الشاشات المسموحة والإجراءات التفصيلية.</p></div><span class="badge blue">${users.length} مستخدم</span></div><div class="table-wrap"><table><thead><tr><th>المستخدم</th><th>الدور</th><th>الصلاحيات الحالية</th><th>الحالة</th><th></th></tr></thead><tbody>
       ${users.map(user => {
         const perms = effectivePermissionsForUser(user);
@@ -7205,8 +7207,9 @@ async function approveCarrierSettlement(id) {
 }
 document.getElementById("logout-btn").addEventListener("click", logout);
 
-function openPasswordChange() {
+function openPasswordChange(temporary = false) {
   openModal("تغيير كلمة المرور", "حسابي", `<form id="password-change-form" class="form-grid">
+    ${temporary ? `<div class="alert-item" style="grid-column:1/-1"><div class="alert-badge red">!</div><div><strong>كلمة المرور الحالية مؤقتة</strong><span>أنشأها مدير النظام. اختر كلمة مرور خاصة بك لا يعرفها غيرك.</span></div></div>` : ""}
     <div class="form-field"><label>كلمة المرور الحالية</label><input name="currentPassword" type="password" autocomplete="current-password" required></div>
     <div class="form-field"><label>كلمة المرور الجديدة</label><input name="newPassword" type="password" autocomplete="new-password" minlength="8" required></div>
     <div class="form-field"><label>تأكيد كلمة المرور الجديدة</label><input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></div>
@@ -7238,7 +7241,7 @@ async function submitPasswordChange(form) {
   }
 }
 
-document.getElementById("change-password-btn").addEventListener("click", openPasswordChange);
+document.getElementById("change-password-btn").addEventListener("click", () => openPasswordChange());
 document.addEventListener("submit", event => {
   if (event.target.id !== "password-change-form") return;
   event.preventDefault();
@@ -7783,6 +7786,11 @@ root.addEventListener("click", async event => {
   if (action === "audit-log") showAuditLog();
   if (action === "customize-role") customizeRole(target.dataset.role);
   if (action === "customize-user") customizeUser(target.dataset.username);
+  if (["add-user-account","edit-user-account","toggle-user-account","reset-user-password"].includes(action) && !canManageUserAccounts()) return toast("ليس لديك صلاحية لتنفيذ هذا الإجراء.", "error");
+  if (action === "add-user-account") userAccountModal();
+  if (action === "edit-user-account") userAccountModal(target.dataset.username);
+  if (action === "toggle-user-account") toggleUserAccount(target.dataset.username);
+  if (action === "reset-user-password") resetUserPasswordModal(target.dataset.username);
   if (action === "open-report") openReport(Number(target.dataset.report));
   if (action === "open-product-movement") {
     productMovementState = { ...productMovementState, bookId:target.dataset.id || "", page:1 };
@@ -8249,6 +8257,11 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  if (appAction?.dataset.action === "generate-user-password") {
+    const input = appAction.closest("form")?.elements.password;
+    if (input) input.value = generateTemporaryPassword();
+    return;
+  }
   if (appAction?.dataset.action === "register-sale-customer") {
     if (requireAction("register-sale-customer")) addPartyModal("customer", null, { returnToSale: true });
     return;
@@ -8781,6 +8794,7 @@ modalBody.addEventListener("submit", async event => {
     catch(error){button.disabled=false;delete form.dataset.pending;toast(error.message,"error");}return;
   }
   if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
+  if (form.id === "user-account-form" || form.id === "user-password-reset-form") { await submitUserAccountForm(form); return; }
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){
     const payment=(data.orderPayments||[]).find(item=>item.id===formData.paymentId),originalCashMovement=(data.cash||[]).find(item=>item.paymentId===formData.paymentId||item.receiptId===formData.paymentId);
@@ -12635,6 +12649,110 @@ function customizeUser(username) {
     perms,
     inherited: Boolean(data.settings?.permissions?.users?.[user.username])
   }));
+}
+
+function accountRoleOf(user) {
+  return ({ owner:"مالك", manager:"مدير", accountant:"محاسب", cashier:"كاشير", warehouse:"مخزن", shipping:"شحن" })[user?.role] || user?.role || "";
+}
+
+function isOwnerAccountRecord(user) {
+  return user?.username === "owner" || accountRoleOf(user) === "مالك";
+}
+
+// Mirrors canManageUsers() on the server: owners always, others only with the manage-users action.
+function canManageUserAccounts(user = currentUser) {
+  return Boolean(user) && (isOwnerAccountRecord(user) || effectivePermissionsForUser(user).actions.includes("manage-users"));
+}
+
+function userAccountsMarkup() {
+  if (!canManageUserAccounts()) return "";
+  const accounts = (data.users || []).slice().sort((a, b) => Number(b.active !== false) - Number(a.active !== false));
+  return `<article class="card" style="margin-top:18px"><div class="card-header"><div><h3>حسابات المستخدمين</h3><p>حساب دخول مستقل لكل موظف. الدور يحدد ما يراه الموظف، ويمكن تخصيص صلاحياته من الجدول التالي.</p></div><button class="btn" type="button" data-action="add-user-account">+ إضافة مستخدم</button></div><div class="table-wrap"><table><thead><tr><th>المستخدم</th><th>الدور</th><th>الحالة</th><th>آخر تغيير لكلمة المرور</th><th></th></tr></thead><tbody>
+    ${accounts.map(user => {
+      const active = user.active !== false, self = user.username === currentUser?.username, role = accountRoleOf(user);
+      const passwordNote = user.passwordTemporary ? badge("مؤقتة — لم يغيّرها الموظف بعد", "warning") : user.passwordChangedAt ? "" : badge("يُنصح بتغييرها", "warning");
+      const actions = isOwnerAccountRecord(user) && !isOwnerAccountRecord(currentUser) ? `<span class="muted">يديره المالك</span>` : [
+        `<button class="row-action" type="button" data-action="edit-user-account" data-username="${esc(user.username)}">تعديل</button>`,
+        self ? "" : `<button class="row-action" type="button" data-action="reset-user-password" data-username="${esc(user.username)}">كلمة مرور جديدة</button>`,
+        self ? "" : `<button class="row-action" type="button" data-action="toggle-user-account" data-username="${esc(user.username)}">${active ? "إيقاف" : "تفعيل"}</button>`
+      ].join(" ");
+      return `<tr><td><strong>${esc(user.name || user.username)}</strong>${self ? ` ${badge("أنت", "blue")}` : ""}<br><span class="muted" dir="ltr">${esc(user.username)}</span></td><td>${badge(ROLE_DEFINITIONS.find(item => item.id === role)?.label || role, "blue")}</td><td>${badge(active ? "نشط" : "موقوف", active ? "" : "gray")}</td><td>${user.passwordChangedAt ? esc(arabicDateTimeLabel(user.passwordChangedAt)) : `<span class="muted">لم تتغير منذ إعداد النظام</span>`}${passwordNote ? `<br>${passwordNote}` : ""}</td><td>${actions}</td></tr>`;
+    }).join("")}
+  </tbody></table></div></article>`;
+}
+
+function generateTemporaryPassword() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  return [...crypto.getRandomValues(new Uint8Array(10))].map(value => alphabet[value % alphabet.length]).join("");
+}
+
+function temporaryPasswordField(label) {
+  return `<div class="form-field"><label class="required">${esc(label)}</label><div style="display:flex;gap:6px"><input name="password" dir="ltr" minlength="8" required autocomplete="off" spellcheck="false" style="flex:1"><button class="btn ghost small" type="button" data-action="generate-user-password">توليد</button></div><small>8 أحرف على الأقل. سلّمها للموظف، وسيُطلب منه تغييرها عند أول دخول.</small></div>`;
+}
+
+function userAccountModal(username = "") {
+  const user = username ? (data.users || []).find(item => item.username === username) : null;
+  if (username && !user) return toast("لم يتم العثور على المستخدم.", "error");
+  const role = user ? accountRoleOf(user) : "كاشير";
+  const roles = ROLE_DEFINITIONS.filter(item => item.id !== "مالك" || isOwnerAccountRecord(currentUser));
+  const builtInOwner = user?.username === "owner";
+  openModal(user ? `تعديل المستخدم: ${user.name || user.username}` : "إضافة مستخدم جديد", "حسابات المستخدمين", `<form id="user-account-form" data-username="${esc(user?.username || "")}"><div class="form-grid">
+    <div class="form-field"><label class="required">اسم الموظف</label><input name="name" value="${esc(user?.name || "")}" maxlength="60" required></div>
+    <div class="form-field"><label class="required">اسم الدخول</label>${user ? `<input value="${esc(user.username)}" dir="ltr" disabled><small>لا يمكن تغيير اسم الدخول.</small>` : `<input name="username" dir="ltr" maxlength="32" required autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ahmed"><small>حروف إنجليزية وأرقام، ويمكن استخدام . _ -</small>`}</div>
+    <div class="form-field"><label class="required">الدور</label><select name="role" ${builtInOwner ? "disabled" : ""}>${roles.map(item => `<option value="${esc(item.id)}" ${item.id === role ? "selected" : ""}>${esc(item.label)} — ${esc(item.scope)}</option>`).join("")}</select>${builtInOwner ? "<small>حساب owner الأساسي يبقى بدور المالك.</small>" : ""}</div>
+    ${user ? "" : temporaryPasswordField("كلمة المرور المبدئية")}
+  </div><div class="form-actions"><button class="btn" type="submit">${user ? "حفظ التعديلات" : "إضافة المستخدم"}</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+}
+
+function resetUserPasswordModal(username) {
+  const user = (data.users || []).find(item => item.username === username);
+  if (!user) return toast("لم يتم العثور على المستخدم.", "error");
+  openModal(`كلمة مرور جديدة: ${user.name || user.username}`, "حسابات المستخدمين", `<form id="user-password-reset-form" data-username="${esc(user.username)}"><div class="form-grid">${temporaryPasswordField("كلمة المرور الجديدة")}</div><p class="muted">سيتم تسجيل خروج ${esc(user.name || user.username)} من كل الأجهزة فورًا.</p><div class="form-actions"><button class="btn" type="submit">حفظ كلمة المرور</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+}
+
+async function userAccountRequest(path, method, body) {
+  if (!serverConnected) throw new Error("إدارة المستخدمين تحتاج الاتصال بالخادم.");
+  await saveQueue;
+  const response = await fetch(path, { method, headers:authHeaders({ "Content-Type":"application/json; charset=utf-8" }), body:JSON.stringify(body) });
+  const result = await response.json().catch(() => ({}));
+  if (response.status === 401) throw orderAuthenticationError(401, result);
+  if (!response.ok) throw new Error(result.message || "تعذر حفظ بيانات المستخدم.");
+  await reloadRemoteData();
+  if (result.user?.username === currentUser?.username) {
+    currentUser = normalizeSessionUser({ ...currentUser, name:result.user.name, role:result.user.role });
+    showApplication();
+  }
+  return result;
+}
+
+async function submitUserAccountForm(form) {
+  const values = Object.fromEntries(new FormData(form));
+  const username = form.dataset.username, path = `/api/admin/users/${encodeURIComponent(username)}`;
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    if (form.id === "user-password-reset-form") await userAccountRequest(`${path}/password`, "POST", { password:values.password });
+    else if (username) await userAccountRequest(path, "PATCH", { name:values.name, ...(values.role ? { role:values.role } : {}) });
+    else await userAccountRequest("/api/admin/users", "POST", values);
+    closeModal();
+    render();
+    toast(form.id === "user-password-reset-form" ? "تم حفظ كلمة المرور الجديدة وتسجيل خروج الموظف." : username ? "تم حفظ بيانات المستخدم." : `تمت إضافة المستخدم ${values.username.trim().toLowerCase()}. سلّمه اسم الدخول وكلمة المرور.`);
+  } catch (error) {
+    if (button) button.disabled = false;
+    toast(error.message, "error");
+  }
+}
+
+async function toggleUserAccount(username) {
+  const user = (data.users || []).find(item => item.username === username);
+  if (!user) return toast("لم يتم العثور على المستخدم.", "error");
+  const enable = user.active === false, label = user.name || user.username;
+  if (!confirm(enable ? `تفعيل حساب «${label}»؟ سيتمكن من الدخول مرة أخرى.` : `إيقاف حساب «${label}»؟ سيتم تسجيل خروجه فورًا ولن يستطيع الدخول حتى تعيد تفعيله.`)) return;
+  try {
+    await userAccountRequest(`/api/admin/users/${encodeURIComponent(username)}`, "PATCH", { active:enable });
+    render();
+    toast(enable ? "تم تفعيل الحساب." : "تم إيقاف الحساب وتسجيل خروجه.");
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function createBackup() {

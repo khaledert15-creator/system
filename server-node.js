@@ -182,6 +182,103 @@ function canManagePermissions(db, user, action) {
   return role === "مدير";
 }
 
+const USER_ROLES = ["مالك", "مدير", "محاسب", "كاشير", "مخزن", "شحن"];
+const USER_ROLE_ALIASES = { owner:"مالك", manager:"مدير", accountant:"محاسب", cashier:"كاشير", warehouse:"مخزن", shipping:"شحن" };
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+
+function accountRole(user) {
+  return USER_ROLE_ALIASES[user?.role] || user?.role || "";
+}
+
+function isOwnerAccount(user) {
+  return user?.username === "owner" || accountRole(user) === "مالك";
+}
+
+function canManageUsers(db, user) {
+  if (isOwnerAccount(user)) return true;
+  const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[accountRole(user)]?.actions;
+  return Array.isArray(configured) && configured.includes("manage-users");
+}
+
+function userAdminError(status, code, message) {
+  return Object.assign(new Error(message), { status, code });
+}
+
+function validateAccountFields({ name, role }, actor) {
+  if (name !== undefined && (name.length < 2 || name.length > 60)) throw userAdminError(400, "NAME_INVALID", "اكتب اسم الموظف (من 2 إلى 60 حرفًا).");
+  if (role !== undefined && !USER_ROLES.includes(role)) throw userAdminError(400, "ROLE_INVALID", "اختر دورًا من الأدوار المتاحة.");
+  if (role === "مالك" && !isOwnerAccount(actor)) throw userAdminError(403, "OWNER_ONLY", "منح دور المالك متاح للمالك فقط.");
+}
+
+function endUserSessions(username) {
+  for (const [token, session] of sessions) if (session.user?.username === username) sessions.delete(token);
+}
+
+// Create, edit, disable/enable or reset the password of an account. Users are written only here: PUT /api/db ignores the client's users.
+function changeUserAccount(actor, operation, username, payload) {
+  if (!fs.existsSync(DB_PATH)) throw userAdminError(404, "DATABASE_NOT_FOUND", "قاعدة البيانات غير موجودة.");
+  const db = readDb();
+  if (!canManageUsers(db, actor)) throw userAdminError(403, "PERMISSION_DENIED", "إدارة المستخدمين متاحة للمالك أو لمن لديه صلاحية «إدارة حسابات المستخدمين».");
+  if (!Array.isArray(db.users) || !db.users.length) db.users = JSON.parse(JSON.stringify(defaultUsers));
+  const now = new Date().toISOString();
+  let target, operationType, action, notes, endSessions = false;
+  if (operation === "create") {
+    const login = String(payload.username || "").trim().toLowerCase();
+    const name = String(payload.name || "").trim(), role = String(payload.role || ""), password = String(payload.password || "");
+    if (!USERNAME_PATTERN.test(login)) throw userAdminError(400, "USERNAME_INVALID", "اسم الدخول من 3 إلى 32 حرفًا: حروف إنجليزية صغيرة وأرقام، ويمكن استخدام . _ -");
+    if (db.users.some(item => String(item.username || "").toLowerCase() === login)) throw userAdminError(409, "USERNAME_TAKEN", "اسم الدخول مستخدم بالفعل لحساب آخر.");
+    validateAccountFields({ name, role }, actor);
+    if (password.length < PASSWORD_MIN_LENGTH) throw userAdminError(400, "PASSWORD_TOO_SHORT", `كلمة المرور يجب ألا تقل عن ${PASSWORD_MIN_LENGTH} أحرف.`);
+    const nextNumber = Math.max(0, ...db.users.map(item => Number(/^U(\d+)$/.exec(item.id || "")?.[1] || 0))) + 1;
+    target = { id:`U${String(nextNumber).padStart(3, "0")}`, username:login, name, role, active:true, ...hashPassword(password), passwordChangedAt:now, passwordTemporary:true, createdAt:now, createdBy:actor.username };
+    db.users.push(target);
+    [operationType, action, notes] = ["USER_CREATED", "إضافة مستخدم", `${login} · ${name} · ${role}`];
+  } else {
+    target = db.users.find(item => item.username === username);
+    if (!target) throw userAdminError(404, "USER_NOT_FOUND", "المستخدم غير موجود.");
+    if (isOwnerAccount(target) && !isOwnerAccount(actor)) throw userAdminError(403, "OWNER_ONLY", "حسابات المالك يديرها المالك فقط.");
+    if (operation === "reset-password") {
+      const password = String(payload.password || "");
+      if (target.username === actor.username) throw userAdminError(409, "USE_ACCOUNT_PASSWORD", "لتغيير كلمة مرورك استخدم زر 🔑 أعلى الشاشة.");
+      if (password.length < PASSWORD_MIN_LENGTH) throw userAdminError(400, "PASSWORD_TOO_SHORT", `كلمة المرور يجب ألا تقل عن ${PASSWORD_MIN_LENGTH} أحرف.`);
+      Object.assign(target, hashPassword(password), { passwordChangedAt:now, passwordTemporary:true, passwordResetBy:actor.username });
+      [operationType, action, notes, endSessions] = ["USER_PASSWORD_RESET", "إعادة تعيين كلمة مرور مستخدم", target.username, true];
+      const throttleSuffix = `|${target.username.toLowerCase()}`;
+      for (const key of loginFailures.keys()) if (key.endsWith(throttleSuffix)) loginFailures.delete(key);
+    } else {
+      const wasActive = target.active !== false, previousRole = accountRole(target);
+      const name = payload.name === undefined ? target.name : String(payload.name).trim();
+      const role = payload.role === undefined ? previousRole : String(payload.role);
+      const active = payload.active === undefined ? wasActive : payload.active;
+      if (typeof active !== "boolean") throw userAdminError(400, "ACTIVE_INVALID", "حالة الحساب غير صحيحة.");
+      validateAccountFields({ name:payload.name === undefined ? undefined : name, role:payload.role === undefined ? undefined : role }, actor);
+      if (!active && target.username === actor.username) throw userAdminError(409, "CANNOT_DISABLE_SELF", "لا يمكنك إيقاف حسابك الحالي.");
+      if (target.username === "owner" && role !== "مالك") throw userAdminError(409, "BUILTIN_OWNER_ROLE", "حساب owner الأساسي يبقى بدور المالك. يمكنك إيقافه بعد إضافة حساب مالك آخر.");
+      const otherActiveOwners = db.users.filter(item => item !== target && item.active !== false && isOwnerAccount(item));
+      if (isOwnerAccount(target) && wasActive && (!active || role !== "مالك") && !otherActiveOwners.length) throw userAdminError(409, "LAST_OWNER", "لا يمكن إيقاف آخر مالك نشط أو تغيير دوره. أضف حساب مالك آخر أولًا.");
+      const changes = [
+        name !== target.name && `الاسم: ${target.name || "—"} ← ${name}`,
+        role !== previousRole && `الدور: ${previousRole} ← ${role}`,
+        active !== wasActive && (active ? "تفعيل الحساب" : "إيقاف الحساب")
+      ].filter(Boolean);
+      if (!changes.length) return { user:withoutCredentials({ users:[target] }).users[0], unchanged:true, revision:dbRevision() };
+      Object.assign(target, { name, role, active, updatedAt:now, updatedBy:actor.username });
+      if (!active) Object.assign(target, { disabledAt:now, disabledBy:actor.username });
+      else { delete target.disabledAt; delete target.disabledBy; }
+      operationType = active === wasActive ? "USER_UPDATED" : active ? "USER_ENABLED" : "USER_DISABLED";
+      action = { USER_UPDATED:"تعديل مستخدم", USER_ENABLED:"تفعيل مستخدم", USER_DISABLED:"إيقاف مستخدم" }[operationType];
+      notes = `${target.username} · ${changes.join(" · ")}`;
+      endSessions = !active;
+    }
+  }
+  db.audit = Array.isArray(db.audit) ? db.audit : [];
+  AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, action, operationType, moduleName:"المستخدمون", entity:"المستخدمون", entityId:target.id || target.username, documentNo:target.username, user:actor.name || actor.username, username:actor.username, role:actor.role, notes });
+  const saved = writeDb(db, { operationType, performedBy:actor.username });
+  if (endSessions) endUserSessions(target.username);
+  else for (const session of sessions.values()) if (session.user?.username === target.username) Object.assign(session.user, { name:target.name, role:target.role });
+  return { user:withoutCredentials({ users:[target] }).users[0], revision:String(saved.revision) };
+}
+
 function canPartyAction(db, user, action) {
   const role = ({ owner:"مالك", manager:"مدير" }[user?.role] || user?.role || "");
   const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
@@ -2750,7 +2847,8 @@ const server = http.createServer(async (req, res) => {
       const payload = JSON.parse(await readBody(req) || "{}");
       const throttleKey = loginThrottleKey(req, payload.username);
       if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات دخول خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
-      const user = users().find(item => item.username === payload.username && item.active !== false);
+      const loginName = String(payload.username || "").trim().toLowerCase();
+      const user = users().find(item => String(item.username || "").toLowerCase() === loginName && item.active !== false);
       if (!user || !verifyPassword(user, payload.password)) {
         recordLoginFailure(throttleKey);
         return send(res, 401, { ok:false, message:"Invalid username or password." });
@@ -2793,6 +2891,7 @@ const server = http.createServer(async (req, res) => {
       }
       loginFailures.delete(throttleKey);
       Object.assign(record, hashPassword(newPassword), { passwordChangedAt:new Date().toISOString() });
+      delete record.passwordTemporary;
       const now = new Date().toISOString();
       next.audit = Array.isArray(next.audit) ? next.audit : [];
       AuditIds.appendAuditRecord(next.audit,{ date:now, createdAt:now, action:"PASSWORD_CHANGED", operationType:"PASSWORD_CHANGED", entity:"المستخدمون", entityId:record.id || user.username, user:user.name || user.username, username:user.username, role:user.role });
@@ -2800,6 +2899,31 @@ const server = http.createServer(async (req, res) => {
       const currentToken = req.headers["x-session-token"];
       for (const [token, session] of sessions) if (token !== currentToken && session.user?.username === user.username) sessions.delete(token);
       return send(res, 200, { ok:true, revision:String(saved.revision) }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
+    }
+
+    if (route === "/api/admin/users" && req.method === "GET") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageUsers(fs.existsSync(DB_PATH) ? readDb() : {}, user)) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"إدارة المستخدمين متاحة للمالك أو لمن لديه صلاحية «إدارة حسابات المستخدمين»." });
+      return send(res, 200, { ok:true, users:withoutCredentials({ users:users() }).users, roles:USER_ROLES });
+    }
+
+    const userAccountMatch = route.match(/^\/api\/admin\/users\/([^/]+)$/);
+    const userPasswordMatch = route.match(/^\/api\/admin\/users\/([^/]+)\/password$/);
+    const userOperation = route === "/api/admin/users" && req.method === "POST" ? "create"
+      : userAccountMatch && req.method === "PATCH" ? "update"
+      : userPasswordMatch && req.method === "POST" ? "reset-password" : "";
+    if (userOperation) {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      try {
+        const result = changeUserAccount(user, userOperation, (userAccountMatch || userPasswordMatch)?.[1] || "", payload);
+        return send(res, userOperation === "create" ? 201 : 200, { ok:true, ...result }, "application/json; charset=utf-8", { "X-DB-Revision":result.revision });
+      } catch (error) {
+        if (!error.status) throw error;
+        return send(res, error.status, { ok:false, code:error.code, message:error.message });
+      }
     }
 
     if (route === "/api/admin/season-data" && req.method === "GET") {
