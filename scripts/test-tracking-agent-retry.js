@@ -8,22 +8,34 @@ const success=trackingNumber=>({success:true,trackingNumber,confirmedStatus:'in_
 (async()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'tracking-retry-'));let child,agent;
  try {
-  // Fake local agent: drops the first /track connection, then answers; ENO2... always answers BUSY.
-  const seen=[];let dropped=false;
+  // Fake local agent with async jobs. ENO1: one poll is dropped mid-way. ENO2: answers BUSY. ENO3: legacy agent
+  // that ignores ?async=1 and answers with the full result.
+  const seen=[],jobs=new Map();let droppedPoll=false;
   const agentPort=await freePort();
   agent=http.createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{
-    if(req.url==='/health'){res.end(JSON.stringify({status:'ok',browserAvailable:true}));return;}
-    const payload=JSON.parse(body||'{}');seen.push({id:req.headers['x-request-id'],tn:payload.trackingNumber});
-    if(payload.trackingNumber==='ENO22222222EG'){res.end(JSON.stringify({success:false,trackingNumber:payload.trackingNumber,failureCode:'BUSY',failureMessage:'خدمة RPA مشغولة الآن'}));return;}
-    if(!dropped){dropped=true;req.socket.destroy();return;}
-    res.end(JSON.stringify(success(payload.trackingNumber)));
+    const url=new URL(req.url,'http://agent');
+    if(url.pathname==='/health'){res.end(JSON.stringify({status:'ok',browserAvailable:true}));return;}
+    if(req.method==='POST'&&url.pathname==='/track'){
+      const payload=JSON.parse(body||'{}'),id=req.headers['x-request-id'];seen.push({id,tn:payload.trackingNumber,kind:'start'});
+      const result=payload.trackingNumber==='ENO22222222EG'?{success:false,trackingNumber:payload.trackingNumber,failureCode:'BUSY',failureMessage:'خدمة RPA مشغولة الآن'}:success(payload.trackingNumber);
+      if(payload.trackingNumber==='ENO33333333EG'||url.searchParams.get('async')!=='1'){res.end(JSON.stringify(result));return;}
+      if(!jobs.has(id))jobs.set(id,{readyAt:Date.now()+1500,result});
+      res.statusCode=202;res.end(JSON.stringify({status:'accepted',requestId:id}));return;
+    }
+    const m=url.pathname.match(/^\/track\/(.+)$/);
+    if(req.method==='GET'&&m){const job=jobs.get(m[1]);seen.push({id:m[1],kind:'poll'});
+      if(!job){res.statusCode=404;res.end('{}');return;}
+      if(!droppedPoll&&job.result.trackingNumber==='ENO11111111EG'){droppedPoll=true;req.socket.destroy();return;}
+      if(Date.now()<job.readyAt){res.statusCode=202;res.end(JSON.stringify({status:'pending'}));return;}
+      res.end(JSON.stringify(job.result));return;}
+    res.statusCode=404;res.end('{}');
   });}).listen(agentPort,'127.0.0.1');
   fs.cpSync('app',path.join(temp,'app'),{recursive:true});fs.copyFileSync('server-node.js',path.join(temp,'server-node.js'));fs.mkdirSync(path.join(temp,'data'));
   const salt='s',password='test-password',dbFile=path.join(temp,'data/database.json'),now=new Date().toISOString();
   const shipment=(id,trackingNumber)=>({id,trackingNumber,tracking:trackingNumber,carrier:'البريد المصري',company:'البريد المصري',carrierCode:'EGYPT_POST',trackingEnabled:true,status:'تم الشحن',shippingStatus:'shipped',normalizedStatus:'shipped',createdAt:now,updatedAt:now});
   fs.writeFileSync(dbFile,JSON.stringify({version:4,meta:{dataRevision:0},
    users:[{id:'U1',username:'owner',name:'Owner',role:'مالك',active:true,salt,passwordHash:crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex')}],
-   settings:{tracking:{enabled:false}},audit:[],books:[],sales:[],shipments:[shipment('SH-1','ENO11111111EG'),shipment('SH-2','ENO22222222EG')]}));
+   settings:{tracking:{enabled:false}},audit:[],books:[],sales:[],shipments:[shipment('SH-1','ENO11111111EG'),shipment('SH-2','ENO22222222EG'),shipment('SH-3','ENO33333333EG')]}));
   const port=await freePort(),base=`http://127.0.0.1:${port}`;
   child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'true',TRACKING_RPA_BASE_URL:`http://127.0.0.1:${agentPort}`,TRACKING_RPA_SHARED_SECRET:'secret',TRACKING_RPA_TIMEOUT_MS:'20000'},stdio:'ignore'});
   await until(async()=>{try{return (await fetch(base+'/api/health')).ok;}catch{return false;}});
@@ -32,11 +44,12 @@ const success=trackingNumber=>({success:true,trackingNumber,confirmedStatus:'in_
   const ship=id=>JSON.parse(fs.readFileSync(dbFile,'utf8')).shipments.find(s=>s.id===id);
 
   let r=await track('SH-1');const body=await r.text();
-  const one=ship('SH-1');
-  assert.equal(seen.filter(x=>x.tn==='ENO11111111EG').length,2,'dropped request is asked again');
-  assert.equal(new Set(seen.filter(x=>x.tn==='ENO11111111EG').map(x=>x.id)).size,1,'the retry reuses the same request id');
+  const one=ship('SH-1'),starts=seen.filter(x=>x.kind==='start'),polls=seen.filter(x=>x.kind==='poll');
+  assert.equal(starts.length,1,'the search is started once');
+  assert(polls.length>=2,'the result is fetched with short polling requests');
+  assert.equal(new Set(polls.map(x=>x.id)).size,1,'polls use the same request id');
   assert.equal(one.trackingError||'','',body);assert.equal(one.normalizedStatus,'in_transit');
-  console.log('PASS a dropped agent connection is retried with the same request id and the result is kept');
+  console.log('PASS the job is started then polled; a dropped poll is retried and the result is kept');
 
   r=await track('SH-2');await r.text();
   const two=ship('SH-2');
@@ -46,6 +59,10 @@ const success=trackingNumber=>({success:true,trackingNumber,confirmedStatus:'in_
   assert(minutes>5&&minutes<=16,`busy retries within minutes, got ${minutes}`);
   assert.match(two.trackingNotice,/مشغولة/);
   console.log('PASS a busy agent postpones the shipment by minutes, not hours, without an error');
+
+  r=await track('SH-3');await r.text();
+  assert.equal(ship('SH-3').normalizedStatus,'in_transit');
+  console.log('PASS an agent without async support still works');
  } finally {
   if(child)child.kill();if(agent)agent.close();
   fs.rmSync(temp,{recursive:true,force:true});

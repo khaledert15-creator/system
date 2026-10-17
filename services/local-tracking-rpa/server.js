@@ -38,11 +38,16 @@ function trackOnce(requestId, payload) {
   const now = Date.now();
   for (const [id, entry] of recentRequests) if (now - entry.at > RECENT_REQUEST_TTL_MS) recentRequests.delete(id);
   const existing = requestId && recentRequests.get(requestId);
-  if (existing) return { promise: existing.promise, repeated: true };
-  const promise = track(payload);
-  if (requestId) recentRequests.set(requestId, { promise, at: now });
-  promise.catch(() => recentRequests.delete(requestId));
-  return { promise, repeated: false };
+  if (existing) return { promise: existing.promise, repeated: true, entry: existing };
+  const entry = { at: now, result: null };
+  entry.promise = track(payload).then(result => {
+    entry.result = result;
+    console.log(JSON.stringify({ event: "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
+    return result;
+  });
+  if (requestId) recentRequests.set(requestId, entry);
+  entry.promise.catch(() => recentRequests.delete(requestId));
+  return { promise: entry.promise, repeated: false, entry };
 }
 
 // Returns the bundle id of the app the user is working in, so focus can be handed back after Chrome opens.
@@ -516,7 +521,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   try {
     if (!authorized(req)) return json(res, 401, { status: "unauthorized", requestId }, requestId);
-    if (!withinRateLimit(req)) return json(res, 429, { status: "rate_limited", requestId }, requestId);
+    const isJobPoll = req.method === "GET" && /^\/track\/[A-Za-z0-9-]{8,128}$/.test(url.pathname);
+    if (!isJobPoll && !withinRateLimit(req)) return json(res, 429, { status: "rate_limited", requestId }, requestId);
     if (url.pathname === "/health" && req.method === "GET") {
       return json(res, 200, {
         status: "ok",
@@ -530,9 +536,19 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/track" && req.method === "POST") {
       const payload = await readBody(req);
       const { promise, repeated } = trackOnce(requestId, payload);
+      // Async mode: answer at once and let the caller poll GET /track/<requestId>, so no request stays open
+      // long enough for the tunnel to drop it.
+      if (url.searchParams.get("async") === "1") return json(res, 202, { status: "accepted", requestId }, requestId);
       const result = await promise;
-      console.log(JSON.stringify({ event: repeated ? "tracking_result_resent" : "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
+      if (repeated) console.log(JSON.stringify({ event: "tracking_result_resent", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
       return json(res, 200, { ...result, requestId }, requestId);
+    }
+    const jobMatch = url.pathname.match(/^\/track\/([A-Za-z0-9-]{8,128})$/);
+    if (jobMatch && req.method === "GET") {
+      const entry = recentRequests.get(jobMatch[1]);
+      if (!entry) return json(res, 404, { status: "unknown_request", requestId: jobMatch[1] }, requestId);
+      if (!entry.result) return json(res, 202, { status: "pending", requestId: jobMatch[1] }, requestId);
+      return json(res, 200, { ...entry.result, requestId: jobMatch[1] }, requestId);
     }
     return json(res, 404, { status: "not_found", requestId }, requestId);
   } catch (error) {

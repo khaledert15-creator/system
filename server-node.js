@@ -1307,6 +1307,37 @@ function localRpaTimelineToEvents(result = {}, shipment = {}) {
 }
 
 const LOCAL_RPA_RETRY_ATTEMPTS = 2;
+const LOCAL_RPA_POLL_MS = 4000;
+
+// The tunnel to the local agent drops requests that stay open without data for more than a few seconds, while a
+// search takes 30-60 seconds. So the job is started with a short request and its result is fetched by polling.
+// Agents without async support answer the start request with the full result, which is used directly.
+async function requestLocalRpaTrack(payload, requestId, shipmentId) {
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const withRetry = async (pathname, body, timeoutMs) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await requestLocalRpa(pathname, body, timeoutMs, requestId); }
+      catch (error) {
+        if (error.code !== "TRACKING_AGENT_OFFLINE" || error.httpStatus || attempt >= LOCAL_RPA_RETRY_ATTEMPTS) throw error;
+        trackingLog("agent_retry", { requestId, shipmentId, message:`${pathname} attempt ${attempt + 2}` });
+        await sleep(LOCAL_RPA_POLL_MS);
+      }
+    }
+  };
+  const started = await withRetry("/track?async=1", payload, 20000);
+  if (started.statusCode !== 202) return started;
+  const deadline = Date.now() + TRACKING_RPA_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(LOCAL_RPA_POLL_MS);
+    const polled = await withRetry(`/track/${encodeURIComponent(requestId)}`, null, 15000);
+    if (polled.statusCode === 202) continue;
+    if (polled.statusCode === 404) { const error = new Error("خدمة التتبع المحلية أعيد تشغيلها أثناء التتبع؛ ستتم إعادة المحاولة تلقائيًا."); error.code = "TRACKING_AGENT_OFFLINE"; throw error; }
+    return polled;
+  }
+  const error = new Error("انتهت مهلة انتظار نتيجة التتبع من الخدمة المحلية.");
+  error.code = "TRACKING_AGENT_OFFLINE";
+  throw error;
+}
 // Agent answers that only mean "try again shortly"; they are not tracking failures.
 const TRANSIENT_TRACKING_CODES = new Set(["BUSY", "RATE_LIMITED"]);
 const TRANSIENT_RETRY_MINUTES = 15;
@@ -1314,17 +1345,7 @@ const TRANSIENT_RETRY_MINUTES = 15;
 async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false } = {}) {
   trackingLog("agent_request", { requestId, shipmentId:shipment.id });
   const trackPayload = { shipmentId: shipment.id, trackingNumber, provider: "egypt_post", requestId, force: Boolean(manual) };
-  // The tunnel to the local agent can drop a long request while the agent keeps working. Asking again with the
-  // same request id returns the agent's finished (or in-progress) result instead of starting a new search.
-  let statusCode, data;
-  for (let attempt = 0; ; attempt += 1) {
-    try { ({ statusCode, data } = await requestLocalRpa("/track", trackPayload, TRACKING_RPA_TIMEOUT_MS, requestId)); break; }
-    catch (error) {
-      if (error.code !== "TRACKING_AGENT_OFFLINE" || error.httpStatus || attempt >= LOCAL_RPA_RETRY_ATTEMPTS) throw error;
-      trackingLog("agent_retry", { requestId, shipmentId:shipment.id, message:`attempt ${attempt + 2}` });
-      await new Promise(resolve => setTimeout(resolve, 4000));
-    }
-  }
+  const { statusCode, data } = await requestLocalRpaTrack(trackPayload, requestId, shipment.id);
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
     error.code = data.failureCode || "LOCAL_RPA_FAILED";
