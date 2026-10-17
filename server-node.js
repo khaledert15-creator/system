@@ -420,8 +420,13 @@ function reservedStock(book={}) {
   return Math.max(0,Number(book.reservedStock||0));
 }
 
+// Copies reported missing during preparation stay out of sale until a stock count clears countHoldQty.
+function countHoldStock(book={}) {
+  return Math.max(0,Number(book.countHoldQty||0));
+}
+
 function availableStock(book={}) {
-  return Math.max(0,Number(book.stock||0)-reservedStock(book));
+  return Math.max(0,Number(book.stock||0)-reservedStock(book)-countHoldStock(book));
 }
 
 function aggregateOrderLines(lines=[]) {
@@ -537,6 +542,7 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
   }
 }
 
+const PREPARATION_SHORTAGE_REASONS=["صنف غير متوفر","الكمية غير كافية"];
 const PRE_HANDOVER_SHIPMENT_STATUSES=new Set(["","shipped","created","pending","label_created"]);
 
 function activeOrderShipment(db,order) {
@@ -3023,6 +3029,7 @@ const server = http.createServer(async (req, res) => {
       reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});
       if(JSON.stringify(order.backorderLines||[])===before)return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:"لا توجد كمية جديدة متاحة لهذا الطلب.",order});
       const stage=applyBackorderStage(order,user);
+      if(stage==="awaiting_preparation"&&order.preparationIssue){order.preparationIssueHistory=[...(order.preparationIssueHistory||[]),{...order.preparationIssue,resolvedAt:new Date().toISOString(),resolvedBy:user.name||user.username}];delete order.preparationIssue;}
       appendOrderAudit(db,user,order,stage==="awaiting_preparation"?"اكتمال الحجز المسبق والانتقال للتجهيز":"حجز جزء من الكتب الناقصة",(order.backorderLines||[]).map(line=>`${line.bookId}×${line.qty}`).join("، ")||"كل الكتب متوفرة");
       writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_BACKORDER_ALLOCATED",performedBy:user.username});
       return send(res,200,{ok:true,order,stage,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
@@ -3204,9 +3211,36 @@ const server = http.createServer(async (req, res) => {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل مشكلة تجهيز."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
-      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString();Object.assign(order,{status:"يحتاج مراجعة",workflowStage:"needs_review",preparationIssue:{reason:String(payload.reason||"مشكلة في الطلب"),notes:String(payload.notes||""),createdAt:now,createdBy:user.name||user.username},updatedAt:now});
-      db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-review-${order.id}`,title:"طلب يحتاج مراجعة أثناء التجهيز",description:`${order.id} — ${order.preparationIssue.reason}`,source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
-      appendOrderAudit(db,user,order,"تسجيل مشكلة أثناء التجهيز",order.preparationIssue.reason);writeDb(db);return send(res,200,{ok:true,order,revision:dbRevision()});
+      if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,message:"الطلب غير متاح لتسجيل مشكلة تجهيز."});
+      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString(),reason=String(payload.reason||"مشكلة في الطلب"),notes=String(payload.notes||"").trim();
+      const ordered=aggregateOrderLines(order.lines||[]),missing=new Map();
+      for(const row of Array.isArray(payload.missingLines)?payload.missingLines:[]){
+        const qty=Math.trunc(Number(row?.qty||0));if(!(qty>0))continue;
+        const bookId=String(row.bookId||"");if(!ordered.has(bookId))return send(res,400,{ok:false,message:"أحد الكتب الناقصة ليس في الطلب."});
+        missing.set(bookId,Math.min(ordered.get(bookId),(missing.get(bookId)||0)+qty));
+      }
+      const shortage=PREPARATION_SHORTAGE_REASONS.includes(reason);
+      if(shortage&&!missing.size)return send(res,400,{ok:false,code:"MISSING_BOOKS_REQUIRED",message:"حدد الكتاب الناقص والكمية الناقصة منه."});
+      const missingLines=[...missing].map(([bookId,qty])=>({bookId,qty}));
+      order.preparationIssue={reason,notes,missingLines,createdAt:now,createdBy:user.name||user.username};
+      if(shortage){
+        // Release the missing copies from this order and keep them out of sale until someone counts the shelf.
+        const reduced=(order.lines||[]).map(line=>({...line,qty:Math.max(0,Number(line.qty||0)-(missing.get(line.bookId)||0))})).filter(line=>line.qty>0);
+        reserveOrderInventory(db,order,user,reduced);
+        for(const {bookId,qty} of missingLines){
+          const book=(db.books||[]).find(item=>item.id===bookId);
+          if(!book)continue;
+          book.countHoldQty=countHoldStock(book)+qty;
+          book.countHoldReports=[...(book.countHoldReports||[]),{orderId:order.id,qty,reason,notes,reportedAt:now,reportedBy:user.name||user.username}];
+          book.updatedAt=now;
+        }
+        order.backorderLines=missingLines;
+        Object.assign(order,{preparingBy:null,preparingByUsername:null,preparationChecklist:[]});
+        applyBackorderStage(order,user,now);
+      }else Object.assign(order,{status:"يحتاج مراجعة",workflowStage:"needs_review",updatedAt:now});
+      const bookNames=missingLines.map(line=>`${(db.books||[]).find(item=>item.id===line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");
+      db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-review-${order.id}`,title:shortage?"طلب انتقل للحجز المسبق أثناء التجهيز":"طلب يحتاج مراجعة أثناء التجهيز",description:[`${order.id} — ${reason}`,bookNames,notes].filter(Boolean).join(" · "),source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
+      appendOrderAudit(db,user,order,shortage?"نقص كتب أثناء التجهيز ونقل للحجز المسبق":"تسجيل مشكلة أثناء التجهيز",[reason,bookNames,notes].filter(Boolean).join(" · "));writeDb(db);return send(res,200,{ok:true,order,stage:order.workflowStage,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/complete") && req.method === "POST") {

@@ -31,7 +31,7 @@ function ensurePackingInvoice(db, order, user, nextId) {
     const book = (db.books || []).find(row => row.id === bookId && !row.deletedAt);
     if (!book) fail("أحد أصناف الطلب غير موجود.");
     const ownReserved = order.inventoryReservation?.status === "active" ? (order.inventoryReservation.lines || []).filter(row => row.bookId === bookId).reduce((sum,row) => sum + Number(row.qty || 0), 0) : 0;
-    if (qty > Number(book.stock || 0) - Number(book.reservedStock || 0) + ownReserved) fail(`المخزون المتاح لا يكفي للصنف «${book.name}».`);
+    if (qty > Number(book.stock || 0) - Number(book.reservedStock || 0) - Math.max(0, Number(book.countHoldQty || 0)) + ownReserved) fail(`المخزون المتاح لا يكفي للصنف «${book.name}».`);
     const batches = (db.inventoryBatches || []).filter(row => !row.deletedAt && (row.productId || row.bookId) === bookId && Number(row.remainingQty) > 0);
     const count = batches.reduce((sum,row) => sum + Number(row.remainingQty), 0);
     const average = count ? batches.reduce((sum,row) => sum + Number(row.remainingQty) * Number(row.unitCost || 0), 0) / count : 0;
