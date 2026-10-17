@@ -3601,7 +3601,27 @@ function renderPreparationQueue() {
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>يحتاج تغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
 
-async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision}={}) {
+// After an order action the whole database used to be reloaded before the screen could respond. With
+// reload:"background" the returned order/customer is merged at once and the full reload runs afterwards.
+// dbRevision is only advanced by that reload, so a save made in between is rejected as stale, never applied
+// over newer server data.
+function mergeWorkflowResult(result={}) {
+  const upsert=(key,row)=>{if(!row?.id)return;data[key]=data[key]||[];const index=data[key].findIndex(item=>item.id===row.id);if(index>=0)data[key][index]={...data[key][index],...row};else data[key].push(row);};
+  upsert("onlineOrders",result.order);
+  upsert("customers",result.customer);
+}
+
+let backgroundReloadTimer=null;
+function scheduleBackgroundReload() {
+  clearTimeout(backgroundReloadTimer);
+  backgroundReloadTimer=setTimeout(()=>{
+    reloadRemoteData().then(()=>{
+      if(currentView==="onlineOrders"&&onlineOrdersMode!=="quick"&&modal.hidden)renderOnlineOrders();
+    }).catch(()=>{});
+  },250);
+}
+
+async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision,reload=true}={}) {
   const requestKey=`${method}:${path}`;
   if(orderWorkflowRequests.has(requestKey))return orderWorkflowRequests.get(requestKey);
   const request=(async()=>{
@@ -3610,8 +3630,13 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
     const authError=orderAuthenticationError(response.status,result);
     if(authError)throw authError;
     if(!response.ok)throw Object.assign(new Error(result.message||"تعذر تنفيذ الإجراء."),{code:result.code||"ORDER_ACTION_FAILED",status:response.status});
-    dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;
-    await reloadRemoteData();
+    if(reload===true){
+      dbRevision=response.headers.get("X-DB-Revision")||result.revision||dbRevision;
+      await reloadRemoteData();
+    }else{
+      mergeWorkflowResult(result);
+      if(reload==="background")scheduleBackgroundReload();
+    }
     return result;
   })();
   orderWorkflowRequests.set(requestKey,request);
@@ -3623,11 +3648,11 @@ function quickOrderPayload() {
   return {...persistedDraft,shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
-async function saveQuickOrderDraft({silent=false}={}) {
+async function saveQuickOrderDraft({silent=false,reload=true}={}) {
   const payload=quickOrderPayload();
   const result=quickOrderDraft.savedOrderId
-    ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:payload})
-    : await orderWorkflowRequest("/api/orders/quick",{body:payload});
+    ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:payload,reload})
+    : await orderWorkflowRequest("/api/orders/quick",{body:payload,reload});
   quickOrderDraft.savedOrderId=result.order.id;
   if(!silent)toast(result.order.confirmedAt?`تم حفظ تعديلات الطلب ${result.order.id}.`:`تم حفظ المسودة ${result.order.id}.`);
   return result.order;
@@ -3642,8 +3667,8 @@ async function saveAndConfirmQuickOrder() {
   }
   quickOrderConfirmPending=true;
   try{
-    await saveQuickOrderDraft({silent:true});
-    const confirmResult=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/confirm`);
+    await saveQuickOrderDraft({silent:true,reload:false});
+    const confirmResult=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/confirm`,{reload:"background"});
     const confirmedId=quickOrderDraft.savedOrderId;
     quickOrderDraft=emptyQuickOrderDraft();
     quickOrderSearch="";
@@ -3803,7 +3828,7 @@ function openCancellationSettlement(kind,id,financial){
 async function refreshCancellationSettlement(kind,id){const result=await orderWorkflowRequest(cancellationEndpoint(kind,id,"cancellation/preview"),{method:"GET"});openCancellationSettlement(kind,id,result.financial);}
 
 async function confirmExistingOnlineOrder(id) {
-  try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/confirm`);onlineOrdersMode="orders";renderOnlineOrders();toast(`تم تأكيد ${id} وحجز الكمية المتاحة.`);}
+  try{const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/confirm`,{reload:"background"});onlineOrdersMode="orders";renderOnlineOrders();toast(result?.order?.workflowStage==="awaiting_stock"?`تم تأكيد ${id} كحجز مسبق حتى توفر الكتب.`:`تم تأكيد ${id} وحجز الكمية المتاحة.`);}
   catch(error){toast(error.message,"error");}
 }
 
