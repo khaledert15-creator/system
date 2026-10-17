@@ -26,6 +26,61 @@ let lastAttempt = null;
 let lastSuccessfulRunAt = null;
 let lastFailureAt = null;
 const rateLimitBuckets = new Map();
+const KEEP_WINDOW = process.env.LOCAL_TRACKING_RPA_KEEP_OPEN !== "false";
+let sharedContext = null;
+let sharedPage = null;
+
+// Returns the bundle id of the app the user is working in, so focus can be handed back after Chrome opens.
+function frontmostBundleId() {
+  if (process.platform !== "darwin") return "";
+  try {
+    const { execFileSync } = require("child_process");
+    const asn = execFileSync("lsappinfo", ["front"], { encoding: "utf8", timeout: 2000 }).trim();
+    const info = execFileSync("lsappinfo", ["info", "-only", "bundleid", asn], { encoding: "utf8", timeout: 2000 });
+    return info.match(/"CFBundleIdentifier"="([^"]+)"/)?.[1] || "";
+  } catch { return ""; }
+}
+
+function restoreFocus(bundleId) {
+  if (!bundleId || /chrome|chromium/i.test(bundleId)) return;
+  try { require("child_process").execFile("open", ["-b", bundleId], { timeout: 3000 }, () => {}); } catch {}
+}
+
+async function setWindowState(page, windowState) {
+  try {
+    const session = await page.context().newCDPSession(page);
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState } });
+    await session.detach().catch(() => {});
+  } catch {}
+}
+
+// One headed Chrome window is opened once, minimized, and reused for every shipment.
+async function trackingPage(playwright) {
+  if (sharedContext) {
+    if (sharedPage && !sharedPage.isClosed()) return sharedPage;
+    try { sharedPage = sharedContext.pages().find(item => !item.isClosed()) || await sharedContext.newPage(); return sharedPage; }
+    catch { sharedContext = null; sharedPage = null; }
+  }
+  const previousApp = frontmostBundleId();
+  const options = {
+    headless: false,
+    chromiumSandbox: true,
+    viewport: { width: 1366, height: 900 },
+    slowMo: Number(process.env.LOCAL_TRACKING_RPA_SLOWMO || 250),
+    timeout: DEFAULT_TIMEOUT_MS,
+    // A minimized window must keep loading and running scripts at normal speed.
+    args: ["--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"]
+  };
+  const context = await playwright.chromium.launchPersistentContext(PROFILE_ROOT, { ...options, channel: process.env.LOCAL_TRACKING_RPA_CHANNEL || "chrome" })
+    .catch(() => playwright.chromium.launchPersistentContext(PROFILE_ROOT, options));
+  context.on("close", () => { if (sharedContext === context) { sharedContext = null; sharedPage = null; } });
+  const page = context.pages()[0] || await context.newPage();
+  await setWindowState(page, "minimized");
+  restoreFocus(previousApp);
+  if (KEEP_WINDOW) { sharedContext = context; sharedPage = page; }
+  return page;
+}
 
 function json(res, status, body, requestId = "") {
   const payload = Buffer.from(JSON.stringify(body, null, 2), "utf8");
@@ -264,19 +319,8 @@ async function realTrack(payload) {
   let page;
   try {
     ensureDirs();
-    context = await playwright.chromium.launchPersistentContext(PROFILE_ROOT, {
-      headless: false,
-      channel: process.env.LOCAL_TRACKING_RPA_CHANNEL || "chrome",
-      viewport: { width: 1366, height: 900 },
-      slowMo: Number(process.env.LOCAL_TRACKING_RPA_SLOWMO || 250),
-      timeout: DEFAULT_TIMEOUT_MS
-    }).catch(() => playwright.chromium.launchPersistentContext(PROFILE_ROOT, {
-      headless: false,
-      viewport: { width: 1366, height: 900 },
-      slowMo: Number(process.env.LOCAL_TRACKING_RPA_SLOWMO || 250),
-      timeout: DEFAULT_TIMEOUT_MS
-    }));
-    page = context.pages()[0] || await context.newPage();
+    page = await trackingPage(playwright);
+    context = page.context();
     await page.goto(EGYPT_POST_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
     await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(2500);
@@ -285,7 +329,13 @@ async function realTrack(payload) {
     let bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => "");
     let failureCode = classifyBlock(bodyText, title, page.url());
     if (failureCode) {
-      if (failureCode === "HUMAN_VERIFICATION_REQUIRED") await page.waitForTimeout(Number(process.env.LOCAL_TRACKING_RPA_HUMAN_WAIT_MS || 60000));
+      if (failureCode === "HUMAN_VERIFICATION_REQUIRED") {
+        // Show the window only when a person has to complete the site's check.
+        await setWindowState(page, "normal");
+        await page.bringToFront().catch(() => {});
+        await page.waitForTimeout(Number(process.env.LOCAL_TRACKING_RPA_HUMAN_WAIT_MS || 60000));
+        await setWindowState(page, "minimized");
+      }
       title = await page.title().catch(() => title);
       bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => bodyText);
       failureCode = classifyBlock(bodyText, title, page.url()) || failureCode;
@@ -396,7 +446,7 @@ async function realTrack(payload) {
     });
     return baseResponse({ trackingNumber, failureCode: diagnostics.failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
   } finally {
-    if (context && process.env.LOCAL_TRACKING_RPA_KEEP_OPEN !== "true") await context.close().catch(() => {});
+    if (context && !KEEP_WINDOW) await context.close().catch(() => {});
   }
 }
 
@@ -473,6 +523,11 @@ const server = http.createServer(async (req, res) => {
     lastFailureAt = new Date().toISOString();
     return json(res, error.statusCode || 500, { ...baseResponse({ failureCode: "UNKNOWN_ERROR", failureMessage: error.message || String(error), manualReviewRequired: true }), requestId }, requestId);
   }
+});
+
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, async () => {
+  if (sharedContext) await sharedContext.close().catch(() => {});
+  process.exit(0);
 });
 
 server.listen(PORT, HOST, () => {
