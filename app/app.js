@@ -859,11 +859,14 @@ async function refreshDashboardShipments({ silent = false } = {}) {
   if (currentView === "dashboard") updateDashboardShipmentCard(true);
   try {
     if (serverConnected) {
-      const response = await fetch(`/api/db-shipments-refresh=${Date.now()}`, { headers: authHeaders(), cache: "no-store" });
+      // Ask only for the data revision; when it changed, the live-update path reloads safely (it waits for unsaved edits).
+      const response = await fetch("/api/live-revision", { headers: authHeaders(), cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const remote = normalizeData(await response.json());
-      data.shipments = remote.shipments;
-      cacheDataLocally();
+      const { revision } = await response.json();
+      if (String(revision) !== String(dbRevision)) {
+        liveTargetRevision = revision;
+        await applyLiveRevision();
+      }
     }
     lastShipmentRefresh = new Date();
     if (currentView === "dashboard") updateDashboardShipmentCard(false);
