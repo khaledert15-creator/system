@@ -2177,6 +2177,30 @@ function createInventoryBatch({ productId, purchaseInvoiceId, supplierId, qty, u
   return batch;
 }
 
+// Puts returned copies back into the batches they were sold from (latest first), so batch totals keep
+// matching book.stock. Anything that cannot be traced goes into a new batch at the known cost.
+function returnToInventoryBatches(book, quantity, saleId) {
+  let left = Number(quantity || 0);
+  if (!book || !(left > 0)) return;
+  const sale = (data.sales || []).find(item => item.id === saleId);
+  const allocations = (sale?.lines || []).filter(line => (line.bookId || line.productId) === book.id).flatMap(line => line.batchAllocations || []).slice().reverse();
+  let lastCost = null;
+  for (const allocation of allocations) {
+    if (!(left > 0)) break;
+    const batch = (data.inventoryBatches || []).find(item => !item.deletedAt && (item.batchId === allocation.batchId || item.id === allocation.batchId));
+    if (allocation.unitCost !== undefined && allocation.unitCost !== null) lastCost = Number(allocation.unitCost);
+    if (!batch) continue;
+    const restorable = Math.max(0, Number(allocation.qty || 0) - Number(allocation.returnedQty || 0));
+    const take = Math.min(left, restorable);
+    if (!(take > 0)) continue;
+    batch.remainingQty = Number(batch.remainingQty || 0) + take;
+    batch.updatedAt = new Date().toISOString();
+    allocation.returnedQty = Number(allocation.returnedQty || 0) + take;
+    left -= take;
+  }
+  if (left > 0) createInventoryBatch({ productId:book.id, purchaseInvoiceId:saleId || "", supplierId:book.supplierId || "", qty:left, unitCost:lastCost ?? (productInventorySummary(book.id).averageInventoryCost || latestApprovedPurchaseCost(book.id) || 0), coverPrice:productCoverPrice(book), source:"sales_return" });
+}
+
 function allocateInventoryFIFO(productId, quantity) {
   return PurchaseInventoryIntegrity.consumeBatchesFIFO(data, productId, quantity);
 }
@@ -3474,10 +3498,10 @@ function renderQuickOrderScreen() {
     <div class="quick-order-side" aria-label="الشحن والدفع وحفظ الطلب">
     <article class="card quick-payment-card"><div class="card-header"><div><h3>3. الدفع والتحصيل</h3><p>سجّل فقط المبلغ الذي استلمته المكتبة فعليًا.</p></div><span id="quick-order-payment-status" class="badge ${payment.paymentStatus==="partially_paid"?"warning":payment.paymentStatus==="unpaid"?"gray":""}">${quickPaymentStatusLabel(payment.paymentStatus)}</span></div>
       <div class="form-grid two"><div class="form-field"><label>طريقة الدفع</label><select id="quick-order-payment-plan"><option value="cash_on_delivery" ${quickOrderDraft.paymentPlan==="cash_on_delivery"?"selected":""}>الدفع عند الاستلام</option><option value="advance_cod" ${quickOrderDraft.paymentPlan==="advance_cod"?"selected":""}>دفع مقدم + الباقي عند الاستلام</option><option value="prepaid_full" ${quickOrderDraft.paymentPlan==="prepaid_full"?"selected":""}>مدفوع بالكامل مسبقًا</option><option value="cash" ${quickOrderDraft.paymentPlan==="cash"?"selected":""}>كاش</option></select></div>
-      <div class="form-field"><label>المبلغ المستلم فعليًا ${helpIcon("اكتب فقط المبلغ الذي استلمته المكتبة بالفعل من العميل.","شرح المبلغ المدفوع")}</label><input id="quick-order-paid-amount" inputmode="decimal" value="${quickOrderDraft.paidAmount||0}" ${canReceive?"":"disabled"}></div>
-      <label class="choice-card"><input id="quick-order-payment-confirmed" type="checkbox" ${quickOrderDraft.paymentConfirmed?"checked":""} ${canReceive?"":"disabled"}><span><strong>تأكيد استلام المال</strong><small>ينشئ إيصالًا وحركة خزنة واحدة فقط. اختيار الطريقة وحده لا يكفي.</small></span></label>
-      <div class="form-field"><label>الخزنة / الحساب</label><select id="quick-order-cash-account" ${canReceive&&quickOrderDraft.paymentConfirmed?"":"disabled"}><option value="">اختر الحساب</option>${(data.cashAccounts||[]).filter(x=>x.active!==false).map(x=>`<option value="${x.id}" ${quickOrderDraft.cashAccountId===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>
-      ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>يوجد مبلغ مدفوع على الطلب</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.</span></div>`:""}
+      <div class="form-field"><label>المبلغ المستلم فعليًا ${helpIcon("اكتب فقط المبلغ الذي استلمته المكتبة بالفعل من العميل.","شرح المبلغ المدفوع")}</label><input id="quick-order-paid-amount" inputmode="decimal" value="${quickOrderDraft.paidAmount||0}" ${canReceive&&!quickOrderDraft.paymentLocked?"":"disabled"}></div>
+      <label class="choice-card"><input id="quick-order-payment-confirmed" type="checkbox" ${quickOrderDraft.paymentConfirmed?"checked":""} ${canReceive&&!quickOrderDraft.paymentLocked?"":"disabled"}><span><strong>تأكيد استلام المال</strong><small>ينشئ إيصالًا وحركة خزنة واحدة فقط. اختيار الطريقة وحده لا يكفي.</small></span></label>
+      <div class="form-field"><label>الخزنة / الحساب</label><select id="quick-order-cash-account" ${canReceive&&quickOrderDraft.paymentConfirmed&&!quickOrderDraft.paymentLocked?"":"disabled"}><option value="">اختر الحساب</option>${(data.cashAccounts||[]).filter(x=>x.active!==false).map(x=>`<option value="${x.id}" ${quickOrderDraft.cashAccountId===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>
+      ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>${quickOrderDraft.paymentLocked?`تم استلام ${money(quickOrderDraft.paidAmount)} على «${esc((data.cashAccounts||[]).find(x=>x.id===quickOrderDraft.cashAccountId)?.name||"الخزنة")}»`:"يوجد مبلغ مدفوع على الطلب"}</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.${quickOrderDraft.paymentLocked?" لتعديل الدفعة نفسها استخدم التحصيل أو العكس المالي.":""}</span></div>`:""}
     </article>
     <aside class="quick-order-summary card"><div class="card-header"><div><h3>مراجعة وحفظ الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ الرسالة.":"مراجعة سريعة ثم الحفظ أو التأكيد."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
@@ -3576,7 +3600,7 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
 }
 
 function quickOrderPayload() {
-  const {shippingManual,...persistedDraft}=quickOrderDraft;
+  const {shippingManual,paymentLocked,...persistedDraft}=quickOrderDraft;
   return {...persistedDraft,shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
@@ -3611,12 +3635,19 @@ async function saveAndConfirmQuickOrder() {
   finally{quickOrderConfirmPending=false;}
 }
 
+// Orders do not always store shippingFeeOverride, so a fee that differs from the governorate rate counts as manual.
+function quickOrderShippingWasManual(order) {
+  if(order.shippingFeeOverride)return true;
+  return Math.abs(orderShippingFee(order)-quickOrderShipping(order.governorate||"",order.lines||[]))>.009;
+}
+
 function editQuickOrder(id) {
   const order=getOnlineOrder(id);if(!order)return;
   if(order.saleId)return toast("تم إنشاء فاتورة لهذا الطلب؛ استخدم إجراءات التصحيح الحالية.","error");
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:Boolean(order.shippingFeeOverride),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:Number(order.paidAmount||0),paymentConfirmed:false,cashAccountId:"",orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  const recordedPayments=(data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed"&&item.confirmed!==false),recordedPaid=recordedPayments.reduce((sum,item)=>sum+Number(item.amount||0),0);
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
 }
 
@@ -11793,6 +11824,7 @@ function processSaleReturn(id, { account, date, reason }) {
     const book = getBook(line.bookId);
     if (book) {
       const before = book.stock;
+      returnToInventoryBatches(book, Number(line.qty || 0), sale.id);
       book.stock += Number(line.qty || 0);
       recordStockMovement(book, "مرتجع مبيعات", Number(line.qty || 0), before, book.stock, sale.id, reason || "مرتجع فاتورة");
     }
@@ -11857,6 +11889,7 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
     const book = getBook(line.bookId);
     if (book) {
       const before = book.stock;
+      returnToInventoryBatches(book, Number(line.qty || 0), line.documentId);
       book.stock += Number(line.qty || 0);
       recordStockMovement(book, "مرتجع مبيعات", Number(line.qty || 0), before, book.stock, returnInvoiceId, `مرتجع من فاتورة ${line.documentId}`);
     }
@@ -12180,9 +12213,16 @@ function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumbe
 function receivePurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase || purchase.status !== "بانتظار الفحص") return toast("المستند غير متاح للاستلام.", "error");
+  const qtyTotal = (purchase.lines || []).reduce((sum, line) => sum + Number(line.qty || 0), 0);
   (purchase.lines || []).forEach(line => {
     const book = getBook(line.bookId);
-    if (book) { const before = book.stock; book.stock += Number(line.qty || 0); recordStockMovement(book, purchase.type === "أمانة" ? "استلام أمانة" : "استلام شراء", Number(line.qty || 0), before, book.stock, purchase.id, "اعتماد الفحص والاستلام"); }
+    if (!book) return;
+    const qty = Number(line.qty || 0), shippingUnit = qtyTotal ? Number(purchase.shipping || 0) / qtyTotal : 0;
+    const netCostUnit = qty > 0 && Number.isFinite(Number(line.finalNet)) ? Number(line.finalNet) / qty : Number(line.cost || 0);
+    // Stock and its FIFO batch are created together, as when a purchase is received immediately.
+    if (!line.batchId) line.batchId = createInventoryBatch({ productId:book.id, purchaseInvoiceId:purchase.id, supplierId:purchase.supplierId, qty, unitCost:purchase.type === "شراء" ? netCostUnit + shippingUnit : netCostUnit, coverPrice:Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0), purchaseDate:purchase.date }).batchId;
+    const before = book.stock; book.stock += qty;
+    recordStockMovement(book, purchase.type === "أمانة" ? "استلام أمانة" : "استلام شراء", qty, before, book.stock, purchase.id, "اعتماد الفحص والاستلام");
   });
   purchase.status = "مستلمة";
   purchase.receivedAt = new Date().toISOString();
