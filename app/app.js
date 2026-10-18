@@ -387,9 +387,34 @@ function cacheDataLocally(value = data) {
   }
 }
 
+// The build this page was loaded with (the server writes it into index.html). Saves carry it so the server can
+// refuse saves from a page that is still running an older version.
+const CLIENT_BUILD = document.querySelector('meta[name="app-build"]')?.content || "";
+
 function authHeaders(extra = {}) {
-  return { ...extra, ...(sessionToken ? { "X-Session-Token": sessionToken } : {}) };
+  return { ...extra, ...(sessionToken ? { "X-Session-Token": sessionToken } : {}), ...(CLIENT_BUILD ? { "X-App-Build": CLIENT_BUILD } : {}) };
 }
+
+function showAppUpdateBanner() {
+  if (document.getElementById("app-update-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "app-update-banner";
+  banner.setAttribute("role", "alert");
+  banner.innerHTML = `<span><strong>يوجد تحديث جديد للنظام.</strong> حدّث الصفحة لاستخدام آخر نسخة؛ الحفظ متوقف في هذه النسخة القديمة.</span><button type="button" class="btn">تحديث الآن</button>`;
+  banner.querySelector("button").addEventListener("click", () => location.reload());
+  document.body.append(banner);
+}
+
+async function checkForNewBuild() {
+  if (!CLIENT_BUILD) return;
+  try {
+    const response = await fetch("/api/version", { cache:"no-store" });
+    const { build } = await response.json();
+    if (build && build !== CLIENT_BUILD) showAppUpdateBanner();
+  } catch {}
+}
+setInterval(checkForNewBuild, 2 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForNewBuild(); });
 
 const orderWorkflowRequests = new Map();
 
@@ -1741,6 +1766,7 @@ async function persistToServer() {
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));
     if (response.status === 409) saveConflict = true;
+    if (result.code === "CLIENT_OUTDATED") showAppUpdateBanner();
     if (response.status === 401) showLogin("انتهت جلسة الدخول. سجّل الدخول مرة أخرى.");
     const error = new Error(result.message || "تعذر حفظ قاعدة البيانات.");
     error.code = result.code || (response.status === 409 ? "DATABASE_WRITE_BLOCKED_STALE_REVISION" : "DATABASE_WRITE_FAILED");
@@ -1798,6 +1824,7 @@ function restoreClientData(snapshot) {
 }
 
 function saveFailureMessage() {
+  if (lastSaveError?.code === "CLIENT_OUTDATED") return lastSaveError.message;
   if (lastSaveError?.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return "تم تحديث البيانات في نافذة أخرى. احتفظنا بالمسودة؛ حدّث البيانات ثم أعد المحاولة.";
   return lastSaveError?.message || "فشل الحفظ على الخادم. احتفظنا بالمسودة ويمكنك إعادة المحاولة.";
 }

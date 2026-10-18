@@ -1064,6 +1064,23 @@ function createBackup() {
   return destination;
 }
 
+// Records a browser saves may carry ids made by an older page (duplicates such as MOV-2.34e+26). Any id
+// that is broken or already used in the same collection gets a fresh unique id before the save is stored.
+const CLIENT_ID_COLLECTIONS = [["stockMovements", "MOV-"], ["notifications", "NOT-"]];
+function repairClientRecordIds(db) {
+  let repaired = 0;
+  for (const [key, prefix] of CLIENT_ID_COLLECTIONS) {
+    const seen = new Set();
+    for (const row of Array.isArray(db[key]) ? db[key] : []) {
+      if (!row || typeof row !== "object") continue;
+      const id = String(row.id || "");
+      if (!id || /e\+\d/.test(id) || seen.has(id)) { row.repairedFromId = id; row.id = `${prefix}${crypto.randomUUID()}`; repaired += 1; }
+      seen.add(row.id);
+    }
+  }
+  return repaired;
+}
+
 // Digits taken from UUID-based ids exceed Number precision (max + 1 === max), which produced duplicate ids.
 function nextId(prefix, list = []) {
   const max = list.reduce((acc, item) => {
@@ -2805,7 +2822,7 @@ const server = http.createServer(async (req, res) => {
 
     if (["/api/events", "/api/live-revision"].includes(route) && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, {message:"Authentication required."});
-      if (route === "/api/live-revision") return send(res, 200, {revision:dbRevision()}, "application/json; charset=utf-8", {"Cache-Control":"no-store"});
+      if (route === "/api/live-revision") return send(res, 200, {revision:dbRevision(), build:APP_BUILD_ID}, "application/json; charset=utf-8", {"Cache-Control":"no-store"});
       res.writeHead(200, {"Content-Type":"text/event-stream; charset=utf-8", "Cache-Control":"no-cache, no-transform", "Connection":"keep-alive", "X-Accel-Buffering":"no"});
       res.flushHeaders();
       const client = {publish() {
@@ -3861,6 +3878,10 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/db" && req.method === "PUT") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      // A page still running an older build would save with its old rules; it must reload first.
+      if (APP_ENVIRONMENT === "production" && String(req.headers["x-app-build"] || "") !== APP_BUILD_ID) {
+        return send(res, 409, { ok:false, code:"CLIENT_OUTDATED", build:APP_BUILD_ID, message:"تم تحديث النظام إلى نسخة جديدة. حدّث الصفحة (F5 أو Cmd+R) ثم أعد المحاولة." });
+      }
       const expected = req.headers["if-match"];
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
@@ -3872,6 +3893,8 @@ const server = http.createServer(async (req, res) => {
       const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
       if (Array.isArray(currentSource.users) && currentSource.users.length) parsed.users = JSON.parse(JSON.stringify(currentSource.users));
       else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
+      const repairedIds = repairClientRecordIds(parsed);
+      if (repairedIds) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"CLIENT_IDS_REPAIRED", performedBy:user.username, repairedIds }));
       // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.
       for (const key of ["trackingRuns", "trackingRunBatches"]) {
         if (Array.isArray(currentSource[key])) parsed[key] = currentSource[key];
