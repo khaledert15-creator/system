@@ -3881,7 +3881,8 @@ async function openPreparationOrder(id,start=false) {
         <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${item.qty} × ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-qty-badge ${Number(item.qty)>1?"multi":""}" aria-hidden="true"><b>${item.qty}</b><small>${Number(item.qty)>1?"نسخ":"نسخة"}</small></span><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
         <div class="packing-totals"><span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(order.paidAmount||0)}</b></span><span>المتبقي <b>${money(Math.max(0,totals.total-Number(order.paidAmount||0)))}</b></span></div>
         ${orderIssueNote(order,{full:true})}
-        <div class="packing-footer"><small>عند الإكمال تُصدر الفاتورة تلقائيًا، ويُنتظر كود التتبع دون إنشاء شحنة.</small><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-complete" data-id="${esc(order.id)}" ${checklist.length&&checklist.every(item=>item.done)?"":"disabled"}>إتمام التغليف وإصدار الفاتورة</button><button type="button" class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${esc(order.id)}">تعذر التغليف</button></div></div>
+        ${order.workflowStage==="needs_review"?`<div class="review-resolution"><strong>الطلب متوقف للمراجعة؛ اختر طريقة الحل قبل إتمام التغليف:</strong><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-resume" data-id="${esc(order.id)}">استئناف التجهيز — كل الكتب موجودة الآن</button><button type="button" class="btn secondary" data-action="prepare-order-issue" data-id="${esc(order.id)}">نقل الناقص للحجز المسبق</button></div><small>لحذف الكتاب الناقص من الطلب استخدم «تعديل الأصناف والكميات والأسعار» بالأعلى.</small></div>`:""}
+        <div class="packing-footer"><small>عند الإكمال تُصدر الفاتورة تلقائيًا، ويُنتظر كود التتبع دون إنشاء شحنة.</small><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-complete" data-id="${esc(order.id)}" ${order.workflowStage!=="needs_review"&&checklist.length&&checklist.every(item=>item.done)?"":"disabled"} ${order.workflowStage==="needs_review"?'title="اختر طريقة حل المراجعة أولًا"':""}>إتمام التغليف وإصدار الفاتورة</button><button type="button" class="btn ghost text-danger" data-action="prepare-order-issue" data-id="${esc(order.id)}">تعذر التغليف</button></div></div>
       </div>`);
   }catch(error){toast(error.message,"error");}
 }
@@ -3894,10 +3895,11 @@ function packingDoneIds(sheet){return [...sheet.querySelectorAll("[data-preparat
 
 function refreshPackingSheet(sheet){
   const boxes=[...sheet.querySelectorAll("[data-preparation-book]")],done=boxes.filter(box=>box.checked).length;
+  const underReview=getOnlineOrder(sheet.dataset.packingOrder)?.workflowStage==="needs_review";
   const progress=sheet.querySelector("[data-packing-progress]");
   if(progress)progress.textContent=progress.textContent.replace(/تم تأكيد \d+ من \d+/,`تم تأكيد ${done} من ${boxes.length}`);
   const complete=sheet.querySelector('[data-action="prepare-order-complete"]');
-  if(complete)complete.disabled=!(boxes.length&&done===boxes.length);
+  if(complete)complete.disabled=underReview||!(boxes.length&&done===boxes.length);
 }
 
 function schedulePackingChecklistSync(orderId,sheet){
@@ -7338,6 +7340,7 @@ document.addEventListener("click", event => {
   }
   if(action==="prepare-order-issue")preparationIssueModal(target.dataset.id);
   if(action==="prepare-order-finish-choice")finishPreparationModal(target.dataset.id);
+  if (action === "prepare-order-resume" && !target.disabled) { target.disabled = true; openPreparationOrder(target.dataset.id, true).then(() => toast("تم استئناف التجهيز وحفظ المشكلة في سجل الطلب.")); }
   if(action==="prepare-order-complete"&&!target.disabled&&!target.dataset.pending){target.dataset.pending="true";target.disabled=true;flushPackingChecklist(target.dataset.id).then(()=>openPackingWeightModal(target.dataset.id)).catch(()=>{}).finally(()=>{delete target.dataset.pending;});}
   if(action==="packing-weight-back"){if(target.dataset.existing==="true")closeModal();else openPreparationOrder(target.dataset.id);}
   if(action==="pack-order-complete")openPackingWeightModal(target.dataset.id);

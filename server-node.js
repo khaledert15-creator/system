@@ -3379,7 +3379,8 @@ const server = http.createServer(async (req, res) => {
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية بدء التجهيز."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
-      if(order.preparingByUsername&&order.preparingByUsername!==user.username&&!order.preparedAt)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`بدأ ${order.preparingBy} تجهيز الطلب بالفعل.`,order});
+      // An order stopped for review is usually resolved by someone else, so the packer's lock does not apply.
+      if(order.workflowStage!=="needs_review"&&order.preparingByUsername&&order.preparingByUsername!==user.username&&!order.preparedAt)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`بدأ ${order.preparingBy} تجهيز الطلب بالفعل.`,order});
       if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب غير متاح للتجهيز."});
       const previousDone=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)]));
       const now=new Date().toISOString(),resolvedIssue=order.workflowStage==="needs_review"?order.preparationIssue:null;
@@ -3439,6 +3440,8 @@ const server = http.createServer(async (req, res) => {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إكمال التجهيز."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      if(order.workflowStage==="needs_review")return send(res,409,{ok:false,code:"ORDER_UNDER_REVIEW",message:`الطلب متوقف للمراجعة${order.preparationIssue?.reason?` بسبب «${order.preparationIssue.reason}»`:""}. اختر «استئناف التجهيز» أو «نقل الناقص للحجز المسبق» أولًا.`});
+      if(order.workflowStage==="awaiting_stock")return send(res,409,{ok:false,code:"ORDER_AWAITING_STOCK",message:"الطلب في الحجز المسبق بانتظار توفر كتب؛ احجز المتوفر أولًا من «الكتب الناقصة والحجوزات»."});
       if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب محجوز لموظف آخر."});
       if(!order.lines?.length||order.lines.some(line=>!(order.preparationChecklist||[]).some(item=>item.bookId===line.bookId&&Number(item.qty)===Number(line.qty)&&item.done)))return send(res,409,{ok:false,message:"حدد كل الكتب بعد تجهيزها أولًا."});
       if(order.preparedAt&&order.workflowStage==="awaiting_shipping"&&shippingOrderInvoice(db,order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
