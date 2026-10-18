@@ -1064,10 +1064,11 @@ function createBackup() {
   return destination;
 }
 
+// Digits taken from UUID-based ids exceed Number precision (max + 1 === max), which produced duplicate ids.
 function nextId(prefix, list = []) {
   const max = list.reduce((acc, item) => {
     const number = Number(String(item.id || "").replace(/\D/g, ""));
-    return Math.max(acc, number || 0);
+    return Number.isSafeInteger(number) ? Math.max(acc, number) : acc;
   }, 0);
   return `${prefix}${String(max + 1).padStart(4, "0")}`;
 }

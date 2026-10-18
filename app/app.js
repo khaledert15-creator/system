@@ -1945,10 +1945,12 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Ids made from random UUIDs contain so many digits that Number() loses precision; max + 1 then equals max and
+// every new record got the same id (e.g. MOV-2.34e+26). Only exact integers take part in numbering.
 function nextId(prefix, list) {
   const max = list.reduce((acc, item) => {
     const number = Number(String(item.id).replace(/\D/g, ""));
-    return Math.max(acc, number || 0);
+    return Number.isSafeInteger(number) ? Math.max(acc, number) : acc;
   }, 0);
   return `${prefix}${String(max + 1).padStart(3, "0")}`;
 }
@@ -9720,7 +9722,7 @@ function recordStockMovement(book, type, quantity, before, after, documentId, no
   const parts = operationDateParts(now);
   const context = movementDocumentContext(documentId);
   data.stockMovements.push({
-    id: nextId("MOV-", data.stockMovements), bookId: book.id, date: now, createdAt: now,
+    id: `MOV-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`, bookId: book.id, date: now, createdAt: now,
     type, quantity: Number(quantity), before: Number(before), after: Number(after),
     documentId: documentId || "", documentNo: documentId || "", documentType: context.documentType,
     customerId: context.customerId || "", supplierId: context.supplierId || "", partyName: context.partyName || "",
