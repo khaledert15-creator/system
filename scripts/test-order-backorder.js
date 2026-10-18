@@ -46,25 +46,27 @@ const draft=(id,lines)=>({id,customerId:'C1',customerName:'عميل',phone:'0100
   assert.equal(r.status,409);assert.equal((await r.json()).code,'NO_STOCK_AVAILABLE');
   console.log('PASS waiting orders stay out of preparation and allocation needs new stock');
 
-  // Client saves (PUT /api/db) must not auto-allocate stock that arrives.
+  // Stock arrives (here: the server restarts with more copies): pre-orders that can now ship move on their own,
+  // oldest first; an order that can only be partly covered keeps waiting.
   child.kill();await sleep(300);
   const db=read();db.books.find(b=>b.id==='B2').stock=3;fs.writeFileSync(dbFile,JSON.stringify(db));
   await start();token=await login();
-  const current=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
-  current.settings.companyName='save';
-  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(current)});
-  assert.equal(r.status,200,await r.clone().text());
-  assert.equal(order('ORD1').workflowStage,'awaiting_stock');assert.equal(book('B2').reservedStock,1,'no automatic allocation');
-  console.log('PASS arriving stock is not allocated automatically');
+  await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
+  assert.equal(order('ORD1').carriedOverFromBackorder,true,'carried-over orders are flagged');
+  assert.equal(order('ORD2').workflowStage,'awaiting_stock','no copy left for the newer order');
+  assert.equal(book('B2').reservedStock,3);
+  assert(read().notifications.some(n=>n.key==='backorder-ready:ORD1'),'staff are notified');
+  console.log('PASS arriving stock moves the oldest pre-order that can ship to preparation automatically');
 
   r=await post('/api/orders/ORD2/backorder/allocate');
+  assert.equal(r.status,409);assert.equal((await r.json()).code,'NO_STOCK_AVAILABLE');
+  const current=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
+  current.books.find(b=>b.id==='B2').stock=4;
+  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(current)});
   assert.equal(r.status,200,await r.clone().text());
-  assert.equal(order('ORD2').workflowStage,'awaiting_preparation');assert.equal(book('B2').reservedStock,2);
-  r=await post('/api/orders/ORD1/backorder/allocate');
-  assert.equal(r.status,200);
-  assert.equal(order('ORD1').workflowStage,'awaiting_stock','partial allocation keeps waiting');
-  assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:1}]);assert.equal(book('B2').reservedStock,3);
-  console.log('PASS manual allocation follows the employee choice; partial allocation keeps the order waiting');
+  await until(async()=>order('ORD2').workflowStage==='awaiting_preparation');
+  assert.equal(order('ORD2').carriedOverFromBackorder,true);assert.equal(book('B2').reservedStock,4);
+  console.log('PASS a save that adds stock (purchase, count) triggers the automatic move');
 
   r=await post('/api/orders/ORD2/prepare/start');
   assert.equal(r.status,200,await r.clone().text());

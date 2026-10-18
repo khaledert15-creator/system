@@ -13,7 +13,7 @@ for(const modify of [d=>d.books[0].stock=1,d=>d.inventoryBatches[0].remainingQty
 }
 const source=fs.readFileSync(require.resolve("../app/app.js"),"utf8"),start=source.indexOf("async function openPreparationOrder("),end=source.indexOf("\nfunction finishPreparationModal",start);
 const uiDb=fixture(),uiSnapshot=JSON.stringify(uiDb);let html="";
-const context={orderIssueNote:()=>"",canAction:()=>true,getOnlineOrder:()=>uiDb.onlineOrders[0],getBook:()=>uiDb.books[0],currentUser:actor,onlineOrderTotals:(lines,orderDiscount,orderDiscountType,shippingCost)=>Finance.calculateOrder(lines,{orderDiscount,orderDiscountType,shippingCost}),orderShippingFee:()=>30,esc:value=>String(value??""),money:value=>String(value),openModal:(_title,_sub,body)=>{html=body;},toast:message=>{throw new Error(message);}};
+const context={orderIssueNote:()=>"",carriedOverBadge:()=>"",canAction:()=>true,getOnlineOrder:()=>uiDb.onlineOrders[0],getBook:()=>uiDb.books[0],currentUser:actor,onlineOrderTotals:(lines,orderDiscount,orderDiscountType,shippingCost)=>Finance.calculateOrder(lines,{orderDiscount,orderDiscountType,shippingCost}),orderShippingFee:()=>30,esc:value=>String(value??""),money:value=>String(value),openModal:(_title,_sub,body)=>{html=body;},toast:message=>{throw new Error(message);}};
 vm.createContext(context);vm.runInContext(source.slice(start,end),context);
 (async()=>{
   await context.openPreparationOrder("O");

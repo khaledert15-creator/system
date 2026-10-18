@@ -3563,8 +3563,13 @@ function renderQuickOrderScreen() {
   </div></div>`;
 }
 
+// Pre-orders whose books arrived are carried over and packed first.
+function isCarriedOverOrder(order={}) {return Boolean(order.carriedOverFromBackorder&&!order.preparedAt&&!["cancelled","delivered"].includes(onlineOrderWorkflowStage(order)));}
+function carriedOverBadge(order={}) {return isCarriedOverOrder(order)?`<span class="carried-badge" title="توفرت كتبه بعد الحجز المسبق${order.carriedOverAt?` · ${esc(arabicDateTimeLabel(order.carriedOverAt))}`:""}">⚡ مُرحَّل من الحجز المسبق — أولوية</span>`:"";}
+
 function preparationOrders() {
-  return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage)&&!order.preparedAt);
+  return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage)&&!order.preparedAt)
+    .sort((a,b)=>Number(isCarriedOverOrder(b))-Number(isCarriedOverOrder(a)));
 }
 
 function readyShippingOrders() {
@@ -3629,7 +3634,7 @@ async function allocateBackorder(id) {
 
 function renderPreparationQueue() {
   const rows=preparationOrders();
-  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}"><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
+  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}"><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
   const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>يحتاج تغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
@@ -3873,6 +3878,7 @@ async function openPreparationOrder(id,start=false) {
     const totals=onlineOrderTotals(order.lines,order.orderDiscount,order.orderDiscountType,orderShippingFee(order));
     openModal(`تجهيز ${order.id}`,"تغليف الطلب",`
       <div class="packing-sheet" data-packing-order="${esc(order.id)}">
+        ${carriedOverBadge(order)}
         <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc(order.phone||"")} · ${esc(order.governorate||"")}</span><small>${esc(order.address||"")}</small></div>
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
@@ -4235,13 +4241,13 @@ function onlineOrderMoreActions(order) {
 
 function onlineOrdersTable(list) {
   return `<table class="online-orders-master-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المحافظة</th><th>القطع</th><th>الإجمالي / الدفع</th><th>الحالة</th><th>وقت الإنشاء</th><th>الخطوة التالية</th></tr></thead><tbody>
-    ${list.slice().reverse().map(order => `<tr data-record-type="online-order" data-record-id="${order.id}">
+    ${list.slice().reverse().sort((a,b)=>Number(isCarriedOverOrder(b))-Number(isCarriedOverOrder(a))).map(order => `<tr data-record-type="online-order" data-record-id="${order.id}" ${isCarriedOverOrder(order)?'class="carried-row"':""}>
       <td><strong>${order.id}</strong>${order.saleId?`<br><span class="muted">${esc(order.saleId)}</span>`:""}</td>
       <td>${esc(order.customerName)}<br><span dir="ltr" class="muted">${esc(order.phone)}</span></td>
       <td>${esc(order.governorate||"—")}<br><span class="muted">${esc(order.city||"")}</span></td>
       <td><strong>${(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0)}</strong></td>
       <td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)} · متبقي ${money(Math.max(0,Number(order.total||0)-Number(order.paidAmount||0)))}</span></td>
-      <td>${onlineOrderWorkflowBadge(order)}${order.tracking?`<small class="order-tracking" dir="ltr">${esc(order.tracking)}</small>`:""}${orderIssueNote(order)}</td>
+      <td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${order.tracking?`<small class="order-tracking" dir="ltr">${esc(order.tracking)}</small>`:""}${orderIssueNote(order)}</td>
       <td><span class="order-created-time">${arabicDateTimeLabel(order.createdAt||order.date)}</span></td>
       <td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td>
     </tr>`).join("") || `<tr><td colspan="8" class="text-center muted">لا توجد طلبات أونلاين.</td></tr>`}

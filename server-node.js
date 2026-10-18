@@ -164,7 +164,55 @@ function writeDb(db, options = {}) {
   SeasonDataManagement.linkNewRecordsToActiveSeason(current, db);
   const result = databasePersistence.write(db, options);
   for (const client of liveClients) { try { client.publish(); } catch { liveClients.delete(client); } }
+  // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
+  if (options.operationType !== "BACKORDER_AUTO_ALLOCATED") scheduleBackorderAllocation();
   return result;
+}
+
+// Pre-orders whose missing books are now fully in stock move to the preparation queue on their own, oldest first.
+// Orders that can only be partly covered keep waiting (the manual "حجز المتوفر" button still allows that), so stock
+// goes to orders that can actually ship. Carried-over orders are flagged so packing handles them first.
+const BACKORDER_SYSTEM_USER = { name:"النظام", username:"system", role:"نظام" };
+function autoAllocateBackorders(db, user = BACKORDER_SYSTEM_USER) {
+  const books = new Map((db.books || []).map(book => [book.id, book]));
+  const waiting = (db.onlineOrders || []).filter(order => !order.deletedAt && order.workflowStage === "awaiting_stock")
+    .sort((a, b) => String(a.backorderSince || a.confirmedAt || "").localeCompare(String(b.backorderSince || b.confirmedAt || "")));
+  const moved = [];
+  for (const order of waiting) {
+    const shortfall = aggregateOrderLines(order.backorderLines || []);
+    if (!shortfall.size || [...shortfall].some(([bookId, qty]) => !books.get(bookId) || availableStock(books.get(bookId)) < qty)) continue;
+    reserveOrderInventory(db, order, user, order.lines || [], { allowBackorder:true });
+    if ((order.backorderLines || []).length) continue;
+    const now = new Date().toISOString();
+    applyBackorderStage(order, user, now);
+    Object.assign(order, { carriedOverFromBackorder:true, carriedOverAt:now, preparingBy:null, preparingByUsername:null });
+    if (order.preparationIssue) { order.preparationIssueHistory = [...(order.preparationIssueHistory || []), { ...order.preparationIssue, resolvedAt:now, resolvedBy:user.name }]; delete order.preparationIssue; }
+    appendOrderAudit(db, user, order, "اكتمال الحجز المسبق تلقائيًا والانتقال للتجهيز", [...shortfall].map(([bookId, qty]) => `${books.get(bookId)?.name || bookId} × ${qty}`).join("، "));
+    addNotification(db, { key:`backorder-ready:${order.id}`, type:"backorder_ready", priority:"high", title:"طلب مُرحَّل جاهز للتغليف", message:`توفرت كتب الطلب ${order.id} وانتقل لقائمة التجهيز كأولوية.`, entityId:order.id, source:"المخزون" });
+    moved.push(order.id);
+  }
+  return moved;
+}
+
+let backorderAllocationTimer = null;
+function scheduleBackorderAllocation(delayMs = 1500) {
+  clearTimeout(backorderAllocationTimer);
+  backorderAllocationTimer = setTimeout(runBackorderAllocation, delayMs);
+}
+
+function runBackorderAllocation() {
+  try {
+    if (!fs.existsSync(DB_PATH)) return;
+    const revision = databasePersistence.revision();
+    const db = ensureTrackingDb(readDb());
+    const moved = autoAllocateBackorders(db);
+    if (!moved.length) return;
+    writeDb(db, { expectedRevision:revision, operationType:"BACKORDER_AUTO_ALLOCATED", performedBy:"system" });
+    console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"BACKORDER_AUTO_ALLOCATED", orders:moved }));
+  } catch (error) {
+    // A concurrent save wins; the next save or the periodic check tries again.
+    if (error.code !== "DATABASE_WRITE_BLOCKED_STALE_REVISION") console.error(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"BACKORDER_AUTO_ALLOCATION_FAILED", message:error.message }));
+  }
 }
 
 function canManageSeasonData(db, user, action) {
@@ -3221,6 +3269,7 @@ const server = http.createServer(async (req, res) => {
       reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});
       if(JSON.stringify(order.backorderLines||[])===before)return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:"لا توجد كمية جديدة متاحة لهذا الطلب.",order});
       const stage=applyBackorderStage(order,user);
+      if(stage==="awaiting_preparation")Object.assign(order,{carriedOverFromBackorder:true,carriedOverAt:new Date().toISOString()});
       if(stage==="awaiting_preparation"&&order.preparationIssue){order.preparationIssueHistory=[...(order.preparationIssueHistory||[]),{...order.preparationIssue,resolvedAt:new Date().toISOString(),resolvedBy:user.name||user.username}];delete order.preparationIssue;}
       appendOrderAudit(db,user,order,stage==="awaiting_preparation"?"اكتمال الحجز المسبق والانتقال للتجهيز":"حجز جزء من الكتب الناقصة",(order.backorderLines||[]).map(line=>`${line.bookId}×${line.qty}`).join("، ")||"كل الكتب متوفرة");
       writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_BACKORDER_ALLOCATED",performedBy:user.username});
@@ -4131,4 +4180,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`DotCom Library server running: http://${HOST}:${PORT}/`);
   scheduleTrackingWorker();
+  scheduleBackorderAllocation(3000);
+  setInterval(() => scheduleBackorderAllocation(0), 5 * 60 * 1000).unref();
 });
