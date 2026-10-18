@@ -12,6 +12,7 @@ const draft=(id,lines)=>({id,customerId:'C1',customerName:'عميل',phone:'0100
   fs.cpSync('app',path.join(temp,'app'),{recursive:true});fs.copyFileSync('server-node.js',path.join(temp,'server-node.js'));fs.mkdirSync(path.join(temp,'data'));
   const salt='s',password='test-password';
   const dbFile=path.join(temp,'data/database.json');
+  // B2 has 1 copy. ORD1 needs B1×2 + B2×3 (cannot ship), ORD2 needs B2×1 (can ship).
   fs.writeFileSync(dbFile,JSON.stringify({version:4,meta:{dataRevision:0},
    users:[{id:'U1',username:'owner',name:'Owner',role:'مالك',active:true,salt,passwordHash:crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex')}],
    settings:{tracking:{enabled:false}},audit:[],sales:[],
@@ -31,44 +32,41 @@ const draft=(id,lines)=>({id,customerId:'C1',customerName:'عميل',phone:'0100
   let r=await post('/api/orders/ORD1/confirm');
   assert.equal(r.status,200,await r.clone().text());
   assert.equal(order('ORD1').workflowStage,'awaiting_stock');
-  assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:2}]);
-  assert.equal(book('B1').reservedStock,2);assert.equal(book('B2').reservedStock,1,'available units are reserved now');
-  console.log('PASS confirming with a shortage reserves what exists and records the rest as pre-order');
+  assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:2}],'only the missing books are listed');
+  assert.equal(book('B1').reservedStock,0);assert.equal(book('B2').reservedStock,0,'a pre-order holds no copies');
+  assert.equal(order('ORD1').inventoryReservation.status,'released');
+  console.log('PASS confirming with a shortage makes a pre-order that holds no copies');
 
   r=await post('/api/orders/ORD2/confirm');
-  assert.equal(r.status,200);assert.equal(order('ORD2').workflowStage,'awaiting_stock');
-  assert.deepEqual(order('ORD2').backorderLines,[{bookId:'B2',qty:1}]);
-  console.log('PASS a book with no free stock becomes a full pre-order');
+  assert.equal(r.status,200);
+  assert.equal(order('ORD2').workflowStage,'awaiting_preparation','a newer order that can ship complete gets the free copy');
+  assert.equal(book('B2').reservedStock,1);
+  console.log('PASS the free copy goes to an order that can ship complete');
 
   r=await post('/api/orders/ORD1/prepare/start');
   assert.notEqual(r.status,200,'pre-order cannot enter preparation');
   r=await post('/api/orders/ORD1/backorder/allocate');
-  assert.equal(r.status,409);assert.equal((await r.json()).code,'NO_STOCK_AVAILABLE');
-  console.log('PASS waiting orders stay out of preparation and allocation needs new stock');
+  assert.equal(r.status,409);const manual=await r.json();assert.equal(manual.code,'NO_STOCK_AVAILABLE');assert.match(manual.message,/ناقص × 3/);
+  console.log('PASS waiting orders stay out of preparation; the manual check lists what is missing');
 
-  // Stock arrives (here: the server restarts with more copies): pre-orders that can now ship move on their own,
-  // oldest first; an order that can only be partly covered keeps waiting.
+  // Stock arrives (server restarts with more copies): the waiting order moves once every book is free.
   child.kill();await sleep(300);
   const db=read();db.books.find(b=>b.id==='B2').stock=3;fs.writeFileSync(dbFile,JSON.stringify(db));
-  await start();token=await login();
-  await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
-  assert.equal(order('ORD1').carriedOverFromBackorder,true,'carried-over orders are flagged');
-  assert.equal(order('ORD2').workflowStage,'awaiting_stock','no copy left for the newer order');
-  assert.equal(book('B2').reservedStock,3);
-  assert(read().notifications.some(n=>n.key==='backorder-ready:ORD1'),'staff are notified');
-  console.log('PASS arriving stock moves the oldest pre-order that can ship to preparation automatically');
-
-  r=await post('/api/orders/ORD2/backorder/allocate');
-  assert.equal(r.status,409);assert.equal((await r.json()).code,'NO_STOCK_AVAILABLE');
+  await start();token=await login();await sleep(3500);
+  assert.equal(order('ORD1').workflowStage,'awaiting_stock','2 free copies are not enough for 3');
+  assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:1}],'the missing list follows current stock');
+  assert.equal(book('B2').reservedStock,1,'still no partial hold');
   const current=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
   current.books.find(b=>b.id==='B2').stock=4;
   r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(current)});
   assert.equal(r.status,200,await r.clone().text());
-  await until(async()=>order('ORD2').workflowStage==='awaiting_preparation');
-  assert.equal(order('ORD2').carriedOverFromBackorder,true);assert.equal(book('B2').reservedStock,4);
-  console.log('PASS a save that adds stock (purchase, count) triggers the automatic move');
+  await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
+  assert.equal(order('ORD1').carriedOverFromBackorder,true,'carried-over orders are flagged');
+  assert.equal(book('B1').reservedStock,2);assert.equal(book('B2').reservedStock,4);
+  assert(read().notifications.some(n=>n.key==='backorder-ready:ORD1'),'staff are notified');
+  console.log('PASS a save that adds stock moves the pre-order once all its books are free');
 
-  r=await post('/api/orders/ORD2/prepare/start');
+  r=await post('/api/orders/ORD1/prepare/start');
   assert.equal(r.status,200,await r.clone().text());
   console.log('PASS completed pre-order enters the preparation queue');
  } finally {

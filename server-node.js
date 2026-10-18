@@ -178,20 +178,35 @@ function autoAllocateBackorders(db, user = BACKORDER_SYSTEM_USER) {
   const waiting = (db.onlineOrders || []).filter(order => !order.deletedAt && order.workflowStage === "awaiting_stock")
     .sort((a, b) => String(a.backorderSince || a.confirmedAt || "").localeCompare(String(b.backorderSince || b.confirmedAt || "")));
   const moved = [];
+  let changed = false;
+  // Pre-orders hold no copies; older data (or other paths) may still have a reservation on a waiting order.
+  for (const order of waiting) if (activeReservation(order)) { releaseOrderInventory(db, order, user, "حجز مسبق — تُحجز النسخ عند توفر كل الكتب"); changed = true; }
   for (const order of waiting) {
-    const shortfall = aggregateOrderLines(order.backorderLines || []);
-    if (!shortfall.size || [...shortfall].some(([bookId, qty]) => !books.get(bookId) || availableStock(books.get(bookId)) < qty)) continue;
-    reserveOrderInventory(db, order, user, order.lines || [], { allowBackorder:true });
-    if ((order.backorderLines || []).length) continue;
+    const needed = aggregateOrderLines(order.lines || []);
+    // A book the packer reported missing for this order waits for a stock count (countHoldQty cleared); otherwise
+    // the order would bounce straight back to packing and hit the same empty shelf.
+    const reported = aggregateOrderLines(order.preparationIssue?.missingLines || []);
+    const shortfall = [...needed].map(([bookId, qty]) => {
+      const book = books.get(bookId);
+      if (book && reported.has(bookId) && countHoldStock(book) > 0) return { bookId, qty:reported.get(bookId) };
+      return { bookId, qty:Math.max(0, qty - (book ? availableStock(book) : 0)) };
+    }).filter(line => line.qty > 0);
+    if (shortfall.length) {
+      if (JSON.stringify(shortfall) !== JSON.stringify(order.backorderLines || [])) { order.backorderLines = shortfall; changed = true; }
+      continue;
+    }
+    reserveOrderInventory(db, order, user, order.lines || []);
+    order.backorderLines = [];
     const now = new Date().toISOString();
     applyBackorderStage(order, user, now);
     Object.assign(order, { carriedOverFromBackorder:true, carriedOverAt:now, preparingBy:null, preparingByUsername:null });
-    if (order.preparationIssue) { order.preparationIssueHistory = [...(order.preparationIssueHistory || []), { ...order.preparationIssue, resolvedAt:now, resolvedBy:user.name }]; delete order.preparationIssue; }
-    appendOrderAudit(db, user, order, "اكتمال الحجز المسبق تلقائيًا والانتقال للتجهيز", [...shortfall].map(([bookId, qty]) => `${books.get(bookId)?.name || bookId} × ${qty}`).join("، "));
+    if (order.preparationIssue) { order.preparationIssueHistory = [...(order.preparationIssueHistory || []), { ...order.preparationIssue, resolvedAt:now, resolvedBy:user.name || user.username }]; delete order.preparationIssue; }
+    appendOrderAudit(db, user, order, "اكتمال الحجز المسبق والانتقال للتجهيز", user.username === "system" ? "تلقائيًا بعد توفر كل الكتب" : "بعد توفر كل الكتب");
     addNotification(db, { key:`backorder-ready:${order.id}`, type:"backorder_ready", priority:"high", title:"طلب مُرحَّل جاهز للتغليف", message:`توفرت كتب الطلب ${order.id} وانتقل لقائمة التجهيز كأولوية.`, entityId:order.id, source:"المخزون" });
     moved.push(order.id);
+    changed = true;
   }
-  return moved;
+  return { moved, changed };
 }
 
 let backorderAllocationTimer = null;
@@ -205,8 +220,8 @@ function runBackorderAllocation() {
     if (!fs.existsSync(DB_PATH)) return;
     const revision = databasePersistence.revision();
     const db = ensureTrackingDb(readDb());
-    const moved = autoAllocateBackorders(db);
-    if (!moved.length) return;
+    const { moved, changed } = autoAllocateBackorders(db);
+    if (!changed) return;
     writeDb(db, { expectedRevision:revision, operationType:"BACKORDER_AUTO_ALLOCATED", performedBy:"system" });
     console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"BACKORDER_AUTO_ALLOCATED", orders:moved }));
   } catch (error) {
@@ -587,8 +602,8 @@ function activeReservation(order={}) {
   return order.inventoryReservation?.status==="active"?order.inventoryReservation:null;
 }
 
-// With allowBackorder, reserves what is available and records the shortfall in order.backorderLines
-// instead of failing. Returns the shortfall lines.
+// With allowBackorder a shortage does not fail: the order becomes a pre-order that holds NO copies (they stay free
+// for orders that can ship complete) and order.backorderLines records the missing books. Returns the shortfall.
 function reserveOrderInventory(db,order,user,newLines=order.lines||[],{allowBackorder=false}={}) {
   const oldReservation=activeReservation(order);
   const oldQuantities=aggregateOrderLines(oldReservation?.lines||[]);
@@ -604,6 +619,7 @@ function reserveOrderInventory(db,order,user,newLines=order.lines||[],{allowBack
     shortages.push({bookId,qty:quantity-Math.max(0,availableForOrder)});
     nextQuantities.set(bookId,Math.max(0,availableForOrder));
   }
+  if(shortages.length)nextQuantities.clear();
   for(const [bookId,quantity] of [...nextQuantities])if(!quantity)nextQuantities.delete(bookId);
   const allBookIds=new Set([...oldQuantities.keys(),...nextQuantities.keys()]);
   for(const bookId of allBookIds){
@@ -614,7 +630,8 @@ function reserveOrderInventory(db,order,user,newLines=order.lines||[],{allowBack
   const now=new Date().toISOString();
   order.inventoryReservation={
     id:oldReservation?.id||`RSV-${crypto.randomUUID()}`,
-    status:"active",
+    status:shortages.length?"released":"active",
+    ...(shortages.length?{releasedAt:now,releaseReason:"حجز مسبق — تُحجز النسخ عند توفر كل الكتب"}:{}),
     lines:[...nextQuantities].map(([bookId,qty])=>({bookId,qty})),
     reservedAt:oldReservation?.reservedAt||now,
     updatedAt:now,
@@ -3265,13 +3282,14 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.workflowStage!=="awaiting_stock")return send(res,409,{ok:false,code:"ORDER_NOT_WAITING_FOR_STOCK",message:"الطلب ليس في انتظار توفر كتب."});
-      const before=JSON.stringify(order.backorderLines||[]);
-      reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});
-      if(JSON.stringify(order.backorderLines||[])===before)return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:"لا توجد كمية جديدة متاحة لهذا الطلب.",order});
-      const stage=applyBackorderStage(order,user);
-      if(stage==="awaiting_preparation")Object.assign(order,{carriedOverFromBackorder:true,carriedOverAt:new Date().toISOString()});
-      if(stage==="awaiting_preparation"&&order.preparationIssue){order.preparationIssueHistory=[...(order.preparationIssueHistory||[]),{...order.preparationIssue,resolvedAt:new Date().toISOString(),resolvedBy:user.name||user.username}];delete order.preparationIssue;}
-      appendOrderAudit(db,user,order,stage==="awaiting_preparation"?"اكتمال الحجز المسبق والانتقال للتجهيز":"حجز جزء من الكتب الناقصة",(order.backorderLines||[]).map(line=>`${line.bookId}×${line.qty}`).join("، ")||"كل الكتب متوفرة");
+      // Same rule as the automatic check (complete orders only, oldest first), run immediately.
+      const { moved, changed } = autoAllocateBackorders(db, user);
+      if (!moved.includes(order.id)) {
+        const names = (order.backorderLines || []).map(line => `${(db.books || []).find(item => item.id === line.bookId)?.name || line.bookId} × ${line.qty}`).join("، ");
+        if (changed) writeDb(db, { operationType:"BACKORDER_AUTO_ALLOCATED", performedBy:user.username });
+        return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:`لم تتوفر كل كتب الطلب بعد${names?`؛ الناقص: ${names}`:""}.`,order:(db.onlineOrders||[]).find(item=>item.id===id)});
+      }
+      const stage = order.workflowStage;
       writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_BACKORDER_ALLOCATED",performedBy:user.username});
       return send(res,200,{ok:true,order,stage,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
@@ -3466,9 +3484,9 @@ const server = http.createServer(async (req, res) => {
       const missingLines=[...missing].map(([bookId,qty])=>({bookId,qty}));
       order.preparationIssue={reason,notes,missingLines,createdAt:now,createdBy:user.name||user.username};
       if(shortage){
-        // Release the missing copies from this order and keep them out of sale until someone counts the shelf.
-        const reduced=(order.lines||[]).map(line=>({...line,qty:Math.max(0,Number(line.qty||0)-(missing.get(line.bookId)||0))})).filter(line=>line.qty>0);
-        reserveOrderInventory(db,order,user,reduced);
+        // The order becomes a pre-order: it releases all its copies (pre-orders hold none) and the missing copies are
+        // kept out of sale until someone counts the shelf.
+        releaseOrderInventory(db,order,user,"نقص كتب أثناء التجهيز — حجز مسبق");
         for(const {bookId,qty} of missingLines){
           const book=(db.books||[]).find(item=>item.id===bookId);
           if(!book)continue;

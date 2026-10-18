@@ -16,7 +16,7 @@ const confirmed=(id,lines,reserved)=>({id,customerId:'C1',customerName:'عميل
    books:[{id:'B1',name:'كتاب أ',stock:5,reservedStock:3,price:100},{id:'B2',name:'كتاب ب',stock:4,reservedStock:1,price:100}],
    customers:[{id:'C1',name:'عميل',phone:'01000000000'}],
    onlineOrders:[confirmed('ORD1',[{bookId:'B1',qty:3,price:100},{bookId:'B2',qty:1,price:100}],[{bookId:'B1',qty:3},{bookId:'B2',qty:1}]),
-     {...confirmed('ORD2',[{bookId:'B1',qty:3,price:100}],[]),workflowStage:'draft',status:'مسودة',confirmedAt:null,inventoryReservation:null}]}));
+     {...confirmed('ORD2',[{bookId:'B1',qty:4,price:100}],[]),workflowStage:'draft',status:'مسودة',confirmedAt:null,inventoryReservation:null}]}));
   const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
   const base=`http://127.0.0.1:${port}`;
   child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'false'},stdio:'ignore'});
@@ -37,9 +37,11 @@ const confirmed=(id,lines,reserved)=>({id,customerId:'C1',customerName:'عميل
   assert.deepEqual(o.backorderLines,[{bookId:'B1',qty:2}]);
   assert.equal(o.preparationIssue.notes,'الرف فاضي');assert.deepEqual(o.preparationIssue.missingLines,[{bookId:'B1',qty:2}]);
   assert.equal(o.preparingByUsername,null,'preparation lock is released');
-  assert.equal(book('B1').reservedStock,1,'missing copies are released from the reservation');
+  assert.equal(book('B1').reservedStock,0,'a pre-order holds no copies');
   assert.equal(book('B1').countHoldQty,2,'missing copies are held for a stock count');
-  assert.equal(book('B2').reservedStock,1,'other books in the order stay reserved');
+  assert.equal(book('B2').reservedStock,0,'its other books are released too');
+  await sleep(2500);
+  assert.equal(order('ORD1').workflowStage,'awaiting_stock','it does not bounce back to packing before a stock count');
   console.log('PASS reporting missing books moves the order to pre-order and keeps the note');
 
   r=await post('/api/orders/ORD2/confirm');
@@ -53,9 +55,9 @@ const confirmed=(id,lines,reserved)=>({id,customerId:'C1',customerName:'عميل
   const b1=db.books.find(b=>b.id==='B1');b1.countHoldQty=0;
   r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(db)});
   assert.equal(r.status,200,await r.clone().text());
-  r=await post('/api/orders/ORD1/backorder/allocate');
-  assert.equal(r.status,200,await r.clone().text());
-  assert.equal(order('ORD1').workflowStage,'awaiting_preparation');
+  await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
+  assert.equal(order('ORD1').carriedOverFromBackorder,true,'moves automatically once counted, oldest first');
+  assert.equal(order('ORD2').workflowStage,'awaiting_stock','the newer order waits for its fourth copy');
   assert.equal(order('ORD1').preparationIssue,undefined);assert.equal(order('ORD1').preparationIssueHistory.length,1);
   console.log('PASS after the count the order can be completed and the issue moves to history');
 

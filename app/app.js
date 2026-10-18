@@ -3591,8 +3591,11 @@ function backorderOrders() {
   return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&order.workflowStage==="awaiting_stock").sort((a,b)=>String(a.backorderSince||a.confirmedAt||"").localeCompare(String(b.backorderSince||b.confirmedAt||"")));
 }
 
+// A pre-order holds no copies, so it can move only when every book of the order is free at once.
 function backorderAllocatable(order) {
-  return (order.backorderLines||[]).some(line=>bookAvailableStock(getBook(line.bookId))>0);
+  const needed=new Map();
+  for(const line of order.lines||[])needed.set(line.bookId,(needed.get(line.bookId)||0)+Number(line.qty||0));
+  return needed.size>0&&[...needed].every(([bookId,qty])=>bookAvailableStock(getBook(bookId))>=qty);
 }
 
 function shortageRows() {
@@ -3613,14 +3616,14 @@ function renderShortagesScreen() {
   const bookCell=row=>`<strong>${esc(row.book.name||row.bookId)}</strong>${bookCountHold(row.book)?`<em class="preorder-tag">يحتاج جرد · ${bookCountHold(row.book)} غير موجودة على الرف</em>`:""}<br><span class="muted">${esc(row.book.barcode||row.book.sku||row.bookId)}</span>`;
   const orderBooks=order=>(order.backorderLines||[]).map(line=>{const book=getBook(line.bookId);const available=bookAvailableStock(book);return `<span class="shortage-line">${esc(book?.name||line.bookId)} × ${line.qty}${available>0?` <em class="preorder-tag ok">متوفر ${available}</em>`:""}</span>`;}).join("");
   return `${workflowModeTabs("shortages")}
-    <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>الكتب الناقصة والحجوزات</h2><p>اطلب الكتب الناقصة من الموردين، ثم احجز المتوفر للطلبات المتوقفة عند وصولها.</p></div></div>
+    <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>الكتب الناقصة والحجوزات</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
     <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>كتب عليها حجز مسبق من العملاء، أو رصيدها وصل للحد الأدنى.</p></div>${badge(`${rows.length} كتاب`,rows.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الكتاب</th><th>الرصيد</th><th>المتاح</th><th>حجز مسبق</th><th>طلبات منتظرة</th><th>أقدم طلب</th><th>المقترح شراؤه</th><th></th></tr></thead><tbody>
       ${rows.length?rows.map(row=>`<tr><td>${bookCell(row)}</td><td>${Number(row.book.stock||0)}</td><td>${row.available}</td><td>${row.waiting?`<strong class="text-danger">${row.waiting}</strong>`:"—"}</td><td>${row.orders.size||"—"}</td><td>${row.oldest?arabicDateTimeLabel(row.oldest):"—"}</td><td><strong>${row.toBuy||"—"}</strong></td><td><div class="row-actions">${bookCountHold(row.book)&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد / تسوية</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">إنشاء أمر شراء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="8" class="muted">لا توجد كتب ناقصة حاليًا.</td></tr>`}
       </tbody></table></div></article>
-    <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تدخل قائمة التجهيز حتى تكتمل كتبها. عند وصول الكتب اضغط «حجز المتوفر».</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
+    <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
-      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td>${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">حجز المتوفر</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
+      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td>${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
       </tbody></table></div></article>`;
 }
 
@@ -3628,7 +3631,7 @@ async function allocateBackorder(id) {
   try{
     const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/backorder/allocate`);
     renderOnlineOrders();
-    toast(result.stage==="awaiting_preparation"?`اكتملت كتب الطلب ${id} وانتقل لقائمة التجهيز.`:`تم حجز المتوفر للطلب ${id}، وما زال ينتظر باقي الكتب.`);
+    toast(`اكتملت كتب الطلب ${id} وانتقل لقائمة التجهيز.`);
   }catch(error){toast(error.message,"error");}
 }
 
@@ -4220,7 +4223,7 @@ function renderOnlineOrders() {
 function onlineOrderPrimaryAction(order) {
   const stage=onlineOrderWorkflowStage(order);
   if(stage==="new"&&!order.confirmedAt)return `<button class="btn compact" data-action="confirm-online-order" data-id="${order.id}">تأكيد الطلب</button>`;
-  if(stage==="backorder")return canAction("order.quick.edit")&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">حجز المتوفر الآن</button>`:`<button class="btn ghost compact" data-action="online-orders-mode" data-mode="shortages">بانتظار الكتب</button>`;
+  if(stage==="backorder")return canAction("order.quick.edit")&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:`<button class="btn ghost compact" data-action="online-orders-mode" data-mode="shortages">بانتظار الكتب</button>`;
   if(stage==="new"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-start" data-id="${order.id}">بدء التجهيز</button>`;
   if(stage==="preparing"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-open" data-id="${order.id}">${order.workflowStage==="needs_review"?"مراجعة الطلب":"فتح التجهيز"}</button>`;
   if(stage==="ready")return order.saleId?`<button class="btn compact" data-action="ship-ready-order" data-id="${order.id}">تم الشحن</button>`:`<button class="btn compact" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`;
