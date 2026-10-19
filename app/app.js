@@ -906,7 +906,8 @@ async function refreshDashboardShipments({ silent = false } = {}) {
 
 async function reloadRemoteData() {
   if (!serverConnected) return false;
-  const response = await fetch(`/api/db?reload=${Date.now()}`, { headers: authHeaders(), cache: "no-store" });
+  // A stalled download must not leave the screen waiting forever.
+  const response = await fetch(`/api/db?reload=${Date.now()}`, { headers: authHeaders(), cache: "no-store", signal: AbortSignal.timeout(45000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   data = normalizeData(await response.json());
   dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
@@ -3666,7 +3667,9 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
   const requestKey=`${method}:${path}`;
   if(orderWorkflowRequests.has(requestKey))return orderWorkflowRequests.get(requestKey);
   const request=(async()=>{
-    const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders({...(body?{"Content-Type":"application/json"}:{}),...(revision!==""&&revision!=null?{"X-DB-Revision":String(revision)}:{})}),body:body?JSON.stringify(body):undefined});
+    let response;
+    try{response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders({...(body?{"Content-Type":"application/json"}:{}),...(revision!==""&&revision!=null?{"X-DB-Revision":String(revision)}:{})}),body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(60000)});}
+    catch(error){if(error?.name==="TimeoutError"||error?.name==="AbortError")throw Object.assign(new Error("انتهت مهلة الاتصال بالخادم. حدّث الصفحة وتحقق من حالة الطلب قبل إعادة المحاولة."),{code:"REQUEST_TIMEOUT"});throw error;}
     const result=await response.json().catch(()=>({}));
     const authError=orderAuthenticationError(response.status,result);
     if(authError)throw authError;
@@ -3760,7 +3763,7 @@ async function cancelOnlineOrder(id) {
   const order=getOnlineOrder(id);if(!order)return;
   if(!canCancelOrderDirectly(order))return toast("الطلب لدى شركة الشحن أو مكتمل؛ استخدم المرتجعات بدل الإلغاء.","error");
   try{
-    const {financial}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET"});
+    const {financial}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET",reload:false});
     const shipment=activeOrderShipment(order),sale=order.saleId&&(data.sales||[]).find(item=>item.id===order.saleId&&item.status!=="ملغاة");
     const postal=shipment&&/البريد المصري|egypt\s*post|EGYPT_POST/i.test(`${shipment.carrier||""} ${shipment.company||""} ${shipment.carrierCode||""}`);
     const defaultAccount=(financial.payments||[]).find(item=>item.cashAccountId)?.cashAccountId||"";
@@ -3802,7 +3805,7 @@ async function submitOrderCancelComplete(form) {
   if(button){button.disabled=true;button.textContent="جارٍ الإلغاء...";}
   try{
     const reason=[values.reason,String(values.note||"").trim()].filter(Boolean).join(" — ");
-    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel-complete`,{body:{reason,refundAmount:values.refundAmount===undefined?undefined:Number(values.refundAmount),cashAccountId:values.cashAccountId||"",carrierCancelled:values.carrierCancelled==="on",postalChargeStatus:values.postalChargeStatus||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`cancel-${id}-${Date.now()}`)}});
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel-complete`,{reload:"background",body:{reason,refundAmount:values.refundAmount===undefined?undefined:Number(values.refundAmount),cashAccountId:values.cashAccountId||"",carrierCancelled:values.carrierCancelled==="on",postalChargeStatus:values.postalChargeStatus||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`cancel-${id}-${Date.now()}`)}});
     closeModal();renderOnlineOrders();
     toast(result.existing?`الطلب ${id} ملغي بالفعل.`:`تم إلغاء الطلب ${id}${result.steps?.length?`: ${result.steps.join("، ")}`:""}.`);
   }catch(error){
@@ -3866,7 +3869,7 @@ function openCancellationSettlement(kind,id,financial){
     <div class="form-actions">${finalButton}<button class="btn ghost" type="button" data-action="cancellation-open-ledger" data-id="${esc(financial.customerId)}">عرض كشف حساب العميل</button></div>`);
 }
 
-async function refreshCancellationSettlement(kind,id){const result=await orderWorkflowRequest(cancellationEndpoint(kind,id,"cancellation/preview"),{method:"GET"});openCancellationSettlement(kind,id,result.financial);}
+async function refreshCancellationSettlement(kind,id){const result=await orderWorkflowRequest(cancellationEndpoint(kind,id,"cancellation/preview"),{method:"GET",reload:false});openCancellationSettlement(kind,id,result.financial);}
 
 async function confirmExistingOnlineOrder(id) {
   try{const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/confirm`,{reload:"background"});onlineOrdersMode="orders";renderOnlineOrders();toast(result?.order?.workflowStage==="awaiting_stock"?`تم تأكيد ${id} كحجز مسبق حتى توفر الكتب.`:`تم تأكيد ${id} وحجز الكمية المتاحة.`);}
@@ -11532,7 +11535,7 @@ async function cancelSale(id) {
   if (sale && shipmentForSale(id)) return toast("لا يمكن إلغاء فاتورة مرتبطة بشحنة. ألغِ الشحنة أولًا.", "error");
   if (sale?.status === "مرتجع جزئي") return toast("لا يمكن إلغاء فاتورة عليها مرتجع جزئي. أكمل المرتجع من شاشة المرتجعات أو راجع السجل.", "error");
   if (!sale || sale.status === "ملغاة") return;
-  try{const result=await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancellation/preview"),{method:"GET"});if(result.financial.paid>0)return openCancellationSettlement("sale",id,result.financial);if(!confirm(`سيتم إبطال الفاتورة ${id} وإرجاع الكميات للمخزون. هل أنت متأكد؟`))return;await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancel"),{body:{reason:"إبطال فاتورة بيع"}});if(currentView==="sales")renderSales();else showSalesList();toast("تم إبطال الفاتورة وإرجاع المخزون دون حذف المستند.");}catch(error){toast(error.message,"error");}
+  try{const result=await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancellation/preview"),{method:"GET",reload:false});if(result.financial.paid>0)return openCancellationSettlement("sale",id,result.financial);if(!confirm(`سيتم إبطال الفاتورة ${id} وإرجاع الكميات للمخزون. هل أنت متأكد؟`))return;await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancel"),{body:{reason:"إبطال فاتورة بيع"}});if(currentView==="sales")renderSales();else showSalesList();toast("تم إبطال الفاتورة وإرجاع المخزون دون حذف المستند.");}catch(error){toast(error.message,"error");}
 }
 
 function returnedQuantityMap(type, documentId) {
