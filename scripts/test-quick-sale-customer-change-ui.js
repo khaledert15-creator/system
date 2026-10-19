@@ -83,7 +83,8 @@ test("picker searches by customer name or phone", () => {
   assert.match(app, /sale-customer-modal-search/);
   assert.match(app, /type="search"[\s\S]*placeholder="ابحث بالاسم أو رقم الهاتف"/);
   assert.match(app, /searchCustomers\(event\.target\.value\)/);
-  assert.match(app, /customer\.name\.toLowerCase\(\)[\s\S]*normalizePhone\(customer\.phone\)/);
+  assert.match(app, /function searchCustomers[\s\S]*?smartFilter\([\s\S]*?customerSearchFields\)/);
+  assert.match(app, /function customerSearchFields\(item = \{\}\) \{\n  return \[item\.name, item\.phone, item\.alternativePhone/);
 });
 
 test("picker renders separate accessible customer rows", () => {

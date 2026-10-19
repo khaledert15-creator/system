@@ -44,7 +44,7 @@ assert(app.includes('financeTab==="carrier-receivables"'),"report is reachable f
 const renderEnd=app.indexOf("\nfunction renderFinancialReports()",end);
 const context=vm.createContext({
   data:db,carrierReceivablesCompany:"",carrierReceivablesSearch:"",financeTabsMarkup:()=>"",
-  normalizeSmartSearch:value=>String(value||"").toLowerCase(),shipmentFinanceValues:finance,shipmentStatusCode:status,
+  normalizeSmartSearch:value=>String(value||"").toLowerCase(),smartFilter:(items,query,valuesOf)=>!query?items:items.filter(item=>valuesOf(item).join(" ").toLowerCase().includes(String(query).toLowerCase())),shipmentFinanceValues:finance,shipmentStatusCode:status,
   moneyCents:value=>Math.round(Number(value||0)*100),centsMoney:value=>Number((value/100).toFixed(2)),money:value=>`${value} ج.م`,
   statCard:(label,value)=>`<section>${label}: ${value}</section>`,esc:value=>String(value??""),fmtDate:value=>value,
   badge:value=>`<em>${value}</em>`,shipmentStatusMeta:row=>({label:row.status})

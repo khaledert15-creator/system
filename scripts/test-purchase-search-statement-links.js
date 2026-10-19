@@ -7,7 +7,7 @@ const app = fs.readFileSync(path.join(root, "app", "app.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "app", "styles.css"), "utf8");
 
 const checks = [
-  ["purchase search normalizes Arabic digits", /function normalizePurchaseSearch[\s\S]*replace\(\/\[٠-٩\]\/g/],
+  ["purchase search uses the smart filter", /function filterPurchasesForSearch[\s\S]*smartFilter\(purchases, query/],
   ["purchase search covers document and supplier invoice", /filterPurchasesForSearch[\s\S]*purchase\.id[\s\S]*purchase\.supplierInvoiceNumber/],
   ["purchase search covers supplier and products", /filterPurchasesForSearch[\s\S]*supplier\?\.name[\s\S]*\.\.\.products/],
   ["main purchase history has search input", /id="purchase-history-search"/],

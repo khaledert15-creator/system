@@ -2014,12 +2014,117 @@ function itemSubtitle(item) {
 function normalizeSmartSearch(value) {
   return String(value || "")
     .toLocaleLowerCase("ar")
-    .replace(/[أإآ]/g, "ا")
+    .replace(/[\u064b-\u065f\u0670\u0640]/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي")
     .replace(/ة/g, "ه")
     .replace(/ى/g, "ي")
+    .replace(/ء/g, "")
     .replace(/[٠-٩]/g, digit => "٠١٢٣٤٥٦٧٨٩".indexOf(digit))
+    .replace(/[۰-۹]/g, digit => "۰۱۲۳۴۵۶۷۸۹".indexOf(digit))
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+}
+
+// Smart search used by every search box: Arabic spelling variants and diacritics are ignored, "ال"-style prefixes
+// are optional, every word must match (in any order), bookstore spellings count as one word (كيميا/كيميستري،
+// 3ث/الثالث الثانوي، باكلوريا/بكالوريا), numbers match inside phones and document codes (spaces, +20 and leading
+// zeros do not matter), and when nothing matches exactly, words of 5+ letters tolerate a typo.
+const SMART_SEARCH_PREFIX = /^(وال|بال|فال|كال|لل|ال)(?=\S{2,})/;
+const SMART_SEARCH_STOPWORDS = new Set(["صف", "في"]);
+const SMART_SEARCH_SYNONYMS = new Map([
+  "1 اول اولي", "2 ثاني ثانيه تاني تانيه", "3 ثالث ثالثه تالت تالته", "4 رابع رابعه", "5 خامس خامسه", "6 سادس سادسه",
+  "ث ثانوي ثانويه", "ع اعدادي اعداديه", "ب ابتدايي ابتداييه",
+  "بكالوريا باكلوريا بكالورريا باكالوريا بكلوريا باكلورويا",
+  "كيميا كيمستري كيميستري كمستري chemistry chem", "فيزيا فزيا فيزيكس فيزكس physics",
+  "احيا بايو بيو بيولوجي بايولوجي بايولجي biology bio", "رياضيات ماث math maths",
+  "انجليزي انجليزيه انجلش انجليش انكليزي english", "عربي عربيه arabic", "فرنساوي فرنسي فرنسيه french",
+  "جغرافيا جغرافيه geography", "تاريخ history", "اسيله اساله"
+].flatMap(group => { const [canonical, ...words] = group.split(" "); return [[canonical, canonical], ...words.map(word => [word, canonical])]; }));
+function smartStem(word) { return word.replace(SMART_SEARCH_PREFIX, ""); }
+function smartPieces(word) { return word.split(/(?<=\d)(?=\p{L})|(?<=\p{L})(?=\d)/u); }
+
+const smartSearchIndexCache = new Map();
+function smartSearchIndex(values) {
+  const list = (Array.isArray(values) ? values.flat(Infinity) : [values]).filter(value => value !== null && value !== undefined && value !== "").map(String);
+  const key = list.join("\u0001");
+  const cached = smartSearchIndexCache.get(key);
+  if (cached) return cached;
+  const text = normalizeSmartSearch(list.join(" "));
+  const words = text.split(" ").filter(Boolean);
+  const stems = words.map(smartStem);
+  const canon = new Set();
+  stems.forEach(stem => { canon.add(SMART_SEARCH_SYNONYMS.get(stem) || stem); smartPieces(stem).forEach(piece => { const part = smartStem(piece); canon.add(SMART_SEARCH_SYNONYMS.get(part) || part); }); });
+  const index = { text, compact: words.join(""), stems, canon, digits: list.map(value => normalizeArabicDigits(value).replace(/\D/g, "")).filter(Boolean).join("|") };
+  if (smartSearchIndexCache.size > 20000) smartSearchIndexCache.clear();
+  smartSearchIndexCache.set(key, index);
+  return index;
+}
+
+function smartQueryTokens(query) {
+  const tokens = normalizeSmartSearch(query).split(" ").filter(Boolean);
+  const meaningful = tokens.filter(token => !SMART_SEARCH_STOPWORDS.has(smartStem(token)));
+  return meaningful.length ? meaningful : tokens;
+}
+
+function editDistanceWithin(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return false;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      best = Math.min(best, current[j]);
+    }
+    if (best > max) return false;
+    previous = current;
+  }
+  return previous[b.length] <= max;
+}
+
+function smartTokenMatches(token, index, fuzzy = true) {
+  if (index.text.includes(token) || index.compact.includes(token)) return true;
+  const pieces = smartPieces(token);
+  if (pieces.length > 1) return pieces.every(piece => smartTokenMatches(piece, index, fuzzy));
+  const stem = smartStem(token);
+  if (stem.length >= 2 && index.stems.some(word => word.includes(stem))) return true;
+  const canonical = SMART_SEARCH_SYNONYMS.get(stem);
+  if (canonical) return index.canon.has(canonical);
+  if (/^\d+$/.test(token)) {
+    const phone = token.length >= 12 && token.startsWith("20") ? `0${token.slice(2)}` : token;
+    const trimmed = phone.replace(/^0+/, "");
+    return index.digits.includes(phone) || (trimmed.length >= 3 && index.digits.includes(trimmed));
+  }
+  // Typos: only for 5+ letters and the first letter must agree, so names such as احمد/محمد stay distinct.
+  if (!fuzzy || stem.length < 5) return false;
+  const max = stem.length >= 8 ? 2 : 1;
+  return index.stems.some(word => word[0] === stem[0] && (editDistanceWithin(word, stem, max) || (word.length > stem.length && editDistanceWithin(word.slice(0, stem.length), stem, max))));
+}
+
+function smartMatch(query, values, fuzzy = true) {
+  const tokens = smartQueryTokens(query);
+  if (!tokens.length) return true;
+  const index = smartSearchIndex(values);
+  return tokens.every(token => smartTokenMatches(token, index, fuzzy));
+}
+
+// Filters a list with the smart search. Typos are only tolerated when nothing matches exactly, so searching
+// "محمود" shows محمود and not every محمد.
+function smartFilter(items, query, valuesOf) {
+  const tokens = smartQueryTokens(query);
+  if (!tokens.length) return items;
+  const indexed = items.map(item => ({ item, index: smartSearchIndex(valuesOf(item)) }));
+  const exact = indexed.filter(({ index }) => tokens.every(token => smartTokenMatches(token, index, false)));
+  return (exact.length ? exact : indexed.filter(({ index }) => tokens.every(token => smartTokenMatches(token, index, true)))).map(({ item }) => item);
+}
+
+function smartFilterRows(rows, query, valuesOf = row => row.dataset.search || row.textContent) {
+  const list = [...rows];
+  const visible = new Set(smartFilter(list, query, valuesOf));
+  list.forEach(row => { row.hidden = !visible.has(row); });
+  return visible.size;
 }
 
 function normalizeArabicDigits(value = "") {
@@ -2090,33 +2195,44 @@ function isEditableElement(target) {
   return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
 }
 
-function bookSearchText(book = {}) {
-  return normalizeSmartSearch([
-    book.id, book.name, book.barcode, book.extraBarcode, book.internalCode,
+function bookSearchFields(book = {}) {
+  return [
+    book.id, book.name, book.barcode, book.extraBarcode, book.internalCode, book.sku,
     book.itemType, book.category, book.grade, book.publisher, book.author,
     book.teacher, book.keywords, book.aliases, book.shelf, itemTypeLabel(book)
-  ].filter(Boolean).join(" "));
+  ].filter(Boolean);
 }
 
-function smartBookSearch(term, limit = 8) {
+function bookSearchText(book = {}) {
+  return normalizeSmartSearch(bookSearchFields(book).join(" "));
+}
+
+// Books matching every word come first; when no book has them all, the books matching the most words are shown.
+function smartBookSearch(term, limit = 8, books = data.books) {
   const query = normalizeSmartSearch(term);
   if (!query) return [];
-  const words = query.split(/\s+/).filter(Boolean);
-  return data.books
-    .filter(book => !book.deletedAt)
+  const tokens = smartQueryTokens(query);
+  const active = (books || []).filter(book => !book.deletedAt);
+  let matches = smartFilter(active, query, bookSearchFields);
+  if (!matches.length && tokens.length > 1) {
+    const counted = active.map(book => {
+      const index = smartSearchIndex(bookSearchFields(book));
+      return { book, count: tokens.filter(token => smartTokenMatches(token, index)).length };
+    });
+    const best = Math.max(0, ...counted.map(item => item.count));
+    matches = best ? counted.filter(item => item.count === best).map(item => item.book) : [];
+  }
+  const compactQuery = query.replace(/\s+/g, "");
+  return matches
     .map(book => {
-      const text = bookSearchText(book);
-      const compact = text.replace(/\s+/g, "");
+      const name = normalizeSmartSearch(book.name);
       let score = 0;
-      if (text.includes(query) || compact.includes(query.replace(/\s+/g, ""))) score += 20;
-      words.forEach(word => {
-        if (text.includes(word)) score += 6;
-        else if ([...new Set(text.split(/\s+/))].some(token => token.includes(word) || word.includes(token))) score += 2;
-      });
-      if (normalizeSmartSearch(book.barcode) === query || normalizeSmartSearch(book.extraBarcode) === query || normalizeSmartSearch(book.id) === query) score += 40;
+      if ([book.barcode, book.extraBarcode, book.id, book.internalCode].some(code => code && normalizeSmartSearch(code) === query)) score += 100;
+      if (name.startsWith(query)) score += 30;
+      if (name.includes(query) || name.replace(/\s+/g, "").includes(compactQuery)) score += 20;
+      tokens.forEach(token => { if (name.includes(token)) score += 5; });
       return { book, score };
     })
-    .filter(item => item.score > 0)
     .sort((a, b) => b.score - a.score || String(a.book.name).localeCompare(String(b.book.name), "ar"))
     .slice(0, limit)
     .map(item => item.book);
@@ -2713,7 +2829,7 @@ function renderBooks() {
     </div>
     <article class="card">
       <div class="toolbar">
-        <div class="search"><input id="book-search" placeholder="بحث باسم الصنف أو الباركود أو المورد/الناشر..."></div>
+        <div class="search"><input autocomplete="off" id="book-search" placeholder="بحث باسم الصنف أو الباركود أو المورد/الناشر..."></div>
         <select id="book-category" class="filter-select"><option value="">كل التصنيفات</option>${[...new Set(data.books.map(b => b.category))].map(c => `<option>${esc(c)}</option>`).join("")}</select>
         <select id="book-stock-filter" class="filter-select"><option value="">كل حالات المخزون</option><option value="low">منخفض</option><option value="zero">صفري أو سالب</option><option value="consignment">أمانة</option></select>
         <button class="btn ghost" onclick="window.print()">⇩ طباعة</button>
@@ -2742,15 +2858,8 @@ function booksTable(books) {
 }
 
 function searchCustomers(term) {
-  const normalized = String(term || "").trim().toLowerCase();
-  if (!normalized) return [];
-  const phone = normalizePhone(normalized);
-  return data.customers
-    .filter(customer => !customer.deletedAt && (
-      customer.name.toLowerCase().includes(normalized) ||
-      (phone && normalizePhone(customer.phone).includes(phone))
-    ))
-    .slice(0, 8);
+  if (!normalizeSmartSearch(term)) return [];
+  return smartFilter((data.customers || []).filter(customer => !customer.deletedAt), term, customerSearchFields).slice(0, 8);
 }
 
 function saleCustomerDetailsMarkup(customer) {
@@ -3181,7 +3290,7 @@ function onlineOrderQuickFilterLabel(filter = onlineOrderQuickFilter) {
     new: "جديد",
     backorder: "حجز مسبق",
     preparing: "قيد التجهيز",
-    ready: "جاهز للشحن",
+    ready: "مغلّف · لم يُشحن بعد",
     shipped: "تم الشحن",
     delivered: "تم التسليم",
     cancelled: "ملغي / مرتجع"
@@ -3203,11 +3312,21 @@ function onlineOrderWorkflowLabel(order={}) {
   const stage=onlineOrderWorkflowStage(order);
   if(order.workflowStage==="needs_review")return "يحتاج مراجعة";
   if(stage==="cancelled")return order.status==="مرتجع"||order.workflowStage==="returned"?"مرتجع":"ملغي";
-  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"جاري التجهيز",ready:"جاهز للشحن",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
+  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"جاري التجهيز",ready:"مغلّف · لم يُشحن بعد",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
+}
+
+// A packed order stays in the store until it gets a tracking code, so its badge says so plainly and names what it waits
+// for; customer service must not read it as shipped.
+function readyOrderWaitingFor(order={}) {
+  if(!order.saleId)return "ينتظر الفاتورة";
+  if(!(Number(order.packedWeightGrams)>0))return "ينتظر وزن الطرد";
+  return "ينتظر كود التتبع";
 }
 
 function onlineOrderWorkflowBadge(order={}) {
   const stage=onlineOrderWorkflowStage(order);
+  if(stage==="ready")return `<span class="badge not-shipped" title="الطرد مغلّف وما زال في المكتبة ولم يُسلَّم لشركة الشحن">📦 مغلّف · لم يُشحن بعد</span><small class="not-shipped-note">ما زال في المكتبة · ${esc(readyOrderWaitingFor(order))}</small>`;
+  if(stage==="shipped")return badge("🚚 تم الشحن","blue");
   return badge(onlineOrderWorkflowLabel(order),stage==="cancelled"||order.workflowStage==="needs_review"?"danger":stage==="new"||stage==="ready"||stage==="backorder"?"warning":stage==="delivered"?"":"gray");
 }
 
@@ -3440,7 +3559,8 @@ function openQuickGovernorateList(open=true) {
 function filterQuickGovernorates(query="") {
   const term=normalizeSmartSearch(query),options=[...document.querySelectorAll("[data-action='quick-order-select-governorate']")];
   let first=null;
-  options.forEach(option=>{const visible=!term||normalizeSmartSearch(option.dataset.value).includes(term);option.hidden=!visible;option.classList.remove("active");if(visible&&!first)first=option;});
+  const matches=new Set(smartFilter(options,term,option=>option.dataset.value));
+  options.forEach(option=>{const visible=matches.has(option);option.hidden=!visible;option.classList.remove("active");if(visible&&!first)first=option;});
   if(first){first.classList.add("active");document.getElementById("quick-order-governorate-search")?.setAttribute("aria-activedescendant",first.id);}
   else document.getElementById("quick-order-governorate-search")?.removeAttribute("aria-activedescendant");
 }
@@ -4214,11 +4334,11 @@ function renderOnlineOrders() {
     ${workflowModeTabs("orders")}
     <div class="section-title"><div><span class="eyebrow">السجل الرئيسي</span><h2>كل طلبات الأونلاين</h2><p>كل طلب يظل هنا منذ إنشائه وحتى التسليم أو الإلغاء.</p></div><button class="btn" data-action="add-online-order">＋ طلب جديد</button></div>
     <div class="order-stage-filters" role="group" aria-label="فلترة الطلبات حسب المرحلة">
-      ${[["","الكل",active.length],["new","جديد",count("new")],["backorder","حجز مسبق",count("backorder")],["preparing","قيد التجهيز",count("preparing")],["ready","جاهز للشحن",count("ready")],["shipped","تم الشحن",count("shipped")],["delivered","تم التسليم",count("delivered")],["cancelled","ملغي / مرتجع",count("cancelled")]].map(([value,label,total])=>`<button class="${onlineOrderQuickFilter===value?"active":""}" data-action="online-order-stat" data-stat="online-orders:${value||"all"}"><span>${label}</span><b>${total}</b></button>`).join("")}
+      ${[["","الكل",active.length],["new","جديد",count("new")],["backorder","حجز مسبق",count("backorder")],["preparing","قيد التجهيز",count("preparing")],["ready","مغلّف · لم يُشحن",count("ready")],["shipped","تم الشحن",count("shipped")],["delivered","تم التسليم",count("delivered")],["cancelled","ملغي / مرتجع",count("cancelled")]].map(([value,label,total])=>`<button class="${onlineOrderQuickFilter===value?"active":""}" data-action="online-order-stat" data-stat="online-orders:${value||"all"}"><span>${label}</span><b>${total}</b></button>`).join("")}
     </div>
     <article class="card">
       ${quickLabel ? `<div class="alert-item" style="margin-bottom:12px"><div class="alert-badge blue">↥</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>يمكنك فتح أي طلب أو تعديله من الجدول بالأسفل.</span></div><button class="row-action" data-action="online-order-stat" data-stat="online-orders:all">عرض كل الطلبات</button></div>` : ""}
-      <div class="toolbar"><div class="search"><input id="online-order-search" placeholder="بحث برقم الطلب أو الفاتورة أو العميل أو الهاتف أو التتبع"></div><button class="btn ghost compact" data-action="online-order-stat" data-stat="online-orders:all">إعادة الضبط</button></div>
+      <div class="toolbar"><div class="search"><input autocomplete="off" id="online-order-search" placeholder="بحث برقم الطلب أو الفاتورة أو العميل أو الهاتف أو التتبع"></div><button class="btn ghost compact" data-action="online-order-stat" data-stat="online-orders:all">إعادة الضبط</button></div>
       <div class="table-wrap" id="online-orders-table">${onlineOrdersTable(visible)}</div>
     </article>`;
 }
@@ -4229,7 +4349,8 @@ function onlineOrderPrimaryAction(order) {
   if(stage==="backorder")return canAction("order.quick.edit")&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:`<button class="btn ghost compact" data-action="online-orders-mode" data-mode="shortages">بانتظار الكتب</button>`;
   if(stage==="new"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-start" data-id="${order.id}">بدء التجهيز</button>`;
   if(stage==="preparing"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-open" data-id="${order.id}">${order.workflowStage==="needs_review"?"مراجعة الطلب":"فتح التجهيز"}</button>`;
-  if(stage==="ready")return order.saleId?`<button class="btn compact" data-action="ship-ready-order" data-id="${order.id}">تم الشحن</button>`:`<button class="btn compact" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`;
+  if(stage==="ready"&&order.saleId&&!(Number(order.packedWeightGrams)>0)&&(canAction("order.pack")||canAction("order.shipping")))return `<button class="btn compact" data-action="packed-weight-edit" data-id="${order.id}">تسجيل وزن الطرد</button>`;
+  if(stage==="ready")return order.saleId?`<button class="btn compact" data-action="ship-ready-order" data-id="${order.id}" title="عند تسليم الطرد لشركة الشحن">إدخال كود التتبع</button>`:`<button class="btn compact" data-action="convert-order-sale" data-id="${order.id}">إنشاء الفاتورة</button>`;
   if(stage==="shipped"&&order.shipmentId)return `<button class="btn compact" data-action="create-order-shipment" data-id="${order.id}">فتح الشحنة</button>`;
   return `<button class="btn ghost compact" data-action="view-online-order" data-id="${order.id}">عرض الطلب</button>`;
 }
@@ -4470,7 +4591,7 @@ function orderJourneyMarkup(order) {
     order.inventoryReservation?.status&&["تم حجز المخزون",({active:"الحجز فعال",consumed:"تم استهلاك الحجز في الفاتورة",released:"تم تحرير الحجز"})[order.inventoryReservation.status]||"—"],
     order.preparingAt&&["قيد التجهيز",order.preparedAt?`اكتمل بواسطة ${order.preparedBy||"—"}`:`بواسطة ${order.preparingBy||"—"}`],
     order.preparedAt&&["تم التجهيز",arabicDateTimeLabel(order.preparedAt)],
-    order.workflowStage==="awaiting_shipping"&&["جاهز للشحن","بانتظار شركة الشحن"],
+    order.workflowStage==="awaiting_shipping"&&!shipment&&["مغلّف · لم يُشحن بعد",`الطرد ما زال في المكتبة · ${readyOrderWaitingFor(order)}`,"pending"],
     shipment&&["تم الشحن",shipment.trackingNumber||shipment.tracking||shipment.id],
     shipment&&["قيد التوصيل",shipmentStatusMeta(shipment).label],
     shipmentStatusCode(shipment||{})==="delivered"&&["تم التسليم",arabicDateTimeLabel(shipment.deliveredAt||shipment.updatedAt)],
@@ -4478,7 +4599,7 @@ function orderJourneyMarkup(order) {
     settlement&&["التسوية",settlement.status||"بانتظار التحويل"],
     ...orderCancellationStages(order,sale)
   ].filter(Boolean);
-  return `<section class="order-journey"><h3>رحلة الطلب</h3><div>${stages.map(([title,value,tone])=>`<span class="${tone==="cancel"?"journey-cancel":""}"><i>${tone==="cancel"?"✕":"✓"}</i><small>${esc(title)}</small><strong>${esc(value)}</strong></span>`).join("")||`<p class="muted">تبدأ الرحلة بعد تأكيد الطلب.</p>`}</div></section>`;
+  return `<section class="order-journey"><h3>رحلة الطلب</h3><div>${stages.map(([title,value,tone])=>`<span class="${tone==="cancel"?"journey-cancel":tone==="pending"?"journey-pending":""}"><i>${tone==="cancel"?"✕":tone==="pending"?"…":"✓"}</i><small>${esc(title)}</small><strong>${esc(value)}</strong></span>`).join("")||`<p class="muted">تبدأ الرحلة بعد تأكيد الطلب.</p>`}</div></section>`;
 }
 
 // What a cancellation did, in the order journey: when, who and why; the invoice; and where the paid money went.
@@ -4543,7 +4664,7 @@ function viewOnlineOrder(id) {
   const shipmentButton = order.shipmentId
     ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>`
     : `<button class="btn secondary" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`;
-  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${order.status}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || "—")}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
 }
 
 function saleTotals() {
@@ -4779,24 +4900,14 @@ function sortedPurchases() {
     .sort((a, b) => String(b.date || b.createdAt).localeCompare(String(a.date || a.createdAt)) || String(b.id).localeCompare(String(a.id)));
 }
 
-function normalizePurchaseSearch(value = "") {
-  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
-  return String(value || "")
-    .replace(/[٠-٩]/g, digit => String(arabicDigits.indexOf(digit)))
-    .trim()
-    .toLocaleLowerCase("ar-EG");
-}
-
 function filterPurchasesForSearch(purchases = sortedPurchases(), query = "") {
-  const term = normalizePurchaseSearch(query);
-  if (!term) return purchases;
-  return purchases.filter(purchase => {
+  return smartFilter(purchases, query, purchase => {
     const supplier = getSupplier(purchase.supplierId);
     const products = (purchase.lines || []).map(line => {
       const book = getBook(line.bookId || line.productId);
-      return [book?.name, book?.barcode, book?.extraBarcode].filter(Boolean).join(" ");
+      return [book?.name, book?.barcode, book?.extraBarcode];
     });
-    return normalizePurchaseSearch([
+    return [
       purchase.id,
       purchase.supplierInvoiceNumber,
       purchase.date,
@@ -4806,7 +4917,7 @@ function filterPurchasesForSearch(purchases = sortedPurchases(), query = "") {
       supplier?.name,
       supplier?.phone,
       ...products
-    ].filter(Boolean).join(" ")).includes(term);
+    ];
   });
 }
 
@@ -5007,10 +5118,8 @@ function partyRow(item, isCustomers, partyKind) {
           </tr>`;
 }
 
-function partyMatchesSearch(item, term) {
-  if (!term) return true;
-  const haystack = normalizeArabicDigits(`${item.name || ""} ${item.phone || ""} ${item.alternativePhone || item.phone2 || ""} ${item.id || ""} ${item.governorate || ""} ${item.city || ""}`).toLowerCase();
-  return haystack.includes(term);
+function customerSearchFields(item = {}) {
+  return [item.name, item.phone, item.alternativePhone, item.phone2, item.id, item.governorate, item.city, item.address, item.type];
 }
 
 function filterParties() {
@@ -5019,8 +5128,8 @@ function filterParties() {
   const isCustomers = partyTab === "customers";
   const list = isCustomers ? data.customers : data.suppliers;
   const partyKind = isCustomers ? "customer" : "supplier";
-  const term = normalizeArabicDigits(partySearchTerm.trim()).toLowerCase();
-  const matches = list.filter(item => partyMatchesSearch(item, term));
+  const term = partySearchTerm.trim();
+  const matches = smartFilter(list, term, customerSearchFields);
   const body = document.getElementById("party-table-body");
   if (body) body.innerHTML = matches.length ? matches.map(item => partyRow(item, isCustomers, partyKind)).join("") : `<tr><td colspan="${isCustomers ? 7 : 6}" class="muted">لا توجد نتائج مطابقة.</td></tr>`;
   const count = document.getElementById("party-search-count");
@@ -5126,7 +5235,7 @@ function renderShipping() {
     </div>
     <div id="shipping-filter-summary">${quickLabel ? `<div class="alert-item" style="margin:14px 0"><div class="alert-badge blue">i</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>الجدول بالأسفل يعرض الشحنات المطابقة، ويمكنك فتح أو تعديل أي شحنة مباشرة.</span></div><button class="row-action" data-action="shipping-stat" data-stat="shipping:all">عرض كل الشحنات</button></div>` : ""}</div>
     <article class="card shipping-card">
-      <div class="toolbar shipping-toolbar"><div class="search shipping-search"><input id="shipment-search" placeholder="ابحث برقم الطلب، العميل، كود التتبع أو رقم الشكوى"></div><div class="shipping-filter-fields"><select class="filter-select" id="shipment-status" aria-label="فلتر حالة الشحنة"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter" aria-label="فلتر مجموعة الشحنات"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select><button class="btn ghost shipping-reset-filters" data-action="reset-shipping-filters" type="button"><span aria-hidden="true">↺</span> إعادة الضبط</button></div></div>
+      <div class="toolbar shipping-toolbar"><div class="search shipping-search"><input autocomplete="off" id="shipment-search" placeholder="ابحث برقم الطلب، العميل، كود التتبع أو رقم الشكوى"></div><div class="shipping-filter-fields"><select class="filter-select" id="shipment-status" aria-label="فلتر حالة الشحنة"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter" aria-label="فلتر مجموعة الشحنات"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select><button class="btn ghost shipping-reset-filters" data-action="reset-shipping-filters" type="button"><span aria-hidden="true">↺</span> إعادة الضبط</button></div></div>
       <div class="table-wrap" id="shipments-table">${shipmentsTable(rows)}</div>
     </article>`;
 }
@@ -5289,6 +5398,15 @@ function expenseStatusBadge(status) {
   return badge(status || "مسجل", status === "ملغي" ? "gray" : status === "معتمد" ? "" : "warning");
 }
 
+function filterFinanceExpenseRows() {
+  const status = document.getElementById("finance-expense-status")?.value || "";
+  const rows = [...document.querySelectorAll("[data-expense-row]")];
+  const visible = new Set(smartFilter(rows.filter(row => !status || row.dataset.status === status), document.getElementById("finance-expense-search")?.value || "", row => row.dataset.search));
+  rows.forEach(row => { row.hidden = !visible.has(row); });
+}
+document.addEventListener("input", event => { if (event.target.id === "finance-expense-search") filterFinanceExpenseRows(); });
+document.addEventListener("change", event => { if (event.target.id === "finance-expense-status") filterFinanceExpenseRows(); });
+
 function renderFinanceExpenses() {
   const rows = (data.expenses || []).filter(item => !item.deletedAt).slice().reverse();
   const approved = rows.filter(item => item.status === "معتمد").reduce((sum,item)=>sum+Number(item.amount||0),0);
@@ -5297,8 +5415,8 @@ function renderFinanceExpenses() {
     ${statCard("بانتظار الاعتماد", rows.filter(item=>item.status==="مسجل").length, "مسودات قابلة للمراجعة", "⌛", "gold")}
     ${statCard("مصروفات الشحن", money(rows.filter(item=>item.source==="تسوية شركة شحن"&&item.status==="معتمد").reduce((s,i)=>s+Number(i.amount||0),0)), "من التسويات المعتمدة", "▣", "blue")}
   </div><article class="card"><div class="card-header"><div><h3>قائمة المصروفات</h3><p>المصروف لا يؤثر على الخزنة إلا بعد اعتماده.</p></div><div class="actions">${canAction("manage-finance-types")?`<button class="btn ghost" data-action="manage-expense-types">إدارة أنواع المصروفات</button>`:""}${canAction("add-expense")?`<button class="btn" data-action="add-expense">＋ إضافة مصروف</button>`:""}</div></div>
-  <div class="finance-filters"><input id="finance-expense-search" placeholder="بحث بالرقم أو المستفيد أو المرجع"><select id="finance-expense-status"><option value="">كل الحالات</option><option>مسجل</option><option>معتمد</option><option>ملغي</option></select></div>
-  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("expense",item))}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}${item.settlementId?`<div class="source-trail">تم إنشاؤه تلقائيًا من تسوية <button class="inline-link" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button></div>`:""}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&!item.postalStatementId&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+  <div class="finance-filters"><input id="finance-expense-search" type="search" autocomplete="off" placeholder="بحث بالرقم أو المستفيد أو المرجع أو النوع"><select id="finance-expense-status"><option value="">كل الحالات</option><option>مسجل</option><option>معتمد</option><option>ملغي</option></select></div>
+  <div class="table-wrap"><table><thead><tr><th>رقم المصروف</th><th>التاريخ</th><th>النوع</th><th>المستفيد</th><th>الحساب</th><th>المبلغ</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr data-expense-row data-status="${esc(item.status||"مسجل")}" data-search="${esc([item.id,item.reference,item.date,financeTypeLabel("expense",item),item.beneficiary,item.account,item.amount,item.source,item.settlementId,item.notes,item.status].filter(Boolean).join(" "))}"><td><strong>${esc(item.id)}</strong><br><span class="muted">${esc(item.reference||"")}</span></td><td>${fmtDate(item.date)}</td><td>${esc(financeTypeLabel("expense",item))}</td><td>${esc(item.beneficiary||"—")}</td><td>${esc(item.account)}</td><td class="money">${money(item.amount)}</td><td>${esc(item.source||"يدوي")}${item.settlementId?`<div class="source-trail">تم إنشاؤه تلقائيًا من تسوية <button class="inline-link" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button></div>`:""}</td><td>${expenseStatusBadge(item.status)}</td><td><div class="row-actions">${item.status==="مسجل"&&canAction("add-expense")?`<button class="row-action" data-action="edit-expense" data-id="${item.id}">تعديل</button>`:""}${item.status==="مسجل"&&canAction("approve-expense")?`<button class="row-action" data-action="approve-expense" data-id="${item.id}">اعتماد</button>`:""}${item.status==="معتمد"&&!item.postalStatementId&&canAction("reverse-financial-transaction")?`<button class="row-action text-danger" data-action="reverse-expense" data-id="${item.id}">إلغاء بقيد عكسي</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="9" class="text-center muted">لا توجد مصروفات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceIncome() {
@@ -5398,13 +5516,13 @@ function renderOrderCollectionBatch() {
 function renderOrderCollections() {
   const preview=orderCollectionDraft.shipmentId||orderCollectionDraft.trackingNumber?orderCollectionPreview(orderCollectionDraft.trackingNumber,orderCollectionDraft.amount):null;
   const query=normalizeSmartSearch(orderCollectionSearch);
-  const rows=(data.orderCollections||[]).filter(item=>!query||normalizeSmartSearch([item.trackingNumber,item.orderId,item.customerName,item.customerPhone].join(" ")).includes(query)).slice().reverse();
+  const rows=smartFilter(data.orderCollections||[],query,item=>[item.trackingNumber,item.orderId,item.customerName,item.customerPhone]).slice().reverse();
   const content=orderCollectionMode==="batch"?renderOrderCollectionBatch():`<article class="card collection-entry-card"><div class="card-header"><div><h3>تسجيل تحصيل سريع</h3><p>أدخل كود الشحنة والقيمة الواردة من شركة الشحن.</p></div></div>
     <form id="order-collection-search-form"><div class="collection-entry-grid"><div class="form-field"><label>كود الشحنة</label><input id="order-collection-code" name="trackingNumber" dir="ltr" autocomplete="off" value="${esc(orderCollectionDraft.trackingNumber)}" placeholder="ENO123456789EG"></div><div class="form-field"><label>قيمة التحصيل</label><input ${numericFieldAttributes({id:"order-collection-amount",name:"amount",value:orderCollectionDraft.amount||""})}></div><div class="form-field"><label>تاريخ التحصيل</label><input name="collectionDate" type="date" value="${orderCollectionDraft.collectionDate||today()}"></div><div class="form-field"><label>شركة الشحن</label><input value="${esc(preview?.shipment?.company||preview?.shipment?.carrier||"تُحدد تلقائيًا")}" disabled></div><button class="btn" type="submit">بحث عن الأوردر</button></div></form>
   </article>${renderOrderCollectionCard(preview)}`;
   if (!liveRendering) setTimeout(()=>document.getElementById("order-collection-code")?.focus(),0);
   return `${financeTabsMarkup()}<div class="collection-mode-tabs"><button class="tab ${orderCollectionMode==="single"?"active":""}" data-action="collection-mode" data-mode="single">تسجيل فردي</button><button class="tab ${orderCollectionMode==="batch"?"active":""}" data-action="collection-mode" data-mode="batch">إدخال مجموعة تحصيلات</button></div>${content}
-    <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th>الروابط</th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td><div class="row-actions">${item.onlineOrderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(item.onlineOrderId)}">${esc(item.onlineOrderId)}</button>`:""}${item.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(item.invoiceId)}">${esc(item.invoiceId)}</button>`:""}${item.shipmentId?`<button class="row-action" data-action="view-shipment" data-id="${esc(item.shipmentId)}">${esc(item.shipmentId)}</button>`:""}${item.settlementId?`<button class="row-action" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button>`:""}${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
+    <article class="card collection-history"><div class="card-header"><div><h3>آخر التحصيلات المسجلة</h3><p>السجل اليومي للتحصيل من شركات الشحن.</p></div><input autocomplete="off" id="order-collection-history-search" value="${esc(orderCollectionSearch)}" placeholder="بحث بالكود أو الأوردر أو العميل أو الهاتف"></div><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>الكود</th><th>الأوردر</th><th>العميل</th><th>التحصيل</th><th>العمولة</th><th>الصافي المتوقع</th><th>النوع</th><th>الموظف</th><th>الحالة</th><th>الروابط</th></tr></thead><tbody>${rows.map(item=>`<tr id="collection-${esc(item.id)}"><td>${arabicDateTimeLabel(item.createdAt)}</td><td dir="ltr"><strong>${esc(item.trackingNumber)}</strong></td><td>${esc(item.orderId||"—")}</td><td>${esc(item.customerName||"—")}<br><span class="muted" dir="ltr">${esc(item.customerPhone||"")}</span></td><td class="money">${money(item.amount)}</td><td class="money">${money(item.expectedCommission)}</td><td class="money">${money(item.expectedNetTransfer)}</td><td>${item.registrationType==="settled"?"استلام بالخزنة":"إثبات لدى الشركة"}</td><td>${esc(item.createdBy||"—")}</td><td>${orderCollectionStatusBadge(item)}</td><td><div class="row-actions">${item.onlineOrderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(item.onlineOrderId)}">${esc(item.onlineOrderId)}</button>`:""}${item.invoiceId?`<button class="row-action" data-action="view-sale" data-id="${esc(item.invoiceId)}">${esc(item.invoiceId)}</button>`:""}${item.shipmentId?`<button class="row-action" data-action="view-shipment" data-id="${esc(item.shipmentId)}">${esc(item.shipmentId)}</button>`:""}${item.settlementId?`<button class="row-action" data-action="view-settlement" data-id="${esc(item.settlementId)}">${esc(item.settlementId)}</button>`:""}${item.status!=="reversed"&&canAction("finance.collection.reverse")?`<button class="row-action text-danger" data-action="finance.collection.reverse" data-id="${item.id}">عكس</button>`:""}</div></td></tr>`).join("")||`<tr><td colspan="11" class="text-center muted">لا توجد تحصيلات مسجلة.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function renderFinanceSettlements() {
@@ -5446,7 +5564,7 @@ function renderCarrierReceivables() {
   const query=normalizeSmartSearch(carrierReceivablesSearch);
   const all=carrierReceivablesSnapshot(data,shipmentFinanceValues,shipmentStatusCode);
   const companies=[...new Set(all.map(row=>row.company))].sort((a,b)=>a.localeCompare(b,"ar"));
-  const rows=all.filter(row=>(!carrierReceivablesCompany||row.company===carrierReceivablesCompany)&&(!query||normalizeSmartSearch([row.shipment.trackingNumber,row.shipment.tracking,row.shipment.orderId,row.shipment.invoiceId,row.shipment.customer,row.shipment.customerName,row.shipment.phone,row.shipment.customerPhone,row.company].join(" ")).includes(query)));
+  const rows=smartFilter(all.filter(row=>!carrierReceivablesCompany||row.company===carrierReceivablesCompany),query,row=>[row.shipment.trackingNumber,row.shipment.tracking,row.shipment.orderId,row.shipment.invoiceId,row.shipment.customer,row.shipment.customerName,row.shipment.phone,row.shipment.customerPhone,row.company]);
   const total=kind=>centsMoney(rows.filter(row=>row.kind===kind).reduce((sum,row)=>sum+moneyCents(row.net),0));
   const collected=total("collected"),delivered=total("delivered"),inTransit=total("in_transit");
   const grouped=new Map();
@@ -5458,7 +5576,7 @@ function renderCarrierReceivables() {
   }
   return `${financeTabsMarkup()}<div class="finance-callout"><strong>ما المبلغ الموجود خارج المكتبة؟</strong><span>«حُصّل لدى الشركة» مثبت بتحصيل ولم يدخل الخزنة. «تم التسليم» و«في الطريق» تقديرات حتى تأكيد التحصيل. الصافي يخصم العمولة والرسوم المسجلة للشحنة؛ تكلفة البريد الشهرية منفصلة في «حساب البريد المصري».</span></div>
     <div class="stats-grid finance-summary">${statCard("مستحق مثبت لدى الشركات",money(collected),`${rows.filter(row=>row.kind==="collected").length} شحنة محصلة ولم تُسوَّ`,"▣","blue")}${statCard("تم التسليم ولم يُثبت التحصيل",money(delivered),"صافي تقديري يحتاج مراجعة شركة الشحن","⌛","gold")}${statCard("شحنات في الطريق",money(inTransit),"صافي محتمل، وليس مستحقًا مؤكدًا","↗")}${statCard("إجمالي محتمل خارج المكتبة",money(centsMoney(moneyCents(collected)+moneyCents(delivered)+moneyCents(inTransit))),"يشمل غير المحصل وغير المؤكد","≋")}</div>
-    <article class="card carrier-receivables-card"><div class="card-header"><div><h3>المستحقات حسب شركة الشحن</h3><p>رصيد مفتوح من كل الفترات؛ الشحنات المسواة أو الملغاة لا تظهر.</p></div><div class="carrier-receivables-filters"><select id="carrier-receivables-company" aria-label="شركة الشحن"><option value="">كل الشركات</option>${companies.map(company=>`<option value="${esc(company)}" ${carrierReceivablesCompany===company?"selected":""}>${esc(company)}</option>`).join("")}</select><input id="carrier-receivables-search" value="${esc(carrierReceivablesSearch)}" placeholder="بحث بكود الشحنة أو الأوردر أو العميل" aria-label="بحث في المستحقات"></div></div>
+    <article class="card carrier-receivables-card"><div class="card-header"><div><h3>المستحقات حسب شركة الشحن</h3><p>رصيد مفتوح من كل الفترات؛ الشحنات المسواة أو الملغاة لا تظهر.</p></div><div class="carrier-receivables-filters"><select id="carrier-receivables-company" aria-label="شركة الشحن"><option value="">كل الشركات</option>${companies.map(company=>`<option value="${esc(company)}" ${carrierReceivablesCompany===company?"selected":""}>${esc(company)}</option>`).join("")}</select><input autocomplete="off" id="carrier-receivables-search" value="${esc(carrierReceivablesSearch)}" placeholder="بحث بكود الشحنة أو الأوردر أو العميل" aria-label="بحث في المستحقات"></div></div>
       <div class="table-wrap"><table><thead><tr><th>شركة الشحن</th><th>الشحنات المفتوحة</th><th>محصل لدى الشركة</th><th>تسليم بلا إثبات تحصيل</th><th>في الطريق</th><th>الإجمالي المحتمل</th></tr></thead><tbody>${[...grouped.values()].map(group=>`<tr><td><strong>${esc(group.company)}</strong></td><td>${group.count}</td><td class="money">${money(centsMoney(group.collected))}</td><td class="money">${money(centsMoney(group.delivered))}</td><td class="money">${money(centsMoney(group.inTransit))}</td><td class="money"><strong>${money(centsMoney(group.collected+group.delivered+group.inTransit))}</strong></td></tr>`).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد شحنات مفتوحة مطابقة.</td></tr>`}</tbody></table></div></article>
     <article class="card carrier-receivables-card"><div class="card-header"><div><h3>تفاصيل الشحنات المفتوحة</h3><p>افتح الشحنة لمراجعة التحصيل أو التسوية. لا تُنشئ هذه الشاشة قيودًا مالية.</p></div></div><div class="table-wrap"><table><thead><tr><th>تاريخ الشحن</th><th>شركة الشحن</th><th>الشحنة / الأوردر</th><th>العميل</th><th>المرحلة</th><th>مطلوب من العميل</th><th>الصافي المتوقع لنا</th><th></th></tr></thead><tbody>${rows.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(row=>`<tr><td>${row.date?fmtDate(row.date):"—"}</td><td>${esc(row.company)}</td><td><strong dir="ltr">${esc(row.shipment.trackingNumber||row.shipment.tracking||row.shipment.id)}</strong><br><span class="muted">${esc(row.shipment.orderId||row.shipment.invoiceId||"—")}</span></td><td>${esc(row.shipment.customer||row.shipment.customerName||"—")}</td><td>${row.kind==="collected"?badge("حُصّل لدى الشركة","blue"):row.kind==="delivered"?badge("تم التسليم · غير مثبت","warning"):badge(shipmentStatusMeta(row.shipment).label,"gray")}</td><td class="money">${money(row.gross)}</td><td class="money">${money(row.net)}</td><td><button class="row-action" data-action="view-shipment" data-id="${esc(row.shipment.id)}">فتح الشحنة</button></td></tr>`).join("")||`<tr><td colspan="8" class="text-center muted">لا توجد شحنات مفتوحة مطابقة.</td></tr>`}</tbody></table></div></article>`;
 }
@@ -8707,8 +8825,7 @@ modalBody.addEventListener("input", event => {
     updatePackingWeightPreview(form);return;
   }
   if(event.target.id==="packing-edit-search"){
-    const query=normalizeArabicDigits(event.target.value).trim().toLowerCase();
-    const matches=query?(data.books||[]).filter(book=>!book.deletedAt&&normalizeArabicDigits([book.name,book.barcode,book.sku,book.id].join(" ")).toLowerCase().includes(query)).slice(0,15):[];
+    const matches=smartBookSearch(event.target.value,15);
     document.getElementById("packing-edit-results").innerHTML=matches.map(book=>`<button type="button" class="btn ghost" data-action="packing-edit-add" data-id="${esc(book.id)}"><strong>${esc(book.name)}</strong><small>${esc(book.barcode||book.id)} · ${money(book.price||0)} · إضافة +</small></button>`).join("")||(query?"<p class=\"muted\">لا توجد نتائج مطابقة.</p>":"");return;
   }
   if(event.target.matches("[data-packing-field]")&&packingEditDraft&&!packingEditDraft.pending){
@@ -8736,10 +8853,7 @@ modalBody.addEventListener("input", event => {
   }
   if (event.target.id === "return-supplier-search") {
     const suggestions = document.getElementById("return-supplier-suggestions");
-    const term = String(event.target.value || "").toLowerCase();
-    const matches = data.suppliers
-      .filter(supplier => !supplier.deletedAt && supplierReturnablePurchaseLines(supplier.id).length)
-      .filter(supplier => !term || `${supplier.name} ${supplier.phone || ""} ${supplier.id}`.toLowerCase().includes(term));
+    const matches = smartFilter(data.suppliers.filter(supplier => !supplier.deletedAt && supplierReturnablePurchaseLines(supplier.id).length), event.target.value, customerSearchFields);
     if (suggestions) {
       suggestions.innerHTML = matches.map(supplier => `<button type="button" data-action="choose-return-supplier" data-id="${supplier.id}">
         <strong>${esc(supplier.name)}</strong>
@@ -8749,31 +8863,19 @@ modalBody.addEventListener("input", event => {
     return;
   }
   if (event.target.id === "return-doc-search") {
-    const term = normalizeReturnSearch(event.target.value);
-    modalBody.querySelectorAll("[data-return-doc-row]").forEach(row => {
-      row.hidden = term && !String(row.dataset.search || "").includes(term);
-    });
+    smartFilterRows(modalBody.querySelectorAll("[data-return-doc-row]"), event.target.value);
     return;
   }
   if (event.target.id === "customer-return-line-search") {
-    const term = normalizeReturnSearch(event.target.value);
-    modalBody.querySelectorAll("[data-customer-return-row]").forEach(row => {
-      row.hidden = term && !String(row.dataset.search || "").includes(term);
-    });
+    smartFilterRows(modalBody.querySelectorAll("[data-customer-return-row]"), event.target.value);
     return;
   }
   if (event.target.id === "supplier-return-line-search") {
-    const term = normalizeReturnSearch(event.target.value);
-    modalBody.querySelectorAll("[data-supplier-return-row]").forEach(row => {
-      row.hidden = term && !String(row.dataset.search || "").includes(term);
-    });
+    smartFilterRows(modalBody.querySelectorAll("[data-supplier-return-row]"), event.target.value);
     return;
   }
   if (event.target.id === "return-search-box") {
-    const term = normalizeReturnSearch(event.target.value);
-    modalBody.querySelectorAll("[data-return-search-row]").forEach(row => {
-      row.hidden = term && !String(row.dataset.search || "").includes(term);
-    });
+    smartFilterRows(modalBody.querySelectorAll("[data-return-search-row]"), event.target.value);
     return;
   }
   if (["audit-search", "audit-from", "audit-to"].includes(event.target.id)) {
@@ -9651,22 +9753,20 @@ modalBody.addEventListener("submit", async event => {
 });
 
 function filterBooks() {
-  const term = document.getElementById("book-search")?.value.trim().toLowerCase() || "";
+  const term = document.getElementById("book-search")?.value.trim() || "";
   const category = document.getElementById("book-category")?.value || "";
   const stock = document.getElementById("book-stock-filter")?.value || "";
-  const filtered = data.books.filter(book => !book.deletedAt && (() => {
-    const haystack = `${book.name} ${book.barcode} ${book.extraBarcode} ${book.publisher} ${book.author} ${book.category} ${itemTypeLabel(book)} ${itemUnitLabel(book)}`.toLowerCase();
-    const termMatch = haystack.includes(term);
+  const filtered = smartFilter(data.books.filter(book => !book.deletedAt && (() => {
     const categoryMatch = !category || book.category === category;
     const stockMatch = !stock || (stock === "low" && book.stock > 0 && book.stock <= book.reorder) || (stock === "zero" && book.stock <= 0) || (stock === "consignment" && !book.owned);
-    return termMatch && categoryMatch && stockMatch;
-  })());
+    return categoryMatch && stockMatch;
+  })()), term, book => [...bookSearchFields(book), itemUnitLabel(book)]);
   document.getElementById("books-table").innerHTML = booksTable(filtered);
   scheduleStickyTableScrollbar();
 }
 
 function filterShipments() {
-  const term = document.getElementById("shipment-search")?.value.trim().toLowerCase() || "";
+  const term = document.getElementById("shipment-search")?.value.trim() || "";
   const status = document.getElementById("shipment-status")?.value || "";
   const trackingFilter = document.getElementById("shipment-tracking-filter")?.value || "";
   shippingQuickFilter = trackingFilter;
@@ -9678,9 +9778,7 @@ function filterShipments() {
   document.querySelectorAll('.stat-card.interactive[data-action="shipping-stat"]').forEach(card => {
     card.classList.toggle("active", Boolean(shippingQuickFilter) && card.dataset.stat === `shipping:${shippingQuickFilter}`);
   });
-  const list = data.shipments.filter(s => {
-    const complaintNumbers = shipmentComplaints(s.id).map(item => item.complaintNumber || item.complaintReference || "").join(" ");
-    const haystack = `${s.id} ${s.orderId} ${s.invoiceId || ""} ${s.onlineOrderId || ""} ${s.tracking} ${s.trackingNumber || ""} ${s.customer} ${s.customerName || ""} ${complaintNumbers}`.toLowerCase();
+  const list = smartFilter(data.shipments.filter(s => {
     const byFilter =
       !trackingFilter ||
       (trackingFilter === "active" && !["تم التسليم","مرتجع","ملغاة"].includes(s.status)) ||
@@ -9695,19 +9793,19 @@ function filterShipments() {
       (trackingFilter === "auto-failed" && Boolean(s.trackingError)) ||
       (trackingFilter === "site-blocked" && (s.trackingDiagnostics?.failureCode === "SITE_BLOCKED" || s.trackingDebug?.failureCode === "SITE_BLOCKED")) ||
       (trackingFilter === "error" && s.trackingError);
-    return !s.deletedAt && haystack.includes(term) && (!status || shipmentStatusCode(s) === status) && byFilter;
-  });
+    return !s.deletedAt && (!status || shipmentStatusCode(s) === status) && byFilter;
+  }), term, s => [s.id, s.orderId, s.invoiceId, s.onlineOrderId, s.tracking, s.trackingNumber, s.customer, s.customerName, s.phone, s.customerPhone, s.governorate, s.company, s.carrier,
+    shipmentComplaints(s.id).map(item => item.complaintNumber || item.complaintReference)]);
   document.getElementById("shipments-table").innerHTML = shipmentsTable(list);
   scheduleStickyTableScrollbar();
 }
 
 function filterOnlineOrders() {
-  const term = document.getElementById("online-order-search")?.value.trim().toLowerCase() || "";
-  const list = data.onlineOrders.filter(order => {
+  const term = document.getElementById("online-order-search")?.value.trim() || "";
+  const list = smartFilter(data.onlineOrders.filter(order=>!order.deletedAt&&onlineOrderMatchesQuickFilter(order)), term, order => {
     const sale=(data.sales||[]).find(item=>item.id===order.saleId||item.onlineOrderId===order.id);
     const shipment=(data.shipments||[]).find(item=>item.id===order.shipmentId||item.onlineOrderId===order.id);
-    const haystack=`${order.id} ${order.saleId||sale?.id||""} ${order.customerName||""} ${order.phone||""} ${order.tracking||order.trackingNumber||shipment?.trackingNumber||shipment?.tracking||""}`.toLowerCase();
-    return !order.deletedAt&&onlineOrderMatchesQuickFilter(order)&&haystack.includes(term);
+    return [order.id,order.saleId||sale?.id,order.customerName,order.phone,order.alternativePhone,order.governorate,order.city,order.tracking,order.trackingNumber,shipment?.trackingNumber,shipment?.tracking,(order.lines||[]).map(line=>getBook(line.bookId)?.name||line.name)];
   });
   const table = document.getElementById("online-orders-table");
   if (table) table.innerHTML = onlineOrdersTable(list);
@@ -10321,22 +10419,10 @@ function shipmentForSale(saleId) {
 }
 
 function findSalesInvoices(query = "", status = "") {
-  const term = normalizeInvoiceSearch(query);
-  return data.sales
-    .filter(sale => {
-      if (status && sale.status !== status) return false;
-      if (!term) return true;
+  return smartFilter(data.sales.filter(sale => !status || sale.status === status), query, sale => {
       const customer = getCustomer(sale.customerId);
       const shipment = shipmentForSale(sale.id);
-      const searchable = [
-        sale.id,
-        customer?.name,
-        customer?.phone,
-        shipment?.tracking,
-        shipment?.id,
-        shipment?.customer
-      ].map(normalizeInvoiceSearch);
-      return searchable.some(value => value.includes(term));
+      return [sale.id, sale.customerName, customer?.name, customer?.phone, shipment?.tracking, shipment?.trackingNumber, shipment?.id, shipment?.customer];
     })
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
 }
@@ -12883,15 +12969,15 @@ function filteredAuditRows() {
   const module = document.getElementById("audit-module")?.value || "";
   const from = document.getElementById("audit-from")?.value || "";
   const to = document.getElementById("audit-to")?.value || "";
-  return (data.audit || []).slice().reverse().filter(row => {
+  const rows = (data.audit || []).slice().reverse().filter(row => {
     const created = String(row.createdAt || row.date || "").slice(0, 10);
     if (employee && (row.employeeName || row.user) !== employee) return false;
     if (module && (row.moduleName || row.entity) !== module) return false;
     if (from && created < from) return false;
     if (to && created > to) return false;
-    if (!term) return true;
-    return normalizeSmartSearch([row.operationId, row.action, row.operationType, row.moduleName, row.entity, row.entityId, row.documentNo, row.employeeName, row.user, row.notes].join(" ")).includes(term);
+    return true;
   });
+  return smartFilter(rows, term, row => [row.operationId, row.action, row.operationType, row.moduleName, row.entity, row.entityId, row.documentNo, row.employeeName, row.user, row.notes]);
 }
 
 function updateAuditLogResults() {
