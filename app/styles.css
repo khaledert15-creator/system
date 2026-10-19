@@ -2005,6 +2005,36 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .cancel-steps{margin:0 0 14px;padding-inline-start:20px;display:grid;gap:4px;color:var(--text);font-weight:600}
 .preorder-tag{display:inline-block;margin-inline-start:6px;padding:1px 8px;border-radius:999px;background:var(--warning-soft);color:var(--warning);font-size:11px;font-style:normal;font-weight:700;white-space:nowrap}.preorder-tag.ok{background:#e7f6ee;color:var(--success)}
 .shortage-lines{display:grid;gap:4px}.shortage-line{white-space:nowrap}
+/* Shortages list: a short summary, then one tidy row per book. */
+.shortage-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.shortage-stat{display:grid;gap:2px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--surface)}
+.shortage-stat b{font-size:26px;line-height:1.2;color:var(--ink)}
+.shortage-stat span{font-weight:700;color:var(--ink)}
+.shortage-stat small{color:var(--muted);font-size:12px}
+.shortage-stat.danger{border-color:#f3c9c4}.shortage-stat.danger b{color:var(--danger)}
+.shortage-stat.warning b{color:var(--warning)}
+.shortage-search{min-width:240px}
+.shortage-table td{vertical-align:top}
+.shortage-table th.num,.shortage-table td.num{text-align:center;white-space:nowrap}
+.shortage-table td.num small{display:block;margin-top:3px;color:var(--muted);font-size:11px;font-weight:600}
+.shortage-table td.total{font-size:16px;font-weight:800}
+.shortage-book{min-width:260px}.shortage-book strong{display:block}
+.shortage-book>.muted{display:block;font-size:12px;text-align:right}
+.shortage-flag{display:inline-block;margin-top:6px;padding:2px 9px;white-space:nowrap;border-radius:999px;background:var(--warning-soft);color:var(--warning);font-size:11px;font-style:normal;font-weight:700}
+.shortage-flag.soft{background:#edf0ef;color:#5d6764}
+.shortfall-chip{display:inline-block;padding:4px 12px;border-radius:999px;background:var(--danger-soft);color:var(--danger);font-weight:800;white-space:nowrap}
+.shortfall-chip.suggest{background:#edf0ef;color:#4f5a57}
+.shortfall-chip.ok{background:var(--green-50);color:var(--green-700)}
+.shortage-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
+.shortage-actions .row-action{white-space:nowrap}
+.shortage-orders{margin-top:6px;font-size:12px}
+.shortage-orders summary{width:max-content;cursor:pointer;color:var(--blue-700);font-weight:700}
+.shortage-orders ul{display:grid;gap:4px;margin:6px 0 0;padding:0;list-style:none}
+.shortage-orders li{margin:0;padding:2px 0;line-height:1.7}.shortage-orders li>*{margin-inline-end:6px}.shortage-orders li b{white-space:nowrap}.shortage-orders .inline-link{min-height:0}
+.shortage-kind{padding:0 7px;border-radius:999px;font-size:10px;font-style:normal;font-weight:700;white-space:nowrap}
+.shortage-kind.preorder{background:var(--warning-soft);color:var(--warning)}
+.shortage-kind.reserved{background:var(--blue-soft);color:var(--blue)}
+.shortage-date{display:block;font-size:11px}
 .order-issue-note{display:grid;gap:2px;margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--danger-soft);color:var(--danger);font-size:12px;line-height:1.5;max-width:320px}.order-issue-note strong{font-weight:800}.order-issue-note span{color:var(--text)}.order-issue-note small{color:var(--muted)}.order-issue-note.full{max-width:none;margin:10px 0;padding:10px 12px;font-size:13px}
 .issue-missing-books{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--canvas)}.issue-missing-books p{margin:0 0 8px;font-size:13px}.issue-missing-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--line)}.issue-missing-line input{width:90px}
 .packing-qty-badge{display:grid;place-items:center;gap:0;min-height:52px;border-radius:12px;background:#eef4fb;color:var(--primary);line-height:1.1}.packing-qty-badge b{font-size:26px;font-weight:800}.packing-qty-badge small{font-size:11px;color:var(--muted)}.packing-qty-badge.multi{background:var(--warning-soft);color:var(--warning);outline:2px solid #f1c27d}

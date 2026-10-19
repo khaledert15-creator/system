@@ -3719,32 +3719,82 @@ function backorderAllocatable(order) {
   return needed.size>0&&[...needed].every(([bookId,qty])=>bookAvailableStock(getBook(bookId))>=qty);
 }
 
+function sinceLabel(value) {
+  const time=new Date(value||"").getTime();
+  if(!Number.isFinite(time))return "";
+  const days=Math.floor((Date.now()-time)/86400000);
+  return days<=0?"اليوم":days===1?"أمس":days===2?"منذ يومين":days<=10?`منذ ${days} أيام`:`منذ ${days} يومًا`;
+}
+
+function ordersCountLabel(count) {
+  return `${count} ${count>=3&&count<=10?"طلبات":"طلب"}`;
+}
+
+// One row per book that needs action. Pre-orders hold no copies, so their full quantities are demand on top of the
+// copies already reserved for confirmed orders; the shortfall is what the shelf (minus copies awaiting a count) cannot cover.
 function shortageRows() {
-  const rows=new Map();
-  for(const order of backorderOrders())for(const line of order.backorderLines||[]){
-    const row=rows.get(line.bookId)||{bookId:line.bookId,waiting:0,orders:new Set(),oldest:order.backorderSince||order.confirmedAt||""};
-    row.waiting+=Number(line.qty||0);row.orders.add(order.id);
-    if(String(order.backorderSince||"")<String(row.oldest||"9"))row.oldest=order.backorderSince;
-    rows.set(line.bookId,row);
+  const preorders=new Map(),reservations=new Map();
+  const add=(map,bookId,entry)=>{if(!map.has(bookId))map.set(bookId,[]);map.get(bookId).push(entry);};
+  for(const order of backorderOrders()){
+    const qtyByBook=new Map();
+    for(const line of order.lines||[])qtyByBook.set(line.bookId,(qtyByBook.get(line.bookId)||0)+Number(line.qty||0));
+    for(const [bookId,qty] of qtyByBook)if(qty>0)add(preorders,bookId,{order,qty});
   }
-  for(const book of (data.books||[]).filter(book=>!book.deletedAt&&(bookCountHold(book)>0||Number(book.stock||0)<=Math.max(0,Number(book.reorder||0)))))if(!rows.has(book.id))rows.set(book.id,{bookId:book.id,waiting:0,orders:new Set(),oldest:""});
-  return [...rows.values()].map(row=>{const book=getBook(row.bookId)||{},available=bookAvailableStock(book),reorderGap=Math.max(0,Number(book.reorder||0)-Number(book.stock||0));return {...row,book,available,toBuy:Math.max(row.waiting-available,0)+(row.waiting?0:Math.max(reorderGap,Number(book.stock||0)<=0?1:0))};})
-    .sort((a,b)=>b.waiting-a.waiting||b.toBuy-a.toBuy||String(a.book.name||"").localeCompare(String(b.book.name||""),"ar"));
+  for(const order of (data.onlineOrders||[]).filter(order=>!order.deletedAt&&order.inventoryReservation?.status==="active"&&order.workflowStage!=="awaiting_stock")){
+    const qtyByBook=new Map();
+    for(const line of order.inventoryReservation.lines||[])qtyByBook.set(line.bookId,(qtyByBook.get(line.bookId)||0)+Number(line.qty||0));
+    for(const [bookId,qty] of qtyByBook)if(qty>0)add(reservations,bookId,{order,qty});
+  }
+  const ids=new Set([...preorders.keys(),...(data.books||[]).filter(book=>!book.deletedAt&&(bookCountHold(book)>0||Number(book.stock||0)<=Math.max(0,Number(book.reorder||0)))).map(book=>book.id)]);
+  return [...ids].map(bookId=>{
+    const book=getBook(bookId)||{},stock=Number(book.stock||0),countHold=bookCountHold(book),reserved=bookReservedStock(book);
+    const preorderOrders=preorders.get(bookId)||[],reservedOrders=reservations.get(bookId)||[];
+    const preorder=preorderOrders.reduce((sum,item)=>sum+item.qty,0),needed=reserved+preorder;
+    const shortfall=Math.max(0,needed-Math.max(0,stock-countHold));
+    const lowStock=stock<=Math.max(0,Number(book.reorder||0));
+    const left=Math.max(0,stock-countHold)-needed;
+    const suggested=shortfall||!lowStock?0:Math.max(Math.max(0,Number(book.reorder||0))-left,left<=0?1:0);
+    const oldest=preorderOrders.map(item=>item.order.backorderSince||item.order.confirmedAt||"").filter(Boolean).sort()[0]||"";
+    return {bookId,book,stock,countHold,reserved,preorder,needed,shortfall,toBuy:shortfall||suggested,suggested,lowStock,preorderOrders,reservedOrders,oldest};
+  }).filter(row=>row.shortfall||row.countHold||row.lowStock)
+    .sort((a,b)=>b.shortfall-a.shortfall||b.preorder-a.preorder||b.countHold-a.countHold||b.toBuy-a.toBuy||String(a.book.name||"").localeCompare(String(b.book.name||""),"ar"));
+}
+
+function shortageOrdersMarkup(row) {
+  const items=[...row.preorderOrders.map(item=>({...item,kind:"حجز مسبق",tone:"preorder"})),...row.reservedOrders.map(item=>({...item,kind:"محجوز",tone:"reserved"}))];
+  if(!items.length)return "";
+  return `<details class="shortage-orders"><summary>الطلبات (${items.length})</summary><ul>${items.map(({order,qty,kind,tone})=>`<li><button type="button" class="inline-link" data-action="view-online-order" data-id="${esc(order.id)}">${esc(order.id)}</button><span>${esc(order.customerName||"—")}</span><b>× ${qty}</b><em class="shortage-kind ${tone}">${kind}</em></li>`).join("")}</ul></details>`;
 }
 
 function renderShortagesScreen() {
   const orders=backorderOrders(),rows=shortageRows(),canEdit=canAction("order.quick.edit");
-  const bookCell=row=>`<strong>${esc(row.book.name||row.bookId)}</strong>${bookCountHold(row.book)?`<em class="preorder-tag">يحتاج جرد · ${bookCountHold(row.book)} غير موجودة على الرف</em>`:""}<br><span class="muted">${esc(row.book.barcode||row.book.sku||row.bookId)}</span>`;
+  const sum=(list,key)=>list.reduce((total,row)=>total+Number(row[key]||0),0);
+  const toBuy=rows.filter(row=>row.shortfall),counting=rows.filter(row=>row.countHold);
   const orderBooks=order=>(order.backorderLines||[]).map(line=>{const book=getBook(line.bookId);const available=bookAvailableStock(book);return `<span class="shortage-line">${esc(book?.name||line.bookId)} × ${line.qty}${available>0?` <em class="preorder-tag ok">متوفر ${available}</em>`:""}</span>`;}).join("");
+  const bookCell=row=>`<td class="shortage-book"><strong>${esc(row.book.name||row.bookId)}</strong><span class="muted" dir="ltr">${esc(row.book.barcode||row.book.sku||row.bookId)}</span>${row.countHold?`<em class="shortage-flag" title="نسخ مسجلة في الرصيد لكنها غير موجودة على الرف">⚠ تحتاج جرد · ${row.countHold} غير موجودة</em>`:""}${row.lowStock&&!row.shortfall&&!row.countHold?`<em class="shortage-flag soft">وصل للحد الأدنى</em>`:""}${shortageOrdersMarkup(row)}</td>`;
+  const gapCell=row=>row.shortfall?`<span class="shortfall-chip">ناقص ${row.shortfall}</span>`:row.suggested?`<span class="shortfall-chip suggest">مقترح ${row.suggested}</span>`:`<span class="shortfall-chip ok">يكفي</span>`;
+  const actions=row=>`<div class="shortage-actions">${row.countHold&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">أمر شراء ${row.toBuy}</button>`:""}</div>`;
   return `${workflowModeTabs("shortages")}
     <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>الكتب الناقصة والحجوزات</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
-    <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>كتب عليها حجز مسبق من العملاء، أو رصيدها وصل للحد الأدنى.</p></div>${badge(`${rows.length} كتاب`,rows.length?"warning":"")}</div>
-      <div class="table-wrap"><table><thead><tr><th>الكتاب</th><th>الرصيد</th><th>المتاح</th><th>حجز مسبق</th><th>طلبات منتظرة</th><th>أقدم طلب</th><th>المقترح شراؤه</th><th></th></tr></thead><tbody>
-      ${rows.length?rows.map(row=>`<tr><td>${bookCell(row)}</td><td>${Number(row.book.stock||0)}</td><td>${row.available}</td><td>${row.waiting?`<strong class="text-danger">${row.waiting}</strong>`:"—"}</td><td>${row.orders.size||"—"}</td><td>${row.oldest?arabicDateTimeLabel(row.oldest):"—"}</td><td><strong>${row.toBuy||"—"}</strong></td><td><div class="row-actions">${bookCountHold(row.book)&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد / تسوية</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">إنشاء أمر شراء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="8" class="muted">لا توجد كتب ناقصة حاليًا.</td></tr>`}
+    <div class="shortage-summary">
+      <div class="shortage-stat danger"><b>${sum(toBuy,"shortfall")}</b><span>نسخة ناقصة يجب شراؤها</span><small>${toBuy.length} كتاب</small></div>
+      <div class="shortage-stat"><b>${sum(rows,"preorder")}</b><span>نسخة مطلوبة للحجز المسبق</span><small>${ordersCountLabel(orders.length)} في الانتظار</small></div>
+      <div class="shortage-stat"><b>${sum(rows,"reserved")}</b><span>نسخة محجوزة بالفعل</span><small>لطلبات مؤكدة من هذه الكتب</small></div>
+      <div class="shortage-stat warning"><b>${counting.length}</b><span>كتاب يحتاج جرد</span><small>${sum(counting,"countHold")} نسخة غير موجودة على الرف</small></div>
+    </div>
+    <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>إجمالي المطلوب = المحجوز بالفعل + الحجز المسبق، والناقص هو ما لا يغطيه الموجود على الرف.</p></div><div class="search shortage-search"><input id="shortage-search" type="search" autocomplete="off" placeholder="ابحث عن كتاب أو طلب"></div></div>
+      <div class="table-wrap"><table class="shortage-table"><thead><tr><th>الكتاب</th><th class="num">في المخزن</th><th class="num">محجوز بالفعل</th><th class="num">حجز مسبق</th><th class="num">إجمالي المطلوب</th><th class="num">الناقص</th><th></th></tr></thead><tbody>
+      ${rows.length?rows.map(row=>`<tr data-shortage-row data-search="${esc([row.book.name,row.book.barcode,row.book.sku,row.bookId,...row.preorderOrders.map(item=>[item.order.id,item.order.customerName]),...row.reservedOrders.map(item=>[item.order.id,item.order.customerName])].flat().filter(Boolean).join(" "))}">${bookCell(row)}
+        <td class="num">${row.stock}</td>
+        <td class="num">${row.reserved||"—"}${row.reservedOrders.length?`<small>${ordersCountLabel(row.reservedOrders.length)}</small>`:""}</td>
+        <td class="num">${row.preorder?`<strong class="text-danger">${row.preorder}</strong><small>${ordersCountLabel(row.preorderOrders.length)}${row.oldest?` · ${sinceLabel(row.oldest)}`:""}</small>`:"—"}</td>
+        <td class="num total">${row.needed||"—"}</td>
+        <td class="num">${gapCell(row)}</td>
+        <td>${actions(row)}</td></tr>`).join(""):`<tr><td colspan="7" class="muted">لا توجد كتب ناقصة حاليًا.</td></tr>`}
       </tbody></table></div></article>
     <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
-      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td>${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
+      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
       </tbody></table></div></article>`;
 }
 
@@ -5404,7 +5454,10 @@ function filterFinanceExpenseRows() {
   const visible = new Set(smartFilter(rows.filter(row => !status || row.dataset.status === status), document.getElementById("finance-expense-search")?.value || "", row => row.dataset.search));
   rows.forEach(row => { row.hidden = !visible.has(row); });
 }
-document.addEventListener("input", event => { if (event.target.id === "finance-expense-search") filterFinanceExpenseRows(); });
+document.addEventListener("input", event => {
+  if (event.target.id === "finance-expense-search") filterFinanceExpenseRows();
+  if (event.target.id === "shortage-search") smartFilterRows(document.querySelectorAll("[data-shortage-row]"), event.target.value);
+});
 document.addEventListener("change", event => { if (event.target.id === "finance-expense-status") filterFinanceExpenseRows(); });
 
 function renderFinanceExpenses() {
