@@ -4,7 +4,19 @@
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f5f7f6",
-  "theme_color": "#173f35",
+  "theme_color": "#1f5fa8",
   "lang": "ar",
-  "dir": "rtl"
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "assets/favicon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/favicon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
 }
