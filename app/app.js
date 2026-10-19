@@ -4467,7 +4467,7 @@ function orderJourneyMarkup(order) {
   const collection=(data.orderCollections||[]).find(item=>item.orderId===order.id||item.shipmentId===shipment?.id),settlement=(data.carrierSettlements||[]).find(item=>item.id===shipment?.settlementId||item.id===collection?.settlementId);
   const stages=[
     order.confirmedAt&&["تم تأكيد الطلب",`بواسطة ${order.confirmedBy||"—"}`],
-    order.inventoryReservation?.status&&["تم حجز المخزون",order.inventoryReservation.status==="active"?"الحجز فعال":"تم استهلاك الحجز"],
+    order.inventoryReservation?.status&&["تم حجز المخزون",({active:"الحجز فعال",consumed:"تم استهلاك الحجز في الفاتورة",released:"تم تحرير الحجز"})[order.inventoryReservation.status]||"—"],
     order.preparingAt&&["قيد التجهيز",order.preparedAt?`اكتمل بواسطة ${order.preparedBy||"—"}`:`بواسطة ${order.preparingBy||"—"}`],
     order.preparedAt&&["تم التجهيز",arabicDateTimeLabel(order.preparedAt)],
     order.workflowStage==="awaiting_shipping"&&["جاهز للشحن","بانتظار شركة الشحن"],
@@ -4475,9 +4475,29 @@ function orderJourneyMarkup(order) {
     shipment&&["قيد التوصيل",shipmentStatusMeta(shipment).label],
     shipmentStatusCode(shipment||{})==="delivered"&&["تم التسليم",arabicDateTimeLabel(shipment.deliveredAt||shipment.updatedAt)],
     collection&&["التحصيل",collection.status==="settled"?"تم الاستلام بالخزنة":"تم التحصيل لدى شركة الشحن"],
-    settlement&&["التسوية",settlement.status||"بانتظار التحويل"]
+    settlement&&["التسوية",settlement.status||"بانتظار التحويل"],
+    ...orderCancellationStages(order,sale)
   ].filter(Boolean);
-  return `<section class="order-journey"><h3>رحلة الطلب</h3><div>${stages.map(([title,value])=>`<span><i>✓</i><small>${esc(title)}</small><strong>${esc(value)}</strong></span>`).join("")||`<p class="muted">تبدأ الرحلة بعد تأكيد الطلب.</p>`}</div></section>`;
+  return `<section class="order-journey"><h3>رحلة الطلب</h3><div>${stages.map(([title,value,tone])=>`<span class="${tone==="cancel"?"journey-cancel":""}"><i>${tone==="cancel"?"✕":"✓"}</i><small>${esc(title)}</small><strong>${esc(value)}</strong></span>`).join("")||`<p class="muted">تبدأ الرحلة بعد تأكيد الطلب.</p>`}</div></section>`;
+}
+
+// What a cancellation did, in the order journey: when, who and why; the invoice; and where the paid money went.
+function orderCancellationStages(order, sale) {
+  if (onlineOrderWorkflowStage(order) !== "cancelled") return [];
+  const ids = new Set([order.id, order.saleId].filter(Boolean));
+  const refunds = (data.orderRefunds || []).filter(item => !item.deletedAt && item.status !== "reversed" && (ids.has(item.orderId) || ids.has(item.invoiceId)));
+  const cash = refunds.filter(item => ["cash_refund", "linked_disbursement"].includes(item.settlementType));
+  const credit = refunds.filter(item => ["customer_credit", "pending_credit"].includes(item.settlementType));
+  const sum = rows => rows.reduce((total, item) => total + Number(item.amount || 0), 0);
+  const accountName = id => (data.cashAccounts || []).find(account => account.id === id)?.name || "الخزنة";
+  const when = order.cancelledAt ? arabicDateTimeLabel(order.cancelledAt) : "";
+  return [
+    ["تم إلغاء الطلب", [when, order.cancelledBy ? `بواسطة ${order.cancelledBy}` : ""].filter(Boolean).join(" · ") || "—", "cancel"],
+    order.cancellationReason && ["سبب الإلغاء", order.cancellationReason, "cancel"],
+    sale && sale.status === "ملغاة" && ["إبطال الفاتورة", `${sale.id} · رجعت الكميات للمخزون`, "cancel"],
+    cash.length && ["رد نقدي للعميل", `${money(sum(cash))} من ${[...new Set(cash.map(item => accountName(item.cashAccountId)))].join("، ")}`, "cancel"],
+    credit.length && ["رصيد دائن للعميل", `${money(sum(credit))} محفوظة في حساب العميل (لم تُصرف نقدًا) وتُستخدم في طلب قادم`, "cancel"]
+  ].filter(Boolean);
 }
 
 function onlineOrderPaymentSummary(order, total) {
@@ -4494,20 +4514,22 @@ function onlineOrderPaymentSummary(order, total) {
   const refunds = (data.orderRefunds || []).filter(item => live(item) && (ids.has(item.orderId) || ids.has(item.invoiceId)));
   const paid = rows.reduce((sum, row) => sum + row.amount, 0);
   const refunded = refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const cashRefunded = refunds.filter(item => ["cash_refund", "linked_disbursement"].includes(item.settlementType)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const credited = refunded - cashRefunded;
   const cancelled = onlineOrderWorkflowStage(order) === "cancelled";
   const remaining = cancelled ? 0 : Math.max(0, Number(total || 0) - paid + refunded);
   const cod = ["cash_on_delivery", "advance_cod"].includes(order.paymentPlan) || /الاستلام/.test(order.paymentMethod || "");
-  return { rows, refunds, paid, refunded, remaining, cod, cancelled, plan:order.paymentPlan ? paymentPlanLabel(order.paymentPlan) : (order.paymentMethod || "—") };
+  return { rows, refunds, paid, refunded, cashRefunded, credited, remaining, cod, cancelled, plan:order.paymentPlan ? paymentPlanLabel(order.paymentPlan) : (order.paymentMethod || "—") };
 }
 
 function onlineOrderPaymentMarkup(order, total) {
   const p = onlineOrderPaymentSummary(order, total);
   const remainingLabel = p.cancelled ? "المتبقي (الطلب ملغي)" : p.cod && p.remaining > 0 ? "المتبقي على العميل · يُحصَّل عند الاستلام" : "المتبقي على العميل";
   return `<div class="card-header" style="margin-top:16px;padding:0"><div><h3>الدفع والتحصيل</h3><p>طريقة الدفع: <strong>${esc(p.plan)}</strong></p></div>${badge(p.remaining > 0 ? (p.paid > 0 ? "مدفوع جزئيًا" : "غير مدفوع") : p.cancelled ? "ملغي" : "مدفوع بالكامل", p.remaining > 0 ? "warning" : "")}</div>
-    <div class="metric-strip"><div class="mini-metric"><span>المدفوع</span><strong>${money(p.paid)}</strong></div>${p.refunded ? `<div class="mini-metric"><span>المسترد للعميل</span><strong>${money(p.refunded)}</strong></div>` : ""}<div class="mini-metric"><span>${remainingLabel}</span><strong class="${p.remaining > 0 ? "text-danger" : ""}">${money(p.remaining)}</strong></div></div>
+    <div class="metric-strip"><div class="mini-metric"><span>المدفوع</span><strong>${money(p.paid)}</strong></div>${p.cashRefunded ? `<div class="mini-metric"><span>رُدّ نقدًا للعميل</span><strong>${money(p.cashRefunded)}</strong></div>` : ""}${p.credited ? `<div class="mini-metric"><span>محفوظ كرصيد دائن للعميل</span><strong>${money(p.credited)}</strong></div>` : ""}<div class="mini-metric"><span>${remainingLabel}</span><strong class="${p.remaining > 0 ? "text-danger" : ""}">${money(p.remaining)}</strong></div></div>
     ${p.rows.length || p.refunds.length ? `<div class="table-wrap"><table><thead><tr><th>البيان</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الخزنة / الحساب</th><th>بواسطة</th></tr></thead><tbody>
       ${p.rows.map(row => `<tr><td>${esc(row.kind)}</td><td>${row.date ? arabicDateTimeLabel(row.date) : "—"}</td><td class="money">${money(row.amount)}</td><td>${esc(row.method)}</td><td>${esc(row.account || "—")}</td><td>${esc(row.by || "—")}</td></tr>`).join("")}
-      ${p.refunds.map(item => `<tr><td>${item.settlementType === "customer_credit" ? "تحويل لرصيد دائن" : "رد مبلغ للعميل"}</td><td>${item.performedAt ? arabicDateTimeLabel(item.performedAt) : "—"}</td><td class="money text-danger">−${money(item.amount)}</td><td>${item.settlementType === "customer_credit" ? "رصيد دائن" : "رد نقدي"}</td><td>${esc((data.cashAccounts || []).find(account => account.id === item.cashAccountId)?.name || "—")}</td><td>${esc(item.performedBy || "—")}</td></tr>`).join("")}
+      ${p.refunds.map(item => { const credit = ["customer_credit", "pending_credit"].includes(item.settlementType); return `<tr><td>${credit ? "حُفظ كرصيد دائن للعميل" : "رد مبلغ للعميل"}</td><td>${item.performedAt ? arabicDateTimeLabel(item.performedAt) : "—"}</td><td class="money ${credit ? "" : "text-danger"}">${credit ? "" : "−"}${money(item.amount)}</td><td>${credit ? "رصيد دائن (لم يُصرف نقدًا)" : "رد نقدي"}</td><td>${esc((data.cashAccounts || []).find(account => account.id === item.cashAccountId)?.name || "—")}</td><td>${esc(item.performedBy || "—")}</td></tr>`; }).join("")}
     </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}`;
 }
 
