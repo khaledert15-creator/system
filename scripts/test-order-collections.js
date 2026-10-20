@@ -11,7 +11,8 @@ async function login(username){
   return body.token;
 }
 async function request(path,{token,method="GET",body}={}){
-  const response=await fetch(`${base}${path}`,{method,headers:{...(token?{"X-Session-Token":token}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
+  const ifMatch=method==="PUT"&&path==="/api/db"?{"If-Match":(await (await fetch(`${base}/api/live-revision`,{headers:{"X-Session-Token":token}})).json()).revision}:{};
+  const response=await fetch(`${base}${path}`,{method,headers:{...(token?{"X-Session-Token":token}:{}),...(body?{"Content-Type":"application/json"}:{}),...ifMatch},body:body?JSON.stringify(body):undefined});
   return {status:response.status,body:await response.json().catch(()=>({})),revision:response.headers.get("x-db-revision")};
 }
 

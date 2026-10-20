@@ -17,11 +17,11 @@ async function until(fn){for(let i=0;i<100;i++){if(await fn())return;await sleep
   const html=await (await fetch(base+'/')).text();
   assert.match(html,new RegExp(`<meta name="app-build" content="${build}">`),'the page carries its build');
   const token=(await (await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password})})).json()).token;
-  const db=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
+  const dbResponse=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}}),db=await dbResponse.json();
   db.settings.companyName='saved';
   db.stockMovements.push({id:'MOV-2.3412404047828986e+26',note:'a'},{id:'MOV-2.3412404047828986e+26',note:'b'},{id:'MOV-0f4f7d10-6426-4fb9-bd5d-9473a0feccc2',note:'reused'});
   db.notifications.push({id:'NOT-1'},{id:'NOT-1'});
-  const put=headers=>fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json',...headers},body:JSON.stringify(db)});
+  const put=headers=>fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':dbResponse.headers.get('x-db-revision'),...headers},body:JSON.stringify(db)});
 
   let r=await put({});
   assert.equal(r.status,409);let body=await r.json();assert.equal(body.code,'CLIENT_OUTDATED');assert.match(body.message,/حدّث الصفحة/);

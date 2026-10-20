@@ -31,9 +31,9 @@ console.log('PASS old successful runs drop raw replies; recent runs and failures
   child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'false'},stdio:'ignore'});
   await until(async()=>{try{return (await fetch(base+'/api/health')).ok;}catch{return false;}});
   const token=(await (await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password})})).json()).token;
-  const db=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
+  const dbResponse=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}}),db=await dbResponse.json();
   db.trackingRuns=[{id:'TRUN-OLD',status:'success',rawResult:{stale:true}}];db.trackingRunBatches=[];db.settings.companyName='saved';
-  const r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(db)});
+  const r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':dbResponse.headers.get('x-db-revision')},body:JSON.stringify(db)});
   assert.equal(r.status,200,await r.clone().text());
   const after=JSON.parse(fs.readFileSync(dbFile,'utf8'));
   assert.deepEqual(after.trackingRuns.map(x=>x.id),['TRUN-1','TRUN-2'],'client save keeps the server tracking runs');

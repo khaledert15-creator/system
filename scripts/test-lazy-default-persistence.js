@@ -44,11 +44,14 @@ async function waitForServer(base, child) {
 }
 
 async function request(base, route, { token, method = "GET", body } = {}) {
+  // Whole-database saves must name the revision they replace (If-Match).
+  const ifMatch = method === "PUT" && route === "/api/db" ? { "If-Match": (await (await fetch(`${base}/api/live-revision`, { headers:{ "X-Session-Token": token } })).json()).revision } : {};
   const response = await fetch(`${base}${route}`, {
     method,
     headers: {
       ...(token ? { "X-Session-Token": token } : {}),
-      ...(body ? { "Content-Type": "application/json" } : {})
+      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...ifMatch
     },
     body: body ? JSON.stringify(body) : undefined
   });

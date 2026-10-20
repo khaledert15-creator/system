@@ -56,9 +56,9 @@ const draft=(id,lines)=>({id,customerId:'C1',customerName:'عميل',phone:'0100
   assert.equal(order('ORD1').workflowStage,'awaiting_stock','2 free copies are not enough for 3');
   assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:1}],'the missing list follows current stock');
   assert.equal(book('B2').reservedStock,1,'still no partial hold');
-  const current=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
+  const currentResponse=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}}),current=await currentResponse.json();
   current.books.find(b=>b.id==='B2').stock=4;
-  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(current)});
+  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':currentResponse.headers.get('x-db-revision')},body:JSON.stringify(current)});
   assert.equal(r.status,200,await r.clone().text());
   await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
   assert.equal(order('ORD1').carriedOverFromBackorder,true,'carried-over orders are flagged');

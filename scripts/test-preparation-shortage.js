@@ -51,9 +51,9 @@ const confirmed=(id,lines,reserved)=>({id,customerId:'C1',customerName:'عميل
   console.log('PASS copies waiting for a count are not available to other orders');
 
   // A stock count (client save) that clears the hold makes the copies available again.
-  const db=await (await fetch(base+'/api/db',{headers:{'X-Session-Token':token}})).json();
+  const dbResponse=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}}),db=await dbResponse.json();
   const b1=db.books.find(b=>b.id==='B1');b1.countHoldQty=0;
-  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify(db)});
+  r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':dbResponse.headers.get('x-db-revision')},body:JSON.stringify(db)});
   assert.equal(r.status,200,await r.clone().text());
   await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');
   assert.equal(order('ORD1').carriedOverFromBackorder,true,'moves automatically once counted, oldest first');

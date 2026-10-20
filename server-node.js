@@ -3965,6 +3965,10 @@ const server = http.createServer(async (req, res) => {
         return send(res, 409, { ok:false, code:"CLIENT_OUTDATED", build:APP_BUILD_ID, message:"تم تحديث النظام إلى نسخة جديدة. حدّث الصفحة (F5 أو Cmd+R) ثم أعد المحاولة." });
       }
       const expected = req.headers["if-match"];
+      // A whole-database save must say which revision it was built on. Only the very first save that creates a missing
+      // database.json (new install: the first browser bootstraps it) may come without one.
+      const databaseExists = fs.existsSync(DB_PATH);
+      if (!expected && databaseExists) return send(res, 428, { ok:false, code:"PRECONDITION_REQUIRED", message:"حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات (If-Match)." });
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
       const body = await readBody(req);
@@ -4036,7 +4040,8 @@ const server = http.createServer(async (req, res) => {
         return send(res,200,{ok:true,unchanged:true,revision:String(snapshot.revision),sha256:snapshot.sha256},"application/json; charset=utf-8",{"X-DB-Revision":String(snapshot.revision)});
       }
       try {
-        const saved = writeDb(parsed, { expectedRevision:expected === undefined ? undefined : Number(expected), operationType:"CLIENT_SAVE", performedBy:user.username });
+        // Bootstrap (no If-Match) only succeeds while the file is still missing (revision 0); a parallel first save loses with 409.
+        const saved = writeDb(parsed, { expectedRevision:expected ? Number(expected) : 0, operationType:"CLIENT_SAVE", performedBy:user.username });
         return send(res, 200, { ok:true, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
       } catch (error) {
         if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision) });

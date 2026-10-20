@@ -40,7 +40,7 @@ fs.writeFileSync(dbFile,JSON.stringify(db,null,2));
 const port=8947,child=spawn(process.execPath,["server-node.js"],{cwd:qa,env:{...process.env,PORT:String(port),HOST:"127.0.0.1",TRACKING_RPA_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
 let output="";child.stdout.on("data",d=>output+=d);child.stderr.on("data",d=>output+=d);
 const base=`http://127.0.0.1:${port}`;let token="";
-async function call(route,{method="GET",body,auth=token}={}){const response=await fetch(base+route,{method,headers:{...(auth?{"X-Session-Token":auth}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});return {status:response.status,body:await response.json().catch(()=>({}))};}
+async function call(route,{method="GET",body,auth=token}={}){const ifMatch=method==="PUT"&&route==="/api/db"?{"If-Match":(await (await fetch(base+"/api/live-revision",{headers:{"X-Session-Token":auth}})).json()).revision}:{};const response=await fetch(base+route,{method,headers:{...(auth?{"X-Session-Token":auth}:{}),...(body?{"Content-Type":"application/json"}:{}),...ifMatch},body:body?JSON.stringify(body):undefined});return {status:response.status,body:await response.json().catch(()=>({}))};}
 async function wait(){for(let i=0;i<60;i++){try{if((await fetch(base+"/")).ok)return;}catch{}await new Promise(r=>setTimeout(r,50));}throw new Error(output||"Server did not start");}
 (async()=>{
   await wait();
