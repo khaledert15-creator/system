@@ -97,13 +97,34 @@ function send(res, status, body, type = "application/json; charset=utf-8", heade
   res.end(payload);
 }
 
-function readBody(req) {
+const BODY_LIMIT_DEFAULT = 1024 * 1024;              // ordinary API requests
+const BODY_LIMIT_CREDENTIALS = 16 * 1024;            // login and password routes (also reachable without a session)
+const BODY_LIMIT_DATABASE = 64 * 1024 * 1024;        // PUT /api/db carries the whole database
+const BODY_LIMIT_SHIPPING_IMPORT = 20 * 1024 * 1024; // carrier Packages file as base64 (the handler allows up to 20M chars)
+
+// Buffers a request body of at most `limit` bytes. A larger body (declared Content-Length or streamed bytes) is
+// rejected with 413 as soon as it is detected and nothing more is buffered; Node closes the connection after the reply.
+function readBody(req, limit = BODY_LIMIT_DEFAULT) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", chunk => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    let size = 0, settled = false;
+    const tooLarge = () => { settled = true; chunks.length = 0; reject(Object.assign(new Error("حجم البيانات المرسلة أكبر من المسموح."), { status:413, code:"PAYLOAD_TOO_LARGE", limit })); };
+    req.on("data", chunk => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > limit) tooLarge(); else chunks.push(chunk);
+    });
+    req.on("end", () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks).toString("utf8")); } });
+    req.on("error", error => { if (!settled) { settled = true; reject(error); } });
+    if (Number(req.headers["content-length"] || 0) > limit) tooLarge();
   });
+}
+
+// A JSON object body; malformed JSON is the client's error (400), not a server error (500).
+async function readJsonBody(req, limit) {
+  const text = await readBody(req, limit);
+  try { const value = JSON.parse(text || "{}"); if (value && typeof value === "object" && !Array.isArray(value)) return value; } catch {}
+  throw Object.assign(new Error("Invalid JSON body."), { status:400, code:"INVALID_JSON" });
 }
 
 function passwordHash(salt, password) {
@@ -2830,11 +2851,14 @@ function scheduleTrackingWorker() {
 }
 
 function users() {
+  // Brand-new install (no database.json yet): the default accounts let the first owner in to create it.
+  if (!fs.existsSync(DB_PATH)) return defaultUsers;
   try {
     const db = readDb();
     return Array.isArray(db.users) && db.users.length ? db.users : defaultUsers;
   } catch {
-    return defaultUsers;
+    // An unreadable or corrupt database must fail closed: never fall back to the documented default credentials.
+    return [];
   }
 }
 
@@ -2977,7 +3001,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "/api/login" && req.method === "POST") {
-      const payload = JSON.parse(await readBody(req) || "{}");
+      const payload = await readJsonBody(req, BODY_LIMIT_CREDENTIALS);
       const throttleKey = loginThrottleKey(req, payload.username);
       if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات دخول خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
       const loginName = String(payload.username || "").trim().toLowerCase();
@@ -3007,7 +3031,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/account/password" && req.method === "POST") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
-      const payload = JSON.parse(await readBody(req) || "{}");
+      const payload = await readJsonBody(req, BODY_LIMIT_CREDENTIALS);
       const currentPassword = String(payload.currentPassword || "");
       const newPassword = String(payload.newPassword || "");
       const throttleKey = loginThrottleKey(req, user.username);
@@ -3049,7 +3073,7 @@ const server = http.createServer(async (req, res) => {
     if (userOperation) {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
-      const payload = JSON.parse(await readBody(req) || "{}");
+      const payload = await readJsonBody(req, BODY_LIMIT_CREDENTIALS);
       try {
         const result = changeUserAccount(user, userOperation, (userAccountMatch || userPasswordMatch)?.[1] || "", payload);
         return send(res, userOperation === "create" ? 201 : 200, { ok:true, ...result }, "application/json; charset=utf-8", { "X-DB-Revision":result.revision });
@@ -3644,7 +3668,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/orders/shipping/import-preview" && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية استيراد أكواد التتبع."});
-      try{const payload=JSON.parse(await readBody(req)||"{}"),base64=String(payload.fileBase64||"");if(!base64||base64.length>20_000_000)return send(res,400,{ok:false,message:"اختر ملف Packages صالحًا وحجمه أقل من 15MB."});const rows=shipmentImportPreview(db,ShippingBatchXlsx.packageRows(Buffer.from(base64,"base64")));return send(res,200,{ok:true,rows,summary:{total:rows.length,valid:rows.filter(row=>row.ok).length,review:rows.filter(row=>!row.ok).length},revision:dbRevision()});}catch(error){return send(res,400,{ok:false,code:"PACKAGES_IMPORT_INVALID",message:error.message});}
+      try{const payload=JSON.parse(await readBody(req,BODY_LIMIT_SHIPPING_IMPORT)||"{}"),base64=String(payload.fileBase64||"");if(!base64||base64.length>20_000_000)return send(res,400,{ok:false,message:"اختر ملف Packages صالحًا وحجمه أقل من 15MB."});const rows=shipmentImportPreview(db,ShippingBatchXlsx.packageRows(Buffer.from(base64,"base64")));return send(res,200,{ok:true,rows,summary:{total:rows.length,valid:rows.filter(row=>row.ok).length,review:rows.filter(row=>!row.ok).length},revision:dbRevision()});}catch(error){const tooLarge=error.code==="PAYLOAD_TOO_LARGE";return send(res,tooLarge?413:400,{ok:false,code:tooLarge?error.code:"PACKAGES_IMPORT_INVALID",message:error.message});}
     }
 
     if (route === "/api/orders/shipping/batch" && req.method === "POST") {
@@ -4013,7 +4037,7 @@ const server = http.createServer(async (req, res) => {
       if (!expected && databaseExists) return send(res, 428, { ok:false, code:"PRECONDITION_REQUIRED", message:"حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات (If-Match)." });
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
-      const body = await readBody(req);
+      const body = await readBody(req, BODY_LIMIT_DATABASE);
       const parsedSource=JSON.parse(body);
       const parsed = ensureTrackingDb(parsedSource);
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
@@ -4272,6 +4296,7 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, fs.readFileSync(file), contentType(file), cacheHeaders);
   } catch (error) {
     if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision ?? "") });
+    if (["PAYLOAD_TOO_LARGE", "INVALID_JSON"].includes(error.code)) return send(res, error.status, { ok:false, code:error.code, message:error.message });
     return send(res, 500, { ok:false, message: error.message || "Server error." });
   }
 });
