@@ -91,9 +91,24 @@ const defaultUsers = [
   { id:"U006", username:"shipping", name:"مسؤول الشحن", role:"شحن", salt:"s06", passwordHash:"7a53924916afbcba18d1f58c093f7fe110f88539803186401fdb2f280a769000", active:true }
 ];
 
+const BASE_SECURITY_HEADERS = { "X-Content-Type-Options":"nosniff", "Referrer-Policy":"strict-origin-when-cross-origin" };
+// Origins a future route may allow to embed one of its pages, e.g. a Chatwoot dashboard app:
+//   send(res, 200, html, "text/html; charset=utf-8", frameAncestorHeaders([FRAME_ANCESTOR_ORIGINS.chatwoot]))
+// Unused for now: every HTML page may only be framed by the system itself. (No script-src policy: the client
+// relies on inline handlers.)
+const FRAME_ANCESTOR_ORIGINS = Object.freeze({ chatwoot:"https://chat.maktabaa.com" });
+function frameAncestorHeaders(extraOrigins = []) {
+  const origins = extraOrigins.filter(origin => Object.values(FRAME_ANCESTOR_ORIGINS).includes(origin));
+  const headers = { "Content-Security-Policy":["frame-ancestors 'self'", ...origins].join(" ") };
+  // X-Frame-Options cannot name another origin, so it is only sent while framing stays same-origin.
+  if (!origins.length) headers["X-Frame-Options"] = "SAMEORIGIN";
+  return headers;
+}
+
 function send(res, status, body, type = "application/json; charset=utf-8", headers = {}) {
   const payload = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === "string" ? body : JSON.stringify(body), "utf8");
-  res.writeHead(status, { "Content-Type": type, "Content-Length": payload.length, ...headers });
+  const frameHeaders = /^text\/html\b/i.test(type) && !headers["Content-Security-Policy"] ? frameAncestorHeaders() : {};
+  res.writeHead(status, { ...BASE_SECURITY_HEADERS, ...frameHeaders, "Content-Type": type, "Content-Length": payload.length, ...headers });
   res.end(payload);
 }
 
@@ -2962,7 +2977,7 @@ const server = http.createServer(async (req, res) => {
     if (["/api/events", "/api/live-revision"].includes(route) && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, {message:"Authentication required."});
       if (route === "/api/live-revision") return send(res, 200, {revision:dbRevision(), build:APP_BUILD_ID}, "application/json; charset=utf-8", {"Cache-Control":"no-store"});
-      res.writeHead(200, {"Content-Type":"text/event-stream; charset=utf-8", "Cache-Control":"no-cache, no-transform", "Connection":"keep-alive", "X-Accel-Buffering":"no"});
+      res.writeHead(200, {...BASE_SECURITY_HEADERS, "Content-Type":"text/event-stream; charset=utf-8", "Cache-Control":"no-cache, no-transform", "Connection":"keep-alive", "X-Accel-Buffering":"no"});
       res.flushHeaders();
       const client = {publish() {
         if (!sessionUser(req)) { res.end(); return; }
@@ -4275,7 +4290,7 @@ const server = http.createServer(async (req, res) => {
     const requestedRel = route === "/" ? "index.html" : route.replace(/^\/+/, "");
     const rel = VERSIONED_ASSETS.get(requestedRel) || requestedRel;
     const file = path.resolve(APP_ROOT, rel);
-    if (!file.startsWith(APP_ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    if (!isInsideDirectory(APP_ROOT, file) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       return send(res, 404, "Not found", "text/plain; charset=utf-8");
     }
     if (rel === "index.html") {
