@@ -145,30 +145,57 @@
         el("div", {}, el("span", { text: "مشتريات فعلية" }), el("b", { text: `${money(customer.purchasesTotal)} (${customer.purchasesCount})` })),
         el("div", {}, el("span", { text: "متبقي على فواتيره" }), el("b", { class: customer.outstanding > 0 ? "due" : "", text: money(customer.outstanding) })))));
     if (!customer.identified) {
-      $("orders-list").replaceChildren(newOrderLink(), el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })), recipientSection());
+      $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })), recipientSection());
       $("manual-form").hidden = false;
       return;
     }
-    if (!orders.length) { $("orders-list").replaceChildren(newOrderLink(), el("div", { class: "card state" }, el("strong", { text: "العميل مسجل ومفيش له طلبات." })), recipientSection()); return; }
+    if (!orders.length) { $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), el("div", { class: "card state" }, el("strong", { text: "العميل مسجل ومفيش له طلبات." })), recipientSection()); return; }
     const section = (title, phases) => {
       const groups = phases.map(phase => [phase, orders.filter(order => order.phase === phase)]).filter(([, list]) => list.length);
       if (!groups.length) return el("section", { class: "orders-section" }, el("h2", { text: `${title} (0)` }), el("p", { class: "muted small", text: "لا يوجد." }));
       return el("section", { class: "orders-section" }, el("h2", { text: `${title} (${groups.reduce((sum, [, list]) => sum + list.length, 0)})` }),
         groups.map(([phase, list]) => el("div", { class: "phase" }, el("h3", { text: `${PHASE_TITLES[phase]} (${list.length})` }), list.map(orderCard))));
     };
-    $("orders-list").replaceChildren(newOrderLink(), section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY), recipientSection(),
+    $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY), recipientSection(),
       state.data.truncated ? el("p", { class: "muted small", text: `يظهر أحدث ${orders.length} من ${state.data.totalOrders} طلب.` }) : "");
   }
 
-  // Opens the System's quick order already tied to this conversation, contact and WhatsApp number (a link only;
-  // the order is made in the System with the employee's own permissions).
+  // Opens the System's quick order tied to this conversation. The link carries only a short-lived token the System
+  // issued after the Store verified the conversation (no raw ids), so the order is linked automatically.
   function newOrderLink() {
-    if (!state.conversationId && !state.contactId) return "";
-    const query = new URLSearchParams({ view: "onlineOrders", quick: "1" });
-    if (state.conversationId) query.set("chatwootConversationId", state.conversationId);
-    if (state.contactId) query.set("chatwootContactId", state.contactId);
-    if (state.phone) query.set("whatsapp", state.phone);
+    const context = state.data?.orderContext;
+    if (!state.conversationId || !context) return "";
+    if (!context.ok) return el("div", { class: "card state small" }, el("strong", { text: "مش هينفع تعمل طلب مربوط بالمحادثة دي دلوقتي" }), el("div", { class: "muted", text: context.message || "تعذر التحقق من المحادثة." }));
+    const query = new URLSearchParams({ view: "onlineOrders", quick: "1", ctx: context.token });
     return el("a", { class: "btn new-order", href: `/?${query}`, target: "_blank", rel: "noopener noreferrer", text: "إنشاء طلب سريع لهذه المحادثة" });
+  }
+
+  // Orders a staff member named (ORD-…) in this conversation. A suggestion is linked only when an employee confirms it
+  // here; an order that belongs to another customer is shown as a conflict and cannot be linked from the tab.
+  function suggestionSection() {
+    const suggestions = state.data?.suggestions || [], conflicts = state.data?.mentionConflicts || [];
+    if (!suggestions.length && !conflicts.length) return "";
+    return el("section", { class: "orders-section suggestions" }, el("h2", { text: "اقتراحات ربط من رسايل الموظفين" }),
+      suggestions.map(row => el("article", { class: "card order" },
+        el("div", { class: "row" }, el("span", { class: "badge sys", text: row.orderId }), el("span", { class: "status current", text: row.status || "—" })),
+        el("div", { class: "muted small", text: `رقم الطلب اتكتب في رسالة موظف هنا${row.mentionedAt ? ` · ${dateLabel(row.mentionedAt)}` : ""}` }),
+        el("div", { class: "muted small", text: `المستلم ${row.recipientMasked || "—"} · ${row.recipientIsContactPhone ? "نفس رقم جهة الاتصال" : "رقم مختلف عن جهة الاتصال"} · الإجمالي ${money(row.total)}` }),
+        el("div", { class: "actions" }, state.data.canLink ? el("button", { type: "button", class: "btn", onclick: () => confirmSuggestion(row), text: "تأكيد ربط الطلب بالمحادثة دي" }) : el("span", { class: "muted small", text: "التأكيد محتاج صلاحية الربط." })))),
+      conflicts.map(row => el("article", { class: "card order" },
+        el("div", { class: "row" }, el("span", { class: "badge sys", text: row.orderId }), el("span", { class: "status history", text: "مربوط بعميل تاني" })),
+        el("div", { class: "small muted", text: `الطلب اتذكر هنا، لكنه مربوط بمحادثة تانية${row.linkedConversationId ? ` #${row.linkedConversationId}` : ""}. لو الربط ده غلط، التصحيح للمالك أو المدير من السيستم.` }))));
+  }
+
+  async function confirmSuggestion(row) {
+    if (!confirm(`تأكيد إن الطلب ${row.orderId} تبع صاحب المحادثة #${state.conversationId}؟ اتأكد من الكتب والعنوان الأول.`)) return;
+    try {
+      await api(`/api/orders/${encodeURIComponent(row.orderId)}/chatwood-link`, { method: "POST", body: JSON.stringify({ conversationId: state.conversationId, contactId: state.data.verifiedContactId || state.contactId, source: "suggestion" }) });
+      message(`اتربط الطلب ${row.orderId} بالمحادثة.`, "ok");
+      load();
+    } catch (error) {
+      if (error.status === 401) return;
+      message({ ORDER_ALREADY_LINKED: "الطلب مربوط بمحادثة تانية بالفعل.", SUGGESTION_NOT_FOUND: "الاقتراح ده مبقاش موجود.", CONTACT_MISMATCH: "جهة الاتصال اتغيرت؛ حدّث التبويب." }[error.code] || (error.status === 403 ? "ليس لديك صلاحية الربط." : `تعذر الربط: ${error.message}`), "error");
+    }
   }
 
   // Orders where this number is only the delivery phone of another customer's order: status and tracking only.

@@ -76,7 +76,7 @@ async function startSystem({ db = fixtureDb(), env = {}, name = 'integration-' }
 
 // Mock Store integration API (§3). It verifies the System's signatures with the real verifier.
 async function startMockStore({ secret = SECRET } = {}) {
-  const state = { orders:new Map(), requests:[], down:false, delayMs:0, salesLinkStatus:200, conversationResult:null };
+  const state = { orders:new Map(), conversations:new Map(), requests:[], down:false, delayMs:0, salesLinkStatus:200, conversationResult:null };
   const nonces = IntegrationAuth.createNonceCache();
   const server = http.createServer(async (req, res) => {
     let raw = '';
@@ -88,6 +88,18 @@ async function startMockStore({ secret = SECRET } = {}) {
     if (state.delayMs) await sleep(state.delayMs);
     if (state.down) { res.writeHead(503, { 'Content-Type':'text/plain' }); res.end('down'); return; }
     if (!verified.ok) return json(401, { ok:false, code:'INTEGRATION_AUTH_FAILED' });
+    // Chatwood conversation facts (what the Store records from signed webhooks) and staff mentions of System orders.
+    const conversationMatch = url.pathname.match(/^\/api\/integration\/v1\/chatwood\/conversations\/([^/]+)$/);
+    if (conversationMatch && req.method === 'GET') {
+      if (!/^\d{1,18}$/.test(conversationMatch[1])) return json(400, { ok:false, code:'INVALID_CONVERSATION' });
+      const conversation = state.conversations.get(conversationMatch[1]);
+      return conversation ? json(200, { ok:true, conversation:{ mentions:[], ...conversation } }) : json(404, { ok:false, code:'CONVERSATION_NOT_FOUND' });
+    }
+    if (url.pathname === '/api/integration/v1/chatwood/order-mentions' && req.method === 'GET') {
+      const orderRef = url.searchParams.get('orderRef');
+      const mentions = [...state.conversations.values()].flatMap(conversation => (conversation.mentions || []).filter(row => row.orderRef === orderRef).map(row => ({ conversationId:conversation.conversationId, channel:conversation.channel, contactId:conversation.contactId, contactPhone:conversation.contactPhone, lastMessageAt:conversation.lastMessageAt, mentionedAt:row.mentionedAt, messages:row.messages || 1 })));
+      return json(200, { ok:true, orderRef, mentions });
+    }
     const match = url.pathname.match(/^\/api\/integration\/v1\/orders(?:\/([^/]+))?(?:\/(sales-link|conversation|deposit-required))?$/);
     if (!match) return json(404, { ok:false, code:'NOT_FOUND' });
     const [, number, action] = match;
@@ -132,6 +144,11 @@ async function startMockStore({ secret = SECRET } = {}) {
   return { base, state, server, close:() => new Promise(resolve => { server.closeAllConnections?.(); server.close(() => resolve()); }) };
 }
 
+// A WhatsApp conversation as the Store reports it (contact 9001, phone 01011110001 unless overridden).
+function chatwoodConversation(conversationId, extra = {}) {
+  return { conversationId:String(conversationId), accountId:1, inboxId:2, channel:'Channel::Whatsapp', contactId:'9001', contactPhone:'01011110001', lastMessageAt:new Date().toISOString(), mentions:[], ...extra };
+}
+
 let orderSequence = 10000;
 function storeOrder(overrides = {}) {
   orderSequence += 1;
@@ -162,4 +179,4 @@ function integrationEnv(store, extra = {}) {
 let senderSequence = 10000000;
 const deposit = (extra = {}) => ({ amount:100, receiptMethod:'InstaPay', cashAccountId:'CA-003', senderPhone:`012${senderSequence++}`, senderName:'محوّل', reference:`TX-${crypto.randomUUID().slice(0, 8)}`, receivedConfirmed:true, ...extra });
 
-module.exports = { SECRET, PASSWORD, sleep, until, freePort, fixtureDb, startSystem, startMockStore, storeOrder, signedFetch, integrationEnv, deposit, IntegrationAuth };
+module.exports = { SECRET, PASSWORD, sleep, until, freePort, fixtureDb, startSystem, startMockStore, storeOrder, chatwoodConversation, signedFetch, integrationEnv, deposit, IntegrationAuth };

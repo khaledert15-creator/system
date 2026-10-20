@@ -5,13 +5,15 @@
 //   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links
 //   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...,
 //                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B),
-//                            PATCH /api/orders/:id/deposit-required, PUT /api/website-orders/:number/deposit
+//                            PATCH /api/orders/:id/deposit-required, PUT /api/website-orders/:number/deposit,
+//                            POST /api/chatwood-context/resolve, GET|POST /api/orders/:id/chatwood-link[/preview|/suggestions|/correct]
 //   Chatwood dashboard app:  GET /integrations/chatwood-panel (frame-ancestors limited to CHATWOOD_ORIGIN)
 const fs = require("fs");
 const path = require("path");
 const IntegrationAuth = require("./integration-auth.js");
 const WebsiteOrders = require("./website-orders.js");
 const SplitShipment = require("./split-shipment.js");
+const ChatwoodContext = require("./chatwood-context.js");
 
 const BODY_LIMIT_INTEGRATION = 64 * 1024;
 const MAX_EVENT_STREAMS = 8;
@@ -66,6 +68,27 @@ function createIntegrationServer(deps) {
       throw Object.assign(new Error("Unexpected Store response"), { code:"STORE_UNAVAILABLE", storeStatus:result.status });
     }
     return result.body.orders.filter(order => order && typeof order.orderNumber === "string" && WebsiteOrders.WEBSITE_ORDER_NUMBER_PATTERN.test(order.orderNumber));
+  }
+
+  // Chatwood conversation facts the Store recorded from signed webhooks (no message text). null when unknown.
+  async function fetchConversation(conversationId) {
+    const result = await storeRequest("GET", `/api/integration/v1/chatwood/conversations/${encodeURIComponent(conversationId)}`);
+    if (result.status === 404) return null;
+    if (result.status !== 200 || !result.body?.ok || String(result.body.conversation?.conversationId || "") !== conversationId) {
+      logStore("STORE_CONVERSATION_FETCH_FAILED", { storeStatus:result.status, code:result.body?.code || "" });
+      throw Object.assign(new Error("Unexpected Store response"), { code:"STORE_UNAVAILABLE", storeStatus:result.status });
+    }
+    return result.body.conversation;
+  }
+
+  // The server's own check of a conversation: it exists, is a WhatsApp conversation, and has the contact expected.
+  async function verifyConversation(conversationId, expectedContactId = "") {
+    if (!/^\d{1,18}$/.test(String(conversationId || ""))) return { ok:false, status:400, code:"INVALID_CONVERSATION", message:"رقم المحادثة غير صحيح." };
+    if (!config.storeEnabled) return { ok:false, status:503, code:"INTEGRATION_DISABLED", message:"ربط المحادثات غير مفعّل." };
+    let conversation;
+    try { conversation = await fetchConversation(String(conversationId)); }
+    catch { return { ok:false, status:502, code:"STORE_UNAVAILABLE", message:"تعذر التحقق من المحادثة الآن؛ لم يتم حفظ أي شيء. حاول مرة أخرى." }; }
+    return ChatwoodContext.checkConversation(conversation, { expectedContactId, normalizePhone:websiteOrders.normalizeEgyptPhone });
   }
 
   // Best effort: the Store also reconciles through GET /website-orders/links, so a failure here is not an error.
@@ -211,8 +234,16 @@ function createIntegrationServer(deps) {
     if (config.storeEnabled) {
       try { storeOrders = await fetchStoreOrders({ state:"all", phone, conversationId, limit:100 }); storeAvailable = true; } catch {}
     }
+    // The open conversation, checked with the Store. Only a verified conversation gives a quick-order context token,
+    // and the contact the Store knows replaces the one the browser reported.
+    const verified = conversationId ? await verifyConversation(conversationId, contactId) : null;
     const fresh = readDbSafe();
-    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, contactId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null }, JSON_TYPE, NO_STORE);
+    const panelContactId = verified?.ok ? verified.identity.chatwootContactId : contactId;
+    let orderContext = null;
+    if (verified?.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:true, ...ChatwoodContext.issueContextToken(config.signingSecret, { conversationId:verified.identity.chatwootConversationId, contactId:verified.identity.chatwootContactId, customerWhatsAppPhone:verified.identity.customerWhatsAppPhone, inboxId:verified.identity.inboxId, username:user.username }), conversationId, whatsappMasked:ChatwoodContext.maskPhone(verified.identity.customerWhatsAppPhone) };
+    else if (verified && !verified.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:false, code:verified.code, message:verified.message };
+    const links = verified?.ok ? WebsiteOrders.chatwoodSuggestions(fresh, verified) : { suggestions:[], conflicts:[] };
+    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, contactId:panelContactId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null, conversationVerified:Boolean(verified?.ok), verifiedContactId:verified?.ok ? verified.identity.chatwootContactId : null, orderContext, suggestions:links.suggestions, mentionConflicts:links.conflicts, canLink:canOrderAction(fresh, user, "panel.link") }, JSON_TYPE, NO_STORE);
   }
 
   async function panelLink(req, res) {
@@ -250,6 +281,115 @@ function createIntegrationServer(deps) {
       catch (error) { if (error.code !== "DATABASE_WRITE_BLOCKED_STALE_REVISION") throw error; }
     }
     return send(res, 200, { ok:true, existing:result.body.existing === true, orderNumber, conversationId, systemOrderId, systemUpdated, systemConflict }, JSON_TYPE, NO_STORE);
+  }
+
+  // ---- Chatwood links of System orders (Phase 2). Every path verifies the conversation with the Store first.
+  async function resolveContext(req, res) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const payload = await readJsonBody(req, 4 * 1024);
+    if (!canOrderAction(readDbSafe(), user, "order.quick.create")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية إنشاء طلب واتساب سريع.");
+    if (!config.enabled) return fail(res, 409, "CHATWOOD_CONTEXT_UNAVAILABLE", ChatwoodContext.contextMessage("CHATWOOD_CONTEXT_UNAVAILABLE"));
+    const result = ChatwoodContext.verifyContextToken(config.signingSecret, payload.token, user.username);
+    if (!result.ok) return fail(res, 409, result.code, ChatwoodContext.contextMessage(result.code));
+    const context = result.context;
+    return send(res, 200, { ok:true, context:{ conversationId:context.chatwootConversationId, contactId:context.chatwootContactId, customerWhatsAppPhone:context.customerWhatsAppPhone, whatsappMasked:ChatwoodContext.maskPhone(context.customerWhatsAppPhone), expiresAt:context.expiresAt } }, JSON_TYPE, NO_STORE);
+  }
+
+  function findLiveOrder(db, id) { return (db.onlineOrders || []).find(order => order.id === id && !order.deletedAt) || null; }
+  const ownerView = owner => owner ? { conversationId:owner.conversationId, contactId:owner.contactId, whatsappMasked:ChatwoodContext.maskPhone(owner.customerWhatsAppPhone), source:owner.source } : null;
+
+  // Writes one order's link under the revision lock, retrying a stale revision. mutate returns the audit record or an error.
+  function writeOrderLink(user, id, mutate, operationType) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { db, revision } = readDbForWrite();
+      const order = findLiveOrder(db, id);
+      if (!order) return { error:{ status:404, code:"ORDER_NOT_FOUND", message:"الطلب غير موجود." } };
+      const outcome = mutate(order, db);
+      if (outcome.error || outcome.unchanged) return outcome;
+      const now = new Date().toISOString();
+      db.audit = Array.isArray(db.audit) ? db.audit : [];
+      AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType, entity:"طلبات الأونلاين", entityId:order.id, user:user.name || user.username, username:user.username, role:orderRole(user), ...outcome.audit });
+      try { writeDb(db, { expectedRevision:revision, operationType, performedBy:user.username }); return { order, ...outcome }; }
+      catch (error) { if (error.code !== "DATABASE_WRITE_BLOCKED_STALE_REVISION") throw error; }
+    }
+    return { error:{ status:409, code:"DB_REVISION_CONFLICT", message:"تغيرت البيانات؛ أعد المحاولة." } };
+  }
+
+  async function chatwoodLinkRoute(req, res, url, id, action) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const db = readDbSafe();
+    const permission = action === "correct" ? "order.chatwood.correct" : "panel.link";
+    if (!canOrderAction(db, user, permission)) return fail(res, 403, "PERMISSION_DENIED", action === "correct" ? "تصحيح ربط المحادثة للمالك والمدير بس." : "ليس لديك صلاحية ربط الطلب بمحادثة.");
+    if (!config.enabled) return disabled(res);
+    const order = findLiveOrder(db, id);
+    if (!order) return fail(res, 404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
+    const method = req.method;
+
+    if (action === "suggestions" && method === "GET") {
+      // Conversations where staff wrote this order number: candidates for the employee, never links.
+      let result;
+      try { result = await storeRequest("GET", `/api/integration/v1/chatwood/order-mentions?orderRef=${encodeURIComponent(order.id)}`); }
+      catch { return storeUnavailable(res); }
+      if (result.status === 400) return send(res, 200, { ok:true, suggestions:[] }, JSON_TYPE, NO_STORE);
+      if (result.status !== 200 || !Array.isArray(result.body?.mentions)) return storeUnavailable(res, { storeStatus:result.status });
+      const suggestions = result.body.mentions.filter(row => row.channel === ChatwoodContext.WHATSAPP_CHANNEL && /^\d{1,18}$/.test(String(row.conversationId || ""))).map(row => ({ conversationId:String(row.conversationId), whatsappMasked:ChatwoodContext.maskPhone(websiteOrders.normalizeEgyptPhone(row.contactPhone || "")), mentionedAt:row.mentionedAt || null, lastMessageAt:row.lastMessageAt || null, messages:Number(row.messages || 1) }));
+      return send(res, 200, { ok:true, owner:ownerView(WebsiteOrders.chatwoodOwnerOf(order)), suggestions }, JSON_TYPE, NO_STORE);
+    }
+
+    if (action === "preview" && method === "GET") {
+      const verified = await verifyConversation(String(url.searchParams.get("conversationId") || "").trim());
+      if (!verified.ok) return fail(res, verified.status, verified.code, verified.message);
+      const owner = WebsiteOrders.chatwoodOwnerOf(order), identity = verified.identity;
+      const sameOwner = WebsiteOrders.sameChatwoodOwner(owner, identity);
+      return send(res, 200, { ok:true,
+        order:{ id:order.id, createdAt:order.createdAt || order.date || "", status:order.status || "", total:Number(order.total || 0), recipientMasked:ChatwoodContext.maskPhone(order.phone), owner:ownerView(owner) },
+        conversation:{ conversationId:identity.chatwootConversationId, contactId:identity.chatwootContactId, whatsappMasked:ChatwoodContext.maskPhone(identity.customerWhatsAppPhone), lastMessageAt:verified.lastMessageAt },
+        evidence:{ orderMentionedByStaff:verified.mentions.some(row => row.orderRef === order.id), recipientIsContactPhone:Boolean(identity.customerWhatsAppPhone) && [order.phone, order.alternativePhone].includes(identity.customerWhatsAppPhone), otherOrdersOfContact:(readDbSafe().onlineOrders || []).filter(item => !item.deletedAt && item.id !== order.id && item.chatwootContactId === identity.chatwootContactId).length },
+        canLink:!owner, alreadyLinkedHere:sameOwner }, JSON_TYPE, NO_STORE);
+    }
+
+    if (!action && method === "POST") {
+      const payload = await readJsonBody(req, 8 * 1024);
+      const source = payload.source === "suggestion" ? "suggestion" : "manual";
+      const verified = await verifyConversation(String(payload.conversationId ?? "").trim(), String(payload.contactId ?? "").trim());
+      if (!verified.ok) return fail(res, verified.status, verified.code, verified.message);
+      if (!/^\d{1,18}$/.test(String(payload.contactId ?? ""))) return fail(res, 400, "CONTACT_REQUIRED", "راجع المحادثة الأول قبل الربط.");
+      // A suggestion stands only while the Store still holds a staff message naming this order in this conversation.
+      if (source === "suggestion" && !verified.mentions.some(row => row.orderRef === order.id)) return fail(res, 409, "SUGGESTION_NOT_FOUND", "الاقتراح ده مبقاش موجود. حدّث التبويب.");
+      const outcome = writeOrderLink(user, id, current => {
+        const owner = WebsiteOrders.chatwoodOwnerOf(current);
+        if (owner && WebsiteOrders.sameChatwoodOwner(owner, verified.identity)) return { unchanged:true, existing:true };
+        if (owner) return { error:{ status:409, code:"ORDER_ALREADY_LINKED", message:`الطلب مربوط بمحادثة تانية${owner.conversationId ? ` #${owner.conversationId}` : ""}. التصحيح للمالك أو المدير.` } };
+        const now = new Date().toISOString();
+        WebsiteOrders.applyChatwoodLink(current, verified.identity, { source:source === "suggestion" ? "suggestion-confirmed" : "manual-verified", evidence:source === "suggestion" ? ["staff_message_order_number", "employee_confirmed"] : ["conversation_verified", "employee_confirmed"], by:user.username, now });
+        return { audit:{ action:source === "suggestion" ? "تأكيد اقتراح ربط الطلب بمحادثة Chatwood" : "ربط الطلب بمحادثة Chatwood بعد التحقق", details:`محادثة ${verified.identity.chatwootConversationId} · جهة اتصال ${verified.identity.chatwootContactId}`, after:{ conversationId:verified.identity.chatwootConversationId, contactId:verified.identity.chatwootContactId } } };
+      }, "ORDER_CHATWOOD_LINKED");
+      if (outcome.error) return fail(res, outcome.error.status, outcome.error.code, outcome.error.message);
+      return send(res, 200, { ok:true, existing:Boolean(outcome.existing), owner:ownerView(WebsiteOrders.chatwoodOwnerOf(outcome.order || findLiveOrder(readDbSafe(), id))) }, JSON_TYPE, NO_STORE);
+    }
+
+    if (action === "correct" && method === "POST") {
+      const payload = await readJsonBody(req, 8 * 1024);
+      const kind = payload.action === "relink" ? "relink" : payload.action === "unlink" ? "unlink" : "";
+      const reason = String(payload.reason || "").trim().slice(0, 300);
+      if (!kind) return fail(res, 400, "INVALID_ACTION", "اختار فك الربط أو تغيير المحادثة.");
+      if (reason.length < 5) return fail(res, 400, "REASON_REQUIRED", "اكتب سبب التصحيح.");
+      let verified = null;
+      if (kind === "relink") {
+        verified = await verifyConversation(String(payload.conversationId ?? "").trim(), String(payload.contactId ?? "").trim());
+        if (!verified.ok) return fail(res, verified.status, verified.code, verified.message);
+      }
+      const outcome = writeOrderLink(user, id, current => {
+        const before = WebsiteOrders.chatwoodOwnerOf(current);
+        if (!before) return { error:{ status:409, code:"ORDER_NOT_LINKED", message:"الطلب مش مربوط بأي محادثة." } };
+        if (kind === "relink" && WebsiteOrders.sameChatwoodOwner(before, verified.identity) && before.conversationId === verified.identity.chatwootConversationId) return { error:{ status:409, code:"SAME_CONVERSATION", message:"الطلب مربوط بالمحادثة دي فعلًا." } };
+        const entry = WebsiteOrders.correctChatwoodLink(current, { action:kind, identity:verified?.identity, reason, by:user.username, now:new Date().toISOString() });
+        return { entry, audit:{ action:kind === "unlink" ? "فك ربط الطلب من محادثة Chatwood" : "تغيير محادثة Chatwood المربوطة بالطلب", details:reason, before:entry.before, after:entry.after, reason } };
+      }, "ORDER_CHATWOOD_LINK_CORRECTED");
+      if (outcome.error) return fail(res, outcome.error.status, outcome.error.code, outcome.error.message);
+      return send(res, 200, { ok:true, history:outcome.entry, owner:ownerView(WebsiteOrders.chatwoodOwnerOf(outcome.order)) }, JSON_TYPE, NO_STORE);
+    }
+    return fail(res, 404, "NOT_FOUND", "API route not found.");
   }
 
   // Suggested fee for the second shipment: what the customer was quoted on the website, else the governorate rate
@@ -412,6 +552,9 @@ function createIntegrationServer(deps) {
     }
 
     if (route === "/api/settings/website-deposit" && method === "PUT") { await websiteDeposit(req, res); return true; }
+    if (route === "/api/chatwood-context/resolve" && method === "POST") { await resolveContext(req, res); return true; }
+    const chatwoodRoute = route.match(/^\/api\/orders\/([^/]+)\/chatwood-link(?:\/(preview|suggestions|correct))?$/);
+    if (chatwoodRoute) { await chatwoodLinkRoute(req, res, url, decodeURIComponent(chatwoodRoute[1]), chatwoodRoute[2] || ""); return true; }
 
     const depositRoute = route.match(/^\/api\/orders\/([^/]+)\/deposit-required$/);
     if (depositRoute && method === "PATCH") { await systemOrderDeposit(req, res, depositRoute[1]); return true; }

@@ -35,12 +35,14 @@ async function request(path,{token,method="GET",body}={}){
   result=await request("/api/orders/quick",{token:owner,method:"POST",body:payload});
   assert(result.status===201,"quick-order draft created");
   const orderId=result.body.order.id;
-  assert(result.body.order.chatwootConversationId===payload.chatwootConversationId&&result.body.order.chatwootContactId===payload.chatwootContactId&&result.body.order.customerWhatsAppPhone===payload.customerWhatsAppPhone&&result.body.order.phone===payload.phone,"conversation, contact and WhatsApp owner are kept apart from the recipient phone");
+  // Conversation ids sent by the browser are not trusted: without a context token verified by the server the order has
+  // no Chatwood owner, and the delivery phone stays the recipient's.
+  assert(result.body.order.chatwootConversationId===""&&result.body.order.chatwootContactId===""&&result.body.order.customerWhatsAppPhone===""&&result.body.order.phone===payload.phone,"raw conversation ids from the browser are ignored");
   const duplicate=await request("/api/orders/quick",{token:owner,method:"POST",body:payload});
   assert(duplicate.status===200&&duplicate.body.existing&&duplicate.body.order.id===orderId,"a retried save (same requestId) is idempotent");
-  // One conversation can have several orders: a new draft (new requestId) from the same conversation is a new order.
+  // A new draft (new requestId) is a new order even with the same customer.
   const second=await request("/api/orders/quick",{token:owner,method:"POST",body:{...payload,requestId:`qa-whatsapp-second-${stamp}`,lines:payload.lines.slice(0,1)}});
-  assert(second.status===201&&second.body.order.id!==orderId&&second.body.order.chatwootConversationId===payload.chatwootConversationId,"a second order from the same conversation is created");
+  assert(second.status===201&&second.body.order.id!==orderId,"a new draft (new requestId) is a new order");
   await request(`/api/orders/${second.body.order.id}/cancel`,{token:owner,method:"POST",body:{reason:"QA"}});
   const stockBefore=books.map(book=>Number(book.stock));
   const reservedBefore=books.map(book=>Number(book.reservedStock||0));

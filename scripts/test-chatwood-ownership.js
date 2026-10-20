@@ -1,7 +1,8 @@
 'use strict';
-// Who an order belongs to: quick orders keep the Chatwood conversation, contact and WhatsApp owner apart from the
-// recipient's delivery phone; the tab shows owners their orders and recipients only status; older orders are linked
-// only through the signed, evidence-based history endpoint; nothing here changes phones or customers.
+// Who an order belongs to: quick orders keep the Chatwood conversation, contact and WhatsApp owner (from a context the
+// server verified) apart from the recipient's delivery phone; the tab shows owners their orders and recipients only
+// status; older orders are linked only through the signed, evidence-based history endpoint; nothing here changes
+// phones or customers.
 const assert = require('node:assert/strict');
 const H = require('./integration-test-helpers.js');
 
@@ -11,6 +12,8 @@ const line = (qty = 1, price = 100) => [{ bookId:'B0001', qty, price, lineTotal:
   let system, store;
   try {
     store = await H.startMockStore();
+    store.state.conversations.set('8001', H.chatwoodConversation('8001'));
+    store.state.conversations.set('8005', H.chatwoodConversation('8005', { contactId:'9003', contactPhone:'01044440004' }));
     const db = H.fixtureDb();
     db.customers = [{ id:'C-L', name:'عميل قديم', phone:'01033330003' }];
     db.onlineOrders = [{ id:'ORD-L1', date:'2026-10-16', customerId:'C-L', customerName:'عميل قديم', phone:'01033330003', alternativePhone:'', source:'whatsapp', status:'تم الشحن', workflowStage:'shipped', lines:line(), total:135, paidAmount:0, chatwootConversationId:'', confirmedAt:'2026-10-16T10:00:00.000Z', createdAt:'2026-10-16T10:00:00.000Z', deletedAt:null }];
@@ -18,14 +21,16 @@ const line = (qty = 1, price = 100) => [{ bookId:'B0001', qty, price, lineTotal:
     const panel = query => system.api(`/api/integration/v1/panel/customer?${new URLSearchParams(query)}`, { username:'owner' });
     const create = body => system.api('/api/orders/quick', { username:'owner', method:'POST', body:{ customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], ...body } });
     const ids = list => list.map(row => row.salesOrderId).sort();
+    const contextFor = async (conversationId, contactId) => (await panel({ conversationId, contactId })).body.orderContext.token;
+    const buyerContext = await contextFor('8001', '9001');
 
     // ---- A buyer (WhatsApp 01011110001, contact 9001, conversation 8001) orders a gift for a recipient (01022220002).
-    let r = await create({ requestId:'own-1', phone:'01022220002', customerWhatsAppPhone:'+20 101 111 0001', chatwootConversationId:'8001', chatwootContactId:'9001' });
+    let r = await create({ requestId:'own-1', phone:'01022220002', chatwoodContext:buyerContext });
     assert.equal(r.status, 201, r.text);
     const gift = r.body.order;
     assert.deepEqual([gift.phone, gift.customerWhatsAppPhone, gift.chatwootConversationId, gift.chatwootContactId], ['01022220002', '01011110001', '8001', '9001']);
     r = await create({ requestId:'own-bad', phone:'01022220002', customerWhatsAppPhone:'123', chatwootConversationId:'abc', chatwootContactId:'x1' });
-    assert.equal(r.status, 201); assert.deepEqual([r.body.order.customerWhatsAppPhone, r.body.order.chatwootConversationId, r.body.order.chatwootContactId], ['', '', ''], 'malformed identity is not stored');
+    assert.equal(r.status, 201); assert.deepEqual([r.body.order.customerWhatsAppPhone, r.body.order.chatwootConversationId, r.body.order.chatwootContactId], ['', '', ''], 'ids sent by the browser are not stored');
     const malformed = r.body.order.id;
     console.log('PASS quick order keeps conversation, contact and WhatsApp owner apart from the recipient phone');
 
@@ -58,18 +63,18 @@ const line = (qty = 1, price = 100) => [{ bookId:'B0001', qty, price, lineTotal:
     // ---- An older order without an owner keeps matching by phone; one conversation can have several orders.
     r = await panel({ phone:'01033330003' });
     assert.deepEqual(ids(r.body.orders), ['ORD-L1']); assert.equal(r.body.orders[0].matchedBy, 'phone');
-    r = await create({ requestId:'own-2', phone:'01011110001', customerWhatsAppPhone:'01011110001', chatwootConversationId:'8001', chatwootContactId:'9001' });
+    r = await create({ requestId:'own-2', phone:'01011110001', chatwoodContext:buyerContext });
     assert.equal(r.status, 201);
     r = await panel({ contactId:'9001' });
     assert.equal(r.body.orders.length, 2);
     console.log('PASS older orders still match by phone and one conversation can hold several orders');
 
     // ---- Editing fills a missing identity and never replaces a different one; a browser save cannot change it.
-    r = await system.api(`/api/orders/${malformed}/quick`, { username:'owner', method:'PATCH', body:{ phone:'01022220002', customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], chatwootContactId:'9003', customerWhatsAppPhone:'01044440004' } });
+    r = await system.api(`/api/orders/${malformed}/quick`, { username:'owner', method:'PATCH', body:{ phone:'01022220002', customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], chatwoodContext:await contextFor('8005', '9003') } });
     assert.equal(r.status, 200, r.text);
     let order = system.readDb().onlineOrders.find(row => row.id === malformed);
     assert.deepEqual([order.chatwootContactId, order.customerWhatsAppPhone], ['9003', '01044440004']);
-    r = await system.api(`/api/orders/${gift.id}/quick`, { username:'owner', method:'PATCH', body:{ phone:'01022220002', customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], chatwootContactId:'9999' } });
+    r = await system.api(`/api/orders/${gift.id}/quick`, { username:'owner', method:'PATCH', body:{ phone:'01022220002', customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], chatwoodContext:await contextFor('8005', '9003') } });
     assert.equal(system.readDb().onlineOrders.find(row => row.id === gift.id).chatwootContactId, '9001', 'a different contact is not written over');
     const revision = (await system.api('/api/live-revision', { username:'owner' })).body.revision;
     const whole = (await system.api('/api/db', { username:'owner' })).body;

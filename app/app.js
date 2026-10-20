@@ -64,7 +64,7 @@ const ACTION_ROLES = {
   ,"order.quick.create":["مالك","مدير","كاشير"],"order.quick.confirm":["مالك","مدير","كاشير"],"order.quick.edit":["مالك","مدير","كاشير"],
   "order.discount.override":["مالك","مدير"],"order.shipping.override":["مالك","مدير"],"order.payment.receive":["مالك","مدير","كاشير"],
   "order.prepare":["مالك","مدير","مخزن"],"order.pack":["مالك","مدير","مخزن"],"order.shipping":["مالك","مدير","شحن"],
-  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"order.deposit.default":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
+  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"order.chatwood.correct":["مالك","مدير"],"order.deposit.default":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
   "panel.view":["مالك","مدير","محاسب","كاشير","مخزن","شحن"],"panel.link":["مالك","مدير","كاشير"]
 };
 
@@ -96,7 +96,7 @@ const VIEW_DEFINITIONS = [
 const PERMISSION_ACTIONS = [
   ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["book.preorder.manage","تعديل السماح بالحجز المسبق"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
-  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب وتعديل عربون طلب"],["order.deposit.default","تعديل العربون الافتراضي لطلبات الموقع"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"]]],
+  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب وتعديل عربون طلب"],["order.deposit.default","تعديل العربون الافتراضي لطلبات الموقع"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"],["order.chatwood.correct","تصحيح ربط الطلبات بمحادثات Chatwood"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
@@ -212,8 +212,11 @@ let shippingImportPreviewRevision = null;
 // requestId makes a retried save return the same order; the Chatwood fields say who the order belongs to
 // (conversation, contact, WhatsApp number), apart from phone, which is the recipient's delivery number.
 const quickOrderRequestId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `QO-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-const emptyQuickOrderDraft = () => ({ requestId:quickOrderRequestId(), customerWhatsAppPhone:"", chatwootConversationId:"", chatwootContactId:"", phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
+const emptyQuickOrderDraft = () => ({ requestId:quickOrderRequestId(), chatwoodContext:null, phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
+// The verified Chatwood conversation this browser tab was opened from (via the tab's button). New drafts here keep it
+// until it expires or the employee drops it; it is never taken from ids in the address bar.
+let chatwoodSessionContext = null;
 let quickOrderSearch = "";
 let quickOrderContextRender = false;
 let quickOrderAutofocusPending = true;
@@ -1172,10 +1175,18 @@ function openRequestedDialog() {
   }
   if (params.get("quick") === "1" && canAction("order.quick.create")) {
     requestedDialogOpened = true;
-    const id = value => /^\d{1,18}$/.test(String(value || "")) ? String(value) : "";
-    const whatsapp = normalizePhone(params.get("whatsapp") || "");
-    quickOrderDraft = { ...emptyQuickOrderDraft(), customerWhatsAppPhone:whatsapp, phone:whatsapp, chatwootConversationId:id(params.get("chatwootConversationId")), chatwootContactId:id(params.get("chatwootContactId")) };
-    setTimeout(() => { quickOrderSearch = ""; quickOrderAutofocusPending = true; onlineOrdersMode = "quick"; if (typeof showView === "function") showView("onlineOrders"); renderOnlineOrders(); }, 80);
+    const token = params.get("ctx") || "";
+    const show = () => setTimeout(() => { quickOrderSearch = ""; quickOrderAutofocusPending = true; onlineOrdersMode = "quick"; if (typeof showView === "function") showView("onlineOrders"); renderOnlineOrders(); }, 80);
+    if (!token) {
+      quickOrderDraft = emptyQuickOrderDraft();
+      if (params.get("chatwootConversationId")) toast("الرابط ده قديم ومش متحقق منه، فالطلب مش هيتربط بالمحادثة. افتح الطلب من زرار تبويب Chatwood تاني.", "error");
+      show();
+      return;
+    }
+    fetch("/api/chatwood-context/resolve", { method:"POST", credentials:"same-origin", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ token }) })
+      .then(async response => { const result = await response.json().catch(() => ({})); if (!response.ok || !result.ok) throw new Error(result.message || "سياق المحادثة غير صالح."); chatwoodSessionContext = { token, ...result.context }; quickOrderDraft = newQuickOrderDraft(); })
+      .catch(error => { chatwoodSessionContext = null; quickOrderDraft = emptyQuickOrderDraft(); toast(error.message, "error"); })
+      .finally(show);
     return;
   }
   if (dialog === "old-invoices") {
@@ -3539,7 +3550,7 @@ function quickOrderMessage(confirmed=false) {
       : `• ${name} | ${price}`;
   }).join("\n");
   const orderDiscount=totals.orderDiscountAmount ? `خصم الطلب: ${amount(totals.orderDiscountAmount)} ج\n` : "";
-  return `${confirmed?"✅ تم تأكيد الطلب":"📚 ملخص الطلب"}${confirmed&&order?` · ${order.id}`:""}\n${customerDetails ? `${customerDetails}\n\n` : ""}${rows||"—"}\n\n${orderDiscount}قيمة الكتب: ${amount(totals.goods)} ج | الشحن: ${amount(totals.shipping)} ج\nالإجمالي: ${amount(totals.total)} ج\nالمدفوع: ${amount(payment.paidAmount)} ج | المتبقي: ${amount(payment.remainingAmount)} ج${quickOrderHasPreorder()?"\n⏳ الطلب فيه كتب حجز مسبق، وسيتم الشحن عند توفرها.":""}`;
+  return `${confirmed?"✅ تم تأكيد الطلب":"📚 ملخص الطلب"}${order?`\nرقم الطلب: ${order.id}`:""}\n${customerDetails ? `${customerDetails}\n\n` : ""}${rows||"—"}\n\n${orderDiscount}قيمة الكتب: ${amount(totals.goods)} ج | الشحن: ${amount(totals.shipping)} ج\nالإجمالي: ${amount(totals.total)} ج\nالمدفوع: ${amount(payment.paidAmount)} ج | المتبقي: ${amount(payment.remainingAmount)} ج${quickOrderHasPreorder()?"\n⏳ الطلب فيه كتب حجز مسبق، وسيتم الشحن عند توفرها.":""}`;
 }
 
 function quickOrderAvailableFor(bookId) {
@@ -3702,7 +3713,7 @@ function renderQuickOrderScreen() {
     </article>
     <aside class="quick-order-summary card"><div class="card-header"><div><h3>مراجعة وحفظ الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ الرسالة.":"مراجعة سريعة ثم الحفظ أو التأكيد."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
-    <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":"📋 نسخ ملخص الطلب"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-save">حفظ التعديلات</button>${canAction("order.quick.create")?`<button class="btn ghost" data-action="quick-order-new">طلب جديد</button>`:""}`}</div>
+    <div class="form-actions sticky-actions"><button class="btn secondary" data-action="quick-order-copy">${confirmed?"📋 نسخ تأكيد الطلب":quickOrderDraft.savedOrderId?"📋 نسخ ملخص الطلب":"📋 حفظ ونسخ الملخص"}</button>${!confirmed?`<button class="btn ghost" data-action="quick-order-save">${quickOrderDraft.savedOrderId?"تحديث المسودة":"حفظ المسودة"}</button><span class="primary-with-help"><button class="btn" data-action="quick-order-confirm">تأكيد الطلب</button>${helpIcon("بعد التأكيد ينتقل الطلب لمسؤول التجهيز ويتم تطبيق قواعد المخزون الحالية.","شرح تأكيد الطلب")}</span>`:`<button class="btn" data-action="quick-order-save">حفظ التعديلات</button>${canAction("order.quick.create")?`<button class="btn ghost" data-action="quick-order-new">طلب جديد</button>`:""}`}</div>
     </aside>
     </div>
   </div></div>`;
@@ -3951,24 +3962,55 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
   try{return await request;}finally{orderWorkflowRequests.delete(requestKey);}
 }
 
+function activeChatwoodContext() {
+  if(chatwoodSessionContext&&!(Date.parse(chatwoodSessionContext.expiresAt)>Date.now())){chatwoodSessionContext=null;toast("انتهت صلاحية سياق محادثة Chatwood؛ الطلبات الجاية مش هتتربط بيها إلا لو فتحتها من التبويب تاني.","error");}
+  return chatwoodSessionContext;
+}
+
+// After a confirmation or «طلب جديد», a draft keeps the verified conversation of this tab (shown, and droppable).
+function newQuickOrderDraft() {
+  const context=activeChatwoodContext();
+  return {...emptyQuickOrderDraft(),chatwoodContext:context,phone:context?.customerWhatsAppPhone||""};
+}
+
+function dropChatwoodContext() { chatwoodSessionContext=null; quickOrderDraft.chatwoodContext=null; }
+
+const maskPhoneDisplay=phone=>/^01\d{9}$/.test(String(phone||""))?`${phone.slice(0,4)}****${phone.slice(-3)}`:"";
+const CHATWOOD_LINK_SOURCES={"verified-context":"اتربط تلقائيًا من تبويب المحادثة","manual-verified":"اتربط يدويًا بعد التحقق","suggestion-confirmed":"اتربط بتأكيد اقتراح","history-review":"اتربط من مراجعة السجل","corrected":"اتربط بتصحيح من المالك/المدير"};
+
+function chatwoodOrderOwner(order) {
+  if(!order)return null;
+  const conversationId=/^\d{1,18}$/.test(String(order.chatwootConversationId||"").trim())?String(order.chatwootConversationId).trim():"";
+  const contactId=/^\d{1,18}$/.test(String(order.chatwootContactId||""))?String(order.chatwootContactId):"";
+  const whatsapp=/^01\d{9}$/.test(String(order.customerWhatsAppPhone||""))?order.customerWhatsAppPhone:"";
+  return conversationId||contactId||whatsapp?{conversationId,contactId,whatsapp,source:order.chatwoodLink?.source||""}:null;
+}
+
 function quickOrderChatwoodMarkup() {
-  const d=quickOrderDraft;
-  return `<div class="form-grid three quick-chatwood-identity"><div class="form-field"><label>رقم واتساب العميل (صاحب المحادثة)</label><input id="quick-order-whatsapp" dir="ltr" inputmode="tel" value="${esc(d.customerWhatsAppPhone||"")}" placeholder="01xxxxxxxxx"><small>لو العميل بيطلب لحد تاني، رقم المستلم بيتكتب تحت.</small></div>
-    <div class="form-field"><label>رقم محادثة Chatwood</label><input id="quick-order-conversation" dir="ltr" inputmode="numeric" value="${esc(d.chatwootConversationId||"")}" placeholder="مثال: 12345"><small>${d.chatwootContactId?`جهة الاتصال #${esc(d.chatwootContactId)}`:"بيتملى لوحده لما تفتح الطلب من تبويب Chatwood."}</small></div></div>`;
+  const saved=quickOrderDraft.savedOrderId?getOnlineOrder(quickOrderDraft.savedOrderId):null,owner=chatwoodOrderOwner(saved),context=owner?null:quickOrderDraft.chatwoodContext;
+  const recipient=normalizePhone(quickOrderDraft.phone||"");
+  if(owner)return `<div class="chatwood-context linked" role="status"><div><strong>🔗 الطلب مرتبط بمحادثة Chatwood${owner.conversationId?` #${esc(owner.conversationId)}`:""}</strong><span>${esc(CHATWOOD_LINK_SOURCES[owner.source]||"مربوط")}${owner.whatsapp?` · واتساب صاحب المحادثة ${esc(maskPhoneDisplay(owner.whatsapp))}`:""}${owner.whatsapp&&recipient&&recipient!==owner.whatsapp?" · رقم المستلم مختلف عنه":""}</span></div>${canAction("order.chatwood.correct")?`<button type="button" class="btn small ghost" data-action="chatwood-correct-open" data-id="${esc(saved.id)}">تصحيح الربط</button>`:""}</div>`;
+  if(context){
+    const expires=new Date(context.expiresAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"});
+    return `<div class="chatwood-context linked" role="status"><div><strong>🔗 الطلب ده هيتربط بمحادثة Chatwood #${esc(context.conversationId)}</strong><span>${context.customerWhatsAppPhone?`واتساب صاحب المحادثة ${esc(maskPhoneDisplay(context.customerWhatsAppPhone))}`:"جهة اتصال من غير رقم ظاهر (اسم مستخدم واتساب)"} · السياق متحقق منه وصالح لحد ${esc(expires)}${context.customerWhatsAppPhone&&recipient&&recipient!==context.customerWhatsAppPhone?" · رقم المستلم مختلف: الطلب هيتسجل لصاحب المحادثة، والمستلم يشوف حالته بس":""}</span></div><button type="button" class="btn small ghost" data-action="quick-order-drop-context">إلغاء استخدام السياق</button></div>`;
+  }
+  return `<div class="chatwood-context unlinked" role="status"><div><strong>⚠️ هذا الطلب غير مرتبط بمحادثة Chatwood</strong><span>${saved?"لو الطلب جاي من محادثة، اربطه بيها بعد ما السيستم يتحقق منها.":"لو الطلب جاي من محادثة، افتحه من زرار «إنشاء طلب سريع لهذه المحادثة» في تبويب Chatwood، أو احفظه واربطه بعدين."}</span></div>${saved&&canAction("panel.link")?`<button type="button" class="btn small" data-action="chatwood-link-open" data-id="${esc(saved.id)}">ربط بمحادثة</button>`:""}</div>`;
 }
 
 function quickOrderPayload() {
-  const {shippingManual,paymentLocked,...persistedDraft}=quickOrderDraft;
-  return {...persistedDraft,shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
+  const {shippingManual,paymentLocked,chatwoodContext,...persistedDraft}=quickOrderDraft;
+  return {...persistedDraft,chatwoodContext:chatwoodContext?.token||"",shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
 }
 
 async function saveQuickOrderDraft({silent=false,reload=true}={}) {
   const blocked=quickOrderBlockedLines();
   if(blocked.length)throw new Error(`الطلب ${quickOrderDraft.savedOrderId} بدأ تجهيزه، و${blocked.map(line=>`«${getBook(line.bookId)?.name||line.bookId}»`).join(" و")} مش متاح. احذفه أو اضغط «طلب منفصل للكتاب ده» قبل الحفظ.`);
   const payload=quickOrderPayload();
-  const result=quickOrderDraft.savedOrderId
+  let result;
+  try{result=quickOrderDraft.savedOrderId
     ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:payload,reload})
-    : await orderWorkflowRequest("/api/orders/quick",{body:payload,reload});
+    : await orderWorkflowRequest("/api/orders/quick",{body:payload,reload});}
+  catch(error){if(/^CHATWOOD_CONTEXT_/.test(error.code||"")){dropChatwoodContext();renderQuickOrderPreservingContext();}throw error;}
   quickOrderDraft.savedOrderId=result.order.id;
   if(!silent)toast(result.order.confirmedAt?`تم حفظ تعديلات الطلب ${result.order.id}.`:`تم حفظ المسودة ${result.order.id}.`);
   return result.order;
@@ -3986,11 +4028,11 @@ async function saveAndConfirmQuickOrder() {
     await saveQuickOrderDraft({silent:true,reload:false});
     const confirmResult=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/confirm`,{reload:"background"});
     const confirmedId=quickOrderDraft.savedOrderId;
-    quickOrderDraft=emptyQuickOrderDraft();
+    quickOrderDraft=newQuickOrderDraft();
     quickOrderSearch="";
     quickOrderAutofocusPending=true;
     onlineOrdersMode="quick";
-    renderOnlineOrders();toast(confirmResult?.order?.workflowStage==="awaiting_stock"?`تم تأكيد الطلب ${confirmedId} كحجز مسبق؛ سيظهر في «الكتب الناقصة والحجوزات» حتى توفر الكتب.`:`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد.`);
+    renderOnlineOrders();toast(confirmResult?.order?.workflowStage==="awaiting_stock"?`تم تأكيد الطلب ${confirmedId} كحجز مسبق؛ سيظهر في «الكتب الناقصة والحجوزات» حتى توفر الكتب.`:`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد${quickOrderDraft.chatwoodContext?` لنفس المحادثة #${quickOrderDraft.chatwoodContext.conversationId}`:""}.`);
   }catch(error){toast(error.message,"error");}
   finally{quickOrderConfirmPending=false;}
 }
@@ -4007,10 +4049,90 @@ async function splitQuickOrderBook(index) {
   if(available>0)line.qty=available;else quickOrderDraft.lines.splice(index,1);
   try{await saveQuickOrderDraft({silent:true});}
   catch(error){quickOrderDraft=previous;renderQuickOrderPreservingContext();return toast(error.message,"error");}
-  const customerFields=["customerWhatsAppPhone","chatwootConversationId","chatwootContactId","phone","customerId","customerName","governorate","city","address","addressMark","alternativePhone","shippingCompany"];
-  quickOrderDraft={...emptyQuickOrderDraft(),...Object.fromEntries(customerFields.map(key=>[key,previous[key]||""])),lines:[moved],notes:`كتاب منفصل من الطلب ${orderId}: الطلب كان في التجهيز والكتاب مش متاح.`};
+  const customerFields=["phone","customerId","customerName","governorate","city","address","addressMark","alternativePhone","shippingCompany"];
+  const context=activeChatwoodContext(),owner=chatwoodOrderOwner(getOnlineOrder(orderId));
+  quickOrderDraft={...emptyQuickOrderDraft(),...Object.fromEntries(customerFields.map(key=>[key,previous[key]||""])),chatwoodContext:context&&owner&&owner.conversationId===context.conversationId?context:null,lines:[moved],notes:`كتاب منفصل من الطلب ${orderId}: الطلب كان في التجهيز والكتاب مش متاح.`};
   quickOrderSearch="";onlineOrdersMode="quick";renderOnlineOrders();
   toast(`اتحفظ الطلب ${orderId} من غير «${name}». راجع الطلب الجديد (الشحن والدفع) وأكّده، وهيتسجل حجز مسبق.`);
+}
+
+// ---- Linking a saved order to a Chatwood conversation and correcting a wrong link. The server verifies every
+// conversation with the Store; the employee reviews what it found before confirming.
+let chatwoodLinkState={orderId:"",mode:"link",preview:null};
+
+async function chatwoodApi(path,{method="GET",body}={}) {
+  const response=await fetch(path,{method,credentials:"same-origin",headers:authHeaders(body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
+  const result=await response.json().catch(()=>({}));
+  const authError=orderAuthenticationError(response.status,result);if(authError)throw authError;
+  if(!response.ok||result.ok===false)throw Object.assign(new Error(result.message||"تعذر تنفيذ الإجراء."),{code:result.code});
+  return result;
+}
+
+function chatwoodPreviewMarkup(preview) {
+  const c=preview.conversation,e=preview.evidence,o=preview.order;
+  return `<div class="chatwood-preview"><h4>محادثة #${esc(c.conversationId)}</h4><ul>
+    <li>واتساب صاحب المحادثة: <b>${c.whatsappMasked?esc(c.whatsappMasked):"من غير رقم ظاهر"}</b></li>
+    <li>آخر رسالة: <b>${c.lastMessageAt?esc(arabicDateTimeLabel(c.lastMessageAt)):"—"}</b></li>
+    <li>رقم الطلب اتكتب في رسالة موظف في المحادثة دي: <b>${e.orderMentionedByStaff?"أيوه":"لأ"}</b></li>
+    <li>رقم المستلم (${esc(o.recipientMasked||"—")}) هو رقم جهة الاتصال: <b>${e.recipientIsContactPhone?"أيوه":"لأ"}</b></li>
+    <li>طلبات تانية مربوطة بنفس جهة الاتصال: <b>${Number(e.otherOrdersOfContact||0)}</b></li></ul>
+    ${preview.alreadyLinkedHere?`<p class="finance-callout">الطلب مربوط بالمحادثة دي فعلًا.</p>`:o.owner&&chatwoodLinkState.mode!=="correct"?`<p class="finance-callout warning">الطلب مربوط بمحادثة تانية #${esc(o.owner.conversationId||"—")}. التصحيح للمالك أو المدير.</p>`:""}</div>`;
+}
+
+async function openChatwoodLinkDialog(orderId) {
+  chatwoodLinkState={orderId,mode:"link",preview:null};
+  let suggestions=[];
+  try{suggestions=(await chatwoodApi(`/api/orders/${encodeURIComponent(orderId)}/chatwood-link/suggestions`)).suggestions||[];}catch(error){toast(error.message,"error");}
+  const context=activeChatwoodContext();
+  openModal(`ربط الطلب ${orderId} بمحادثة`,"Chatwood",`<div class="chatwood-link-dialog">
+    <p>اكتب رقم المحادثة اللي ظاهر في Chatwood. السيستم بيتحقق منها الأول، ومفيش ربط من غير تأكيدك.</p>
+    ${suggestions.length?`<div class="chatwood-suggestions"><strong>محادثات اتكتب فيها رقم الطلب في رسالة موظف:</strong>${suggestions.map(row=>`<button type="button" class="btn small ghost" data-action="chatwood-link-pick" data-conversation="${esc(row.conversationId)}">#${esc(row.conversationId)}${row.whatsappMasked?` · ${esc(row.whatsappMasked)}`:""}</button>`).join("")}</div>`:""}
+    <div class="form-field"><label for="chatwood-link-conversation">رقم محادثة Chatwood</label><input id="chatwood-link-conversation" dir="ltr" inputmode="numeric" value="${esc(context?.conversationId||"")}" placeholder="مثال: 12345"></div>
+    <div class="form-actions"><button type="button" class="btn secondary" data-action="chatwood-link-preview">مراجعة المحادثة</button></div>
+    <div id="chatwood-link-preview"></div></div>`);
+}
+
+async function previewChatwoodLink(conversationId) {
+  const value=normalizeArabicNumericText(conversationId||document.getElementById("chatwood-link-conversation")?.value||"").replace(/[^0-9]/g,"");
+  const box=document.getElementById(chatwoodLinkState.mode==="correct"?"chatwood-correct-preview":"chatwood-link-preview");
+  if(!value)return toast("اكتب رقم المحادثة.","error");
+  try{
+    const preview=await chatwoodApi(`/api/orders/${encodeURIComponent(chatwoodLinkState.orderId)}/chatwood-link/preview?conversationId=${encodeURIComponent(value)}`);
+    chatwoodLinkState.preview=preview;
+    const correcting=chatwoodLinkState.mode==="correct",canConfirm=correcting?!preview.alreadyLinkedHere:preview.canLink;
+    if(box)box.innerHTML=`${chatwoodPreviewMarkup(preview)}${canConfirm?`<div class="form-actions"><button type="button" class="btn" data-action="${correcting?"chatwood-correct-submit":"chatwood-link-confirm"}" data-kind="relink">${correcting?"نقل الربط للمحادثة دي":"تأكيد الربط"}</button></div>`:""}`;
+  }catch(error){chatwoodLinkState.preview=null;if(box)box.innerHTML=`<p class="finance-callout warning">${esc(error.message)}</p>`;}
+}
+
+async function confirmChatwoodLink() {
+  const preview=chatwoodLinkState.preview,orderId=chatwoodLinkState.orderId;
+  if(!preview)return toast("راجع المحادثة الأول.","error");
+  const conversationId=preview.conversation.conversationId;
+  try{await chatwoodApi(`/api/orders/${encodeURIComponent(orderId)}/chatwood-link`,{method:"POST",body:{conversationId,contactId:preview.conversation.contactId,source:"manual"}});await reloadRemoteData();closeModal();renderOnlineOrders();toast(`اتربط الطلب ${orderId} بمحادثة #${conversationId}.`);}
+  catch(error){toast(error.message,"error");}
+}
+
+function openChatwoodCorrectDialog(orderId) {
+  const owner=chatwoodOrderOwner(getOnlineOrder(orderId));
+  chatwoodLinkState={orderId,mode:"correct",preview:null};
+  openModal(`تصحيح ربط الطلب ${orderId}`,"Chatwood · للمالك والمدير",`<div class="chatwood-link-dialog">
+    <p>الطلب مربوط دلوقتي بمحادثة <b>#${esc(owner?.conversationId||"—")}</b>. كل تصحيح بيتسجل بسببه واسمك ووقته.</p>
+    <div class="form-field"><label class="required" for="chatwood-correct-reason">سبب التصحيح</label><textarea id="chatwood-correct-reason" rows="2" maxlength="300" placeholder="مثال: الطلب طلع لعميل تاني"></textarea></div>
+    <div class="form-actions"><button type="button" class="btn danger" data-action="chatwood-correct-submit" data-kind="unlink">فك الربط</button></div>
+    <div class="form-field"><label for="chatwood-link-conversation">أو انقله لمحادثة تانية</label><input id="chatwood-link-conversation" dir="ltr" inputmode="numeric" placeholder="رقم المحادثة الصح"></div>
+    <div class="form-actions"><button type="button" class="btn secondary" data-action="chatwood-link-preview">مراجعة المحادثة</button></div>
+    <div id="chatwood-correct-preview"></div></div>`);
+}
+
+async function submitChatwoodCorrection(kind) {
+  const reason=String(document.getElementById("chatwood-correct-reason")?.value||"").trim(),orderId=chatwoodLinkState.orderId,preview=chatwoodLinkState.preview;
+  if(reason.length<5)return toast("اكتب سبب التصحيح (5 حروف على الأقل).","error");
+  if(kind==="relink"&&!preview)return toast("راجع المحادثة الأول.","error");
+  if(!confirm(kind==="unlink"?`فك ربط الطلب ${orderId} من المحادثة؟`:`نقل ربط الطلب ${orderId} لمحادثة #${preview.conversation.conversationId}؟`))return;
+  try{
+    await chatwoodApi(`/api/orders/${encodeURIComponent(orderId)}/chatwood-link/correct`,{method:"POST",body:{action:kind,reason,...(kind==="relink"?{conversationId:preview.conversation.conversationId,contactId:preview.conversation.contactId}:{})}});
+    await reloadRemoteData();closeModal();renderOnlineOrders();toast(kind==="unlink"?`اتفك ربط الطلب ${orderId}، والتصحيح اتسجل.`:`اتنقل ربط الطلب ${orderId}، والتصحيح اتسجل.`);
+  }catch(error){toast(error.message,"error");}
 }
 
 // Orders do not always store shippingFeeOverride, so a fee that differs from the governorate rate counts as manual.
@@ -4025,11 +4147,17 @@ function editQuickOrder(id) {
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
   const recordedPayments=(data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed"&&item.confirmed!==false),recordedPaid=recordedPayments.reduce((sum,item)=>sum+Number(item.amount||0),0);
-  quickOrderDraft={...emptyQuickOrderDraft(),customerWhatsAppPhone:order.customerWhatsAppPhone||"",chatwootConversationId:order.chatwootConversationId||"",chatwootContactId:order.chatwootContactId||"",phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
 }
 
 async function copyQuickOrderMessage() {
+  // The copied summary names the System order (رقم الطلب: ORD-…), so a new draft is saved first to get its number.
+  if(!quickOrderDraft.savedOrderId){
+    if(!validateQuickOrderCustomerFields())return;
+    try{await saveQuickOrderDraft({silent:true});renderOnlineOrders();}
+    catch(error){return toast(error.message,"error");}
+  }
   try{await navigator.clipboard.writeText(quickOrderMessage(Boolean(quickOrderDraft.savedOrderId&&getOnlineOrder(quickOrderDraft.savedOrderId)?.confirmedAt)));toast("تم نسخ ملخص الطلب");}
   catch{toast("تعذر النسخ تلقائيًا. حدد النص وانسخه.","error");}
 }
@@ -7964,7 +8092,7 @@ document.addEventListener("input", event => {
   if(input instanceof HTMLInputElement&&(
     input.dataset.normalizeDigits==="true"||
     ["numeric","decimal","tel"].includes(input.getAttribute("inputmode")||"")||
-    ["quick-order-phone","quick-order-alt-phone","quick-order-whatsapp","quick-order-conversation","quick-shipping-order-code","quick-shipping-tracking"].includes(input.id)||
+    ["quick-order-phone","quick-order-alt-phone","quick-shipping-order-code","quick-shipping-tracking"].includes(input.id)||
     ["tracking","trackingNumber","phone","alternativePhone"].includes(input.name)
   )){
     const before=input.value,normalized=normalizeArabicDigits(before);
@@ -8185,6 +8313,13 @@ root.addEventListener("click", async event => {
     quickOrderSearch="";if(!quickOrderDraft.shippingManual)quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderQuickOrderPreservingContext({focusSelector:`[data-quick-order-qty="${selectedIndex}"]`});
   }
   if (action === "quick-order-split-book") splitQuickOrderBook(Number(target.dataset.index));
+  if (action === "quick-order-drop-context") { dropChatwoodContext(); renderQuickOrderPreservingContext(); toast("الطلب ده مش هيتربط بمحادثة، والطلبات الجاية كمان."); }
+  if (action === "chatwood-link-open") openChatwoodLinkDialog(target.dataset.id);
+  if (action === "chatwood-link-pick") { const input=document.getElementById("chatwood-link-conversation"); if(input)input.value=target.dataset.conversation; previewChatwoodLink(target.dataset.conversation); }
+  if (action === "chatwood-link-preview") previewChatwoodLink();
+  if (action === "chatwood-link-confirm") confirmChatwoodLink();
+  if (action === "chatwood-correct-open") openChatwoodCorrectDialog(target.dataset.id);
+  if (action === "chatwood-correct-submit") submitChatwoodCorrection(target.dataset.kind);
   if (action === "quick-order-remove-book") { quickOrderDraft.lines.splice(Number(target.dataset.index),1);renderQuickOrderPreservingContext(); }
   if (action === "quick-order-reset-shipping") { quickOrderDraft.shippingManual=false;quickOrderDraft.shippingCost=quickOrderShipping(quickOrderDraft.governorate,quickOrderDraft.lines);renderQuickOrderPreservingContext(); }
   if (action === "quick-order-toggle-governorate") { const input=document.getElementById("quick-order-governorate-search");openQuickGovernorateList(input?.getAttribute("aria-expanded")!=="true");input?.focus(); }
@@ -8192,7 +8327,7 @@ root.addEventListener("click", async event => {
   if (action === "quick-order-copy") copyQuickOrderMessage();
   if (action === "quick-order-save") saveQuickOrderDraft().then(renderOnlineOrders).catch(error=>toast(error.message,"error"));
   if (action === "quick-order-confirm") saveAndConfirmQuickOrder();
-  if (action === "quick-order-new") { quickOrderDraft=emptyQuickOrderDraft();quickOrderSearch="";quickOrderAutofocusPending=true;renderOnlineOrders(); }
+  if (action === "quick-order-new") { quickOrderDraft=newQuickOrderDraft();quickOrderSearch="";quickOrderAutofocusPending=true;renderOnlineOrders(); }
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
@@ -8626,8 +8761,6 @@ root.addEventListener("input", event => {
   if(event.target.id==="quick-order-governorate-search"){clearQuickOrderFieldError("governorate");openQuickGovernorateList(true);filterQuickGovernorates(event.target.value);return;}
   if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");refreshQuickOrderComputedUi();return;}
   if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");refreshQuickOrderComputedUi();return;}
-  if(event.target.id==="quick-order-whatsapp"){quickOrderDraft.customerWhatsAppPhone=normalizeArabicDigits(event.target.value);return;}
-  if(event.target.id==="quick-order-conversation"){event.target.value=normalizeArabicNumericText(event.target.value).replace(/[^0-9]/g,"").slice(0,18);quickOrderDraft.chatwootConversationId=event.target.value;return;}
   const quickContactFields={"quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address-mark":"addressMark"};
   if(quickContactFields[event.target.id]){quickOrderDraft[quickContactFields[event.target.id]]=event.target.value;refreshQuickOrderComputedUi();return;}
   if(event.target.matches("[data-quick-order-qty]")){
@@ -8891,6 +9024,12 @@ root.addEventListener("change", event => {
 modalBody.addEventListener("click", event => {
   if (event.target.closest('[data-action="close-modal"]')) closeModal();
   const appAction = event.target.closest("[data-action]");
+  // Chatwood link/correction dialogs live in the modal, outside the main view's delegated handler.
+  const chatwoodAction = appAction?.dataset.action || "";
+  if (chatwoodAction === "chatwood-link-pick") { const input=document.getElementById("chatwood-link-conversation"); if(input)input.value=appAction.dataset.conversation; previewChatwoodLink(appAction.dataset.conversation); return; }
+  if (chatwoodAction === "chatwood-link-preview") { previewChatwoodLink(); return; }
+  if (chatwoodAction === "chatwood-link-confirm") { confirmChatwoodLink(); return; }
+  if (chatwoodAction === "chatwood-correct-submit") { submitChatwoodCorrection(appAction.dataset.kind); return; }
   if (appAction?.dataset.action === "generate-user-password") {
     const input = appAction.closest("form")?.elements.password;
     if (input) input.value = generateTemporaryPassword();

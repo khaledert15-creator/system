@@ -2062,3 +2062,11 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .split-shipment-box legend{font-weight:700;padding:0 6px}
 
 .order-deposit-card{margin-bottom:12px}.order-deposit-card .btn{margin-top:6px}.website-deposit-history{margin:8px 0 14px}.website-deposit-history ul{margin:6px 0;padding-inline-start:18px}
+
+/* Chatwood link status on the quick order and the link/correction dialogs. */
+.chatwood-context{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin:0 0 14px;padding:10px 12px;border-radius:12px;border:1px solid #cfe3f7;background:#f3f8fe}
+.chatwood-context>div{display:grid;gap:3px;min-width:0;flex:1 1 260px}.chatwood-context strong{font-size:13px}.chatwood-context span{color:var(--muted);font-size:12px;line-height:1.6}
+.chatwood-context.unlinked{border-color:#f1d7a6;background:#fff9ee}.chatwood-context.unlinked strong{color:var(--warning)}
+.chatwood-link-dialog{display:grid;gap:12px}.chatwood-link-dialog p{margin:0;color:var(--muted);line-height:1.7}
+.chatwood-suggestions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}.chatwood-suggestions strong{width:100%;font-size:13px}
+.chatwood-preview{padding:10px 12px;border:1px solid var(--line,#e2e8f0);border-radius:12px;background:#fff}.chatwood-preview h4{margin:0 0 6px}.chatwood-preview ul{margin:0;padding-inline-start:18px;display:grid;gap:4px;font-size:13px}

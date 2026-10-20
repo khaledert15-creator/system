@@ -78,7 +78,7 @@ const H = require('./integration-test-helpers.js');
     assert.ok(!text.includes('01119998887') && !text.includes('MK261020-00004') && !text.includes('ORD-0004'), 'no other customer data');
     assert.ok(!/passwordHash|"users"|"books"|"cost"/.test(text), 'never the database');
     // Only the card, the orders and counts/flags about them.
-    assert.deepEqual(Object.keys(body).sort(), ['conversationId', 'counts', 'customer', 'ok', 'orders', 'phoneUsable', 'recipientOrders', 'storeAvailable', 'storeEnabled', 'totalOrders', 'truncated']);
+    assert.deepEqual(Object.keys(body).sort(), ['canLink', 'conversationId', 'conversationVerified', 'counts', 'customer', 'mentionConflicts', 'ok', 'orderContext', 'orders', 'phoneUsable', 'recipientOrders', 'storeAvailable', 'storeEnabled', 'suggestions', 'totalOrders', 'truncated', 'verifiedContactId']);
     const fresh = (await panel({ phone:'01555555555' })).body;
     assert.equal(fresh.customer.status, 'new'); assert.equal(fresh.customer.known, false); assert.deepEqual(fresh.orders, []);
     console.log('PASS panel merges Store and System orders without duplicates and returns only a minimal summary');

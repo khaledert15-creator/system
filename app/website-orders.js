@@ -7,6 +7,7 @@
 // never re-implemented.
 const crypto = require("crypto");
 const OrderFinance = require("./order-finance.js");
+const { maskPhone } = require("./chatwood-context.js");
 
 const WEBSITE_ORDER_NUMBER_PATTERN = /^MK\d{6}-\d{5}$/;
 const DEPOSIT_DEFAULT = 100;
@@ -548,13 +549,14 @@ function createWebsiteOrders(deps) {
 const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername"];
 // The Chatwood identity of an order (who it belongs to) and the quick-order request key are written by the server
 // only; a whole-database save keeps the stored values.
-const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "quickOrderRequestId", "chatwoodLink"];
+const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "quickOrderRequestId", "chatwoodLink", "chatwoodLinkHistory"];
 function preserveChatwoodIdentity(current = {}, next = {}) {
   const currentOrders = new Map((current.onlineOrders || []).filter(order => order && order.id).map(order => [order.id, order]));
   for (const order of next.onlineOrders || []) {
     if (!order || typeof order !== "object") continue;
     const previous = currentOrders.get(order.id);
-    if (!previous) { for (const key of ["chatwootContactId", "customerWhatsAppPhone", "chatwoodLink"]) delete order[key]; continue; }
+    // A browser-made order never brings an owner of its own: only verified server paths record one.
+    if (!previous) { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwoodLink", "chatwoodLinkHistory"]) delete order[key]; continue; }
     for (const key of CHATWOOD_IDENTITY_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(previous, key)) order[key] = JSON.parse(JSON.stringify(previous[key]));
       else delete order[key];
@@ -579,6 +581,58 @@ function linkOrdersToChatwood(db, links = [], { by = "integration", now = new Da
   return result;
 }
 
+// ---- Verified links. An order has an owner once a conversation, contact or owner WhatsApp number is recorded; only
+// the audited correction below changes or removes it, and none of this touches phones, customers, stock or money.
+const ID = value => /^\d{1,18}$/.test(String(value ?? "").trim()) ? String(value).trim() : "";
+function chatwoodOwnerOf(order = {}) {
+  const owner = { conversationId:ID(order.chatwootConversationId), contactId:ID(order.chatwootContactId), customerWhatsAppPhone:/^01\d{9}$/.test(String(order.customerWhatsAppPhone || "")) ? String(order.customerWhatsAppPhone) : "", source:order.chatwoodLink?.source || "" };
+  return owner.conversationId || owner.contactId || owner.customerWhatsAppPhone ? owner : null;
+}
+
+// The same customer: the same contact, the same conversation, or (with neither recorded) the same WhatsApp number.
+function sameChatwoodOwner(owner, identity) {
+  if (!owner) return false;
+  if (owner.contactId) return owner.contactId === identity.chatwootContactId;
+  if (owner.conversationId) return owner.conversationId === identity.chatwootConversationId;
+  return Boolean(owner.customerWhatsAppPhone) && owner.customerWhatsAppPhone === identity.customerWhatsAppPhone;
+}
+
+function applyChatwoodLink(order, identity, { source, evidence = [], by, now }) {
+  Object.assign(order, {
+    chatwootConversationId:identity.chatwootConversationId, chatwootContactId:identity.chatwootContactId, customerWhatsAppPhone:identity.customerWhatsAppPhone || "",
+    chatwoodLink:{ source, evidence:evidence.slice(0, 5).map(String), inboxId:identity.inboxId ?? null, linkedAt:now, linkedBy:by }, updatedAt:now,
+  });
+}
+
+// Owner/manager correction: unlink, or move the order to another verified conversation. The history keeps who, when,
+// why and what the link was before and after.
+function correctChatwoodLink(order, { action, identity = null, reason, by, now }) {
+  const before = chatwoodOwnerOf(order);
+  const after = action === "relink" ? { conversationId:identity.chatwootConversationId, contactId:identity.chatwootContactId, customerWhatsAppPhone:identity.customerWhatsAppPhone || "", source:"corrected" } : null;
+  const entry = { at:now, by, action, reason, before, after };
+  order.chatwoodLinkHistory = [...(Array.isArray(order.chatwoodLinkHistory) ? order.chatwoodLinkHistory : []), entry].slice(-20);
+  if (action === "relink") applyChatwoodLink(order, identity, { source:"corrected", evidence:["owner_correction"], by, now });
+  else { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwoodLink"]) delete order[key]; order.updatedAt = now; }
+  return entry;
+}
+
+// Orders named in staff messages of a verified conversation. One without an owner is a suggestion an employee
+// confirms; one that belongs to another customer is a conflict to show, never to change. The order number alone
+// never proves who the customer is.
+function chatwoodSuggestions(db, verified) {
+  const { identity, mentions = [] } = verified;
+  const suggestions = [], conflicts = [];
+  for (const mention of mentions) {
+    const order = (db.onlineOrders || []).find(item => item.id === mention.orderRef && !item.deletedAt);
+    if (!order) continue;
+    const owner = chatwoodOwnerOf(order);
+    const row = { orderId:order.id, createdAt:order.createdAt || order.date || "", status:order.status || "", total:Math.round(Number(order.total || 0) * 100) / 100, recipientMasked:maskPhone(order.phone), recipientIsContactPhone:Boolean(identity.customerWhatsAppPhone) && [order.phone, order.alternativePhone].includes(identity.customerWhatsAppPhone), mentionedAt:mention.mentionedAt || null, messages:Number(mention.messages || 1) };
+    if (!owner) suggestions.push(row);
+    else if (!sameChatwoodOwner(owner, identity)) conflicts.push({ ...row, linkedConversationId:owner.conversationId });
+  }
+  return { suggestions, conflicts };
+}
+
 function preserveServerOwnedFields(current = {}, next = {}) {
   if (next.settings && typeof next.settings === "object") {
     if (current.settings && Object.prototype.hasOwnProperty.call(current.settings, "websiteOrders")) next.settings.websiteOrders = JSON.parse(JSON.stringify(current.settings.websiteOrders));
@@ -600,4 +654,4 @@ function preserveServerOwnedFields(current = {}, next = {}) {
   return next;
 }
 
-module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields, preserveChatwoodIdentity, linkOrdersToChatwood };
+module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields, preserveChatwoodIdentity, linkOrdersToChatwood, chatwoodOwnerOf, sameChatwoodOwner, applyChatwoodLink, correctChatwoodLink, chatwoodSuggestions };
