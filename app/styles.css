@@ -2024,7 +2024,7 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .shortage-flag{display:inline-block;margin-top:6px;padding:2px 9px;white-space:nowrap;border-radius:999px;background:var(--warning-soft);color:var(--warning);font-size:11px;font-style:normal;font-weight:700}
 .shortage-flag.soft{background:#edf0ef;color:#5d6764}
 .shortfall-chip{display:inline-block;padding:4px 12px;border-radius:999px;background:var(--danger-soft);color:var(--danger);font-weight:800;white-space:nowrap}
-.shortfall-chip.suggest{background:#edf0ef;color:#4f5a57}
+.shortfall-chip.suggest{background:#edf0ef;color:#4f5a57}.shortfall-chip.soldout{background:var(--warning-soft);color:var(--warning)}.shortage-live-note{margin:-6px 0 12px}
 .shortfall-chip.ok{background:var(--green-50);color:var(--green-700)}
 .shortage-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
 .shortage-actions .row-action{white-space:nowrap}

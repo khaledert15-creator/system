@@ -3796,7 +3796,7 @@ function shortageRows() {
     for(const line of order.inventoryReservation.lines||[])qtyByBook.set(line.bookId,(qtyByBook.get(line.bookId)||0)+Number(line.qty||0));
     for(const [bookId,qty] of qtyByBook)if(qty>0)add(reservations,bookId,{order,qty});
   }
-  const ids=new Set([...preorders.keys(),...(data.books||[]).filter(book=>!book.deletedAt&&(bookCountHold(book)>0||Number(book.stock||0)<=Math.max(0,Number(book.reorder||0)))).map(book=>book.id)]);
+  const ids=new Set([...preorders.keys(),...reservations.keys(),...(data.books||[]).filter(book=>!book.deletedAt&&(bookCountHold(book)>0||Number(book.stock||0)<=Math.max(0,Number(book.reorder||0)))).map(book=>book.id)]);
   return [...ids].map(bookId=>{
     const book=getBook(bookId)||{},stock=Number(book.stock||0),countHold=bookCountHold(book),reserved=bookReservedStock(book);
     const preorderOrders=preorders.get(bookId)||[],reservedOrders=reservations.get(bookId)||[];
@@ -3806,8 +3806,11 @@ function shortageRows() {
     const left=Math.max(0,stock-countHold)-needed;
     const suggested=shortfall||!lowStock?0:Math.max(Math.max(0,Number(book.reorder||0))-left,left<=0?1:0);
     const oldest=preorderOrders.map(item=>item.order.backorderSince||item.order.confirmedAt||"").filter(Boolean).sort()[0]||"";
-    return {bookId,book,stock,countHold,reserved,preorder,needed,shortfall,toBuy:shortfall||suggested,suggested,lowStock,preorderOrders,reservedOrders,oldest};
-  }).filter(row=>row.shortfall||row.countHold||row.lowStock)
+    // Free copies on the shelf after reservations and count holds; 0 while orders hold the book means the next
+    // customer cannot be served even though stock is not zero.
+    const free=Math.max(0,stock-countHold-reserved),soldOut=free<=0&&reserved>0;
+    return {bookId,book,stock,countHold,reserved,preorder,needed,shortfall,free,soldOut,toBuy:shortfall||suggested,suggested,lowStock,preorderOrders,reservedOrders,oldest};
+  }).filter(row=>row.shortfall||row.countHold||row.lowStock||row.soldOut)
     .sort((a,b)=>b.shortfall-a.shortfall||b.preorder-a.preorder||b.countHold-a.countHold||b.toBuy-a.toBuy||String(a.book.name||"").localeCompare(String(b.book.name||""),"ar"));
 }
 
@@ -3820,10 +3823,10 @@ function shortageOrdersMarkup(row) {
 function renderShortagesScreen() {
   const orders=backorderOrders(),rows=shortageRows(),canEdit=canAction("order.quick.edit");
   const sum=(list,key)=>list.reduce((total,row)=>total+Number(row[key]||0),0);
-  const toBuy=rows.filter(row=>row.shortfall),counting=rows.filter(row=>row.countHold);
+  const toBuy=rows.filter(row=>row.shortfall),counting=rows.filter(row=>row.countHold),soldOut=rows.filter(row=>row.soldOut&&!row.shortfall);
   const orderBooks=order=>(order.backorderLines||[]).map(line=>{const book=getBook(line.bookId);const available=bookAvailableStock(book);return `<span class="shortage-line">${esc(book?.name||line.bookId)} × ${line.qty}${available>0?` <em class="preorder-tag ok">متوفر ${available}</em>`:""}</span>`;}).join("");
   const bookCell=row=>`<td class="shortage-book"><strong>${esc(row.book.name||row.bookId)}</strong><span class="muted" dir="ltr">${esc(row.book.barcode||row.book.sku||row.bookId)}</span>${row.countHold?`<em class="shortage-flag" title="نسخ مسجلة في الرصيد لكنها غير موجودة على الرف">⚠ تحتاج جرد · ${row.countHold} غير موجودة</em>`:""}${row.lowStock&&!row.shortfall&&!row.countHold?`<em class="shortage-flag soft">وصل للحد الأدنى</em>`:""}${shortageOrdersMarkup(row)}</td>`;
-  const gapCell=row=>row.shortfall?`<span class="shortfall-chip">ناقص ${row.shortfall}</span>`:row.suggested?`<span class="shortfall-chip suggest">مقترح ${row.suggested}</span>`:`<span class="shortfall-chip ok">يكفي</span>`;
+  const gapCell=row=>row.shortfall?`<span class="shortfall-chip">ناقص ${row.shortfall}</span>`:row.soldOut?`<span class="shortfall-chip soldout">محجوز بالكامل · الرف الحر 0</span>`:row.suggested?`<span class="shortfall-chip suggest">مقترح ${row.suggested}</span>`:`<span class="shortfall-chip ok">يكفي</span>`;
   const actions=row=>`<div class="shortage-actions">${row.countHold&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">أمر شراء ${row.toBuy}</button>`:""}</div>`;
   return `${workflowModeTabs("shortages")}
     <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>الكتب الناقصة والحجوزات</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
@@ -3832,7 +3835,9 @@ function renderShortagesScreen() {
       <div class="shortage-stat"><b>${sum(rows,"preorder")}</b><span>نسخة مطلوبة للحجز المسبق</span><small>${ordersCountLabel(orders.length)} في الانتظار</small></div>
       <div class="shortage-stat"><b>${sum(rows,"reserved")}</b><span>نسخة محجوزة بالفعل</span><small>لطلبات مؤكدة من هذه الكتب</small></div>
       <div class="shortage-stat warning"><b>${counting.length}</b><span>كتاب يحتاج جرد</span><small>${sum(counting,"countHold")} نسخة غير موجودة على الرف</small></div>
+      <div class="shortage-stat"><b>${soldOut.length}</b><span>كتاب خلص من الرف الحر</span><small>كل نسخه محجوزة لطلبات؛ أي طلب جديد هيبقى حجز مسبق</small></div>
     </div>
+    <p class="muted small shortage-live-note">الأرقام دي بتتحدث لحظيًا من المخزون والطلبات: الشراء بيرفع «في المخزن» فورًا، وطلبات الحجز المسبق بتتنقل للتجهيز تلقائيًا خلال ثوانٍ.</p>
     <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>إجمالي المطلوب = المحجوز بالفعل + الحجز المسبق، والناقص هو ما لا يغطيه الموجود على الرف.</p></div><div class="search shortage-search"><input id="shortage-search" type="search" autocomplete="off" placeholder="ابحث عن كتاب أو طلب"></div></div>
       <div class="table-wrap"><table class="shortage-table"><thead><tr><th>الكتاب</th><th class="num">في المخزن</th><th class="num">محجوز بالفعل</th><th class="num">حجز مسبق</th><th class="num">إجمالي المطلوب</th><th class="num">الناقص</th><th></th></tr></thead><tbody>
       ${rows.length?rows.map(row=>`<tr data-shortage-row data-search="${esc([row.book.name,row.book.barcode,row.book.sku,row.bookId,...row.preorderOrders.map(item=>[item.order.id,item.order.customerName]),...row.reservedOrders.map(item=>[item.order.id,item.order.customerName])].flat().filter(Boolean).join(" "))}">${bookCell(row)}

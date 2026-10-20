@@ -217,7 +217,8 @@ function writeDb(db, options = {}) {
   const result = databasePersistence.write(db, options);
   for (const client of liveClients) { try { client.publish(result.revision); } catch { liveClients.delete(client); } }
   // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
-  if (options.operationType !== "BACKORDER_AUTO_ALLOCATED") scheduleBackorderAllocation();
+  // Stock that just arrived should reach waiting pre-orders at once; other saves can wait a moment.
+  if (options.operationType !== "BACKORDER_AUTO_ALLOCATED") scheduleBackorderAllocation(/^(PURCHASE_|STOCK_|INVENTORY_)/.test(String(options.operationType || "")) ? 150 : 1500);
   return result;
 }
 
