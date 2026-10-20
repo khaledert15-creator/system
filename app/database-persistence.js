@@ -17,12 +17,24 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
   // Highest revision this process has read or written. A restore over a missing/unreadable file uses it as a floor so
   // the revision clients hold is never reused.
   let highestRevision = 0;
+  // Revision of the file as last read or written, keyed by its size and modification time, so asking for the
+  // revision (every save, every live-update ping) does not re-read and re-parse the whole database.
+  let known = null;
+  const fileKey = () => { const stat = fs.statSync(filePath); return `${stat.size}:${stat.mtimeMs}`; };
 
   function read() {
     const raw = fs.readFileSync(filePath);
-    const result = { db:JSON.parse(raw), raw, revision:dataRevision(JSON.parse(raw)), sha256:sha256(raw) };
+    const db = JSON.parse(raw);
+    const result = { db, raw, revision:dataRevision(db), sha256:sha256(raw) };
     highestRevision = Math.max(highestRevision, result.revision);
+    try { known = { key:fileKey(), revision:result.revision }; } catch { known = null; }
     return result;
+  }
+
+  function revision() {
+    if (!fs.existsSync(filePath)) return 0;
+    try { if (known && known.key === fileKey()) return known.revision; } catch {}
+    return read().revision;
   }
 
   function write(nextValue, { expectedRevision, minimumRevision = 0, operationType = "DATABASE_WRITE", performedBy = "system" } = {}) {
@@ -52,6 +64,7 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
       const after = fs.readFileSync(filePath);
       const result = { revision:next.meta.dataRevision, beforeSha256:current.sha256, afterSha256:sha256(after), size:after.length };
       highestRevision = Math.max(highestRevision, result.revision);
+      try { known = { key:fileKey(), revision:result.revision }; } catch { known = null; }
       logger({ operationType:"DATABASE_WRITE", sourceOperationType:operationType, performedBy, ...result });
       return result;
     } finally {
@@ -61,7 +74,7 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
     }
   }
 
-  return { read, write, revision:() => fs.existsSync(filePath) ? read().revision : 0, highestRevision:() => highestRevision };
+  return { read, write, revision, highestRevision:() => highestRevision };
 }
 
 module.exports = { createDatabasePersistence, dataRevision, sha256 };
