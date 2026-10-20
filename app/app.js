@@ -6222,7 +6222,7 @@ async function factoryResetPrepare() {
     if (!response.ok) throw new Error(result.message || "فشل Backup Guard.");
     factoryResetState.preparationId = result.preparationId; factoryResetState.backup = result.backup;
     const enabled = Boolean(result.resetEnabled);
-    modalBody.innerHTML = `<form id="factory-reset-confirm-form" class="factory-reset-dialog"><div class="notice success"><strong>✓ Backup جاهز ومطابق للمصدر</strong><span>${Math.ceil(Number(result.backup.backupSize || 0) / 1024)} KB · المرجع: ${esc(result.backup.reference)}</span></div><div class="form-grid"><div class="form-field full"><label class="required">اكتب اسم المستخدم الحالي للتأكيد</label><input name="currentUsername" autocomplete="off" placeholder="${esc(currentUser?.username || "")}" required></div></div><div class="notice warning"><strong>التأكيد الأول</strong><span>بعد المتابعة ستظهر نافذة تأكيد ثانية مع انتظار 10 ثوانٍ.</span></div>${enabled ? "" : `<div class="notice info">التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط.</div>`}<div class="form-actions"><button class="btn danger" type="submit" ${enabled ? "" : "disabled"}>المتابعة للتأكيد النهائي</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+    modalBody.innerHTML = `<form id="factory-reset-confirm-form" class="factory-reset-dialog"><div class="notice success"><strong>✓ Backup جاهز ومطابق للمصدر</strong><span>${Math.ceil(Number(result.backup.backupSize || 0) / 1024)} KB · المرجع: ${esc(result.backup.reference)}</span></div><div class="form-grid"><div class="form-field full"><label class="required">اكتب اسم المستخدم الحالي للتأكيد</label><input name="currentUsername" autocomplete="off" placeholder="${esc(currentUser?.username || "")}" required></div><div class="form-field full"><label class="required">كلمة مرور المالك الحالية</label><input name="password" type="password" autocomplete="current-password" required></div></div><div class="notice warning"><strong>التأكيد الأول</strong><span>بعد المتابعة ستظهر نافذة تأكيد ثانية مع انتظار 10 ثوانٍ.</span></div>${enabled ? "" : `<div class="notice info">التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط.</div>`}<div class="form-actions"><button class="btn danger" type="submit" ${enabled ? "" : "disabled"}>المتابعة للتأكيد النهائي</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
   } catch (error) { modalBody.innerHTML = `<div class="notice danger"><strong>BLOCKED</strong><span>${esc(error.message)}</span></div><div class="form-actions"><button class="btn ghost" data-action="open-factory-reset">العودة</button></div>`; }
 }
 
@@ -9032,10 +9032,10 @@ modalBody.addEventListener("submit", async event => {
   if (form.id === "factory-reset-confirm-form") {
     if (formData.currentUsername !== currentUser?.username) return toast("اسم المستخدم الحالي غير مطابق.", "danger");
     try {
-      const response = await fetch("/api/admin/factory-reset/confirm", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:factoryResetState.resetType, preparationId:factoryResetState.preparationId, currentUsername:formData.currentUsername, operationKey:factoryResetState.operationKey }) });
+      const response = await fetch("/api/admin/factory-reset/confirm", { method:"POST", headers:authHeaders({ "Content-Type":"application/json" }), body:JSON.stringify({ resetType:factoryResetState.resetType, preparationId:factoryResetState.preparationId, currentUsername:formData.currentUsername, password:formData.password, operationKey:factoryResetState.operationKey }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message || "فشل التأكيد الأول.");
-      openFactoryResetFinalConfirmation(formData, result.executeAfter);
+      openFactoryResetFinalConfirmation({ currentUsername:formData.currentUsername }, result.executeAfter);
     } catch (error) { toast(error.message, "danger"); }
     return;
   }

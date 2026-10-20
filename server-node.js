@@ -3149,7 +3149,16 @@ const server = http.createServer(async (req, res) => {
       const db = readDb();
       if (!canManageSeasonData(db, user, "factory_reset_system")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"إعادة ضبط النظام متاحة للمالك فقط." });
       if (!FACTORY_RESET_EXECUTION_ENABLED) return send(res, 403, { ok:false, code:"FACTORY_RESET_DISABLED", message:"التنفيذ الحقيقي غير مفعّل حاليًا. يمكن إجراء Preview وBackup فقط." });
-      const payload = JSON.parse(await readBody(req) || "{}"), preparationId = String(payload.preparationId || ""), prepared = resetPreparations.get(preparationId);
+      const payload = await readJsonBody(req, BODY_LIMIT_CREDENTIALS), preparationId = String(payload.preparationId || ""), prepared = resetPreparations.get(preparationId);
+      // The owner re-enters their password (as demo purge does). Failures count toward the login throttle; the password is never logged or stored.
+      const throttleKey = loginThrottleKey(req, user.username);
+      if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
+      const credential = users().find(item => item.username === user.username && item.active !== false);
+      if (!credential || !verifyPassword(credential, payload.password)) {
+        recordLoginFailure(throttleKey);
+        return send(res, 401, { ok:false, code:"OWNER_PASSWORD_REQUIRED", message:"اكتب كلمة مرور المالك الحالية بشكل صحيح لتأكيد إعادة الضبط." });
+      }
+      loginFailures.delete(throttleKey);
       if (!prepared || prepared.expiresAt < Date.now() || prepared.username !== user.username || prepared.resetType !== payload.resetType || prepared.revision !== dbRevision()) return send(res, 409, { ok:false, code:"RESET_PREPARATION_INVALID", message:"انتهت صلاحية المعاينة أو تغيرت البيانات؛ أنشئ Preview وBackup جديدين." });
       try {
         const confirmed = FactoryReset.confirmExecution(db, prepared, { resetType:payload.resetType, currentUsername:payload.currentUsername, performedByUsername:user.username, operationKey:String(payload.operationKey || ""), authorized:true, executionEnabled:true }, Date.now());
