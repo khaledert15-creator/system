@@ -2070,3 +2070,11 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .chatwood-link-dialog{display:grid;gap:12px}.chatwood-link-dialog p{margin:0;color:var(--muted);line-height:1.7}
 .chatwood-suggestions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}.chatwood-suggestions strong{width:100%;font-size:13px}
 .chatwood-preview{padding:10px 12px;border:1px solid var(--line,#e2e8f0);border-radius:12px;background:#fff}.chatwood-preview h4{margin:0 0 6px}.chatwood-preview ul{margin:0;padding-inline-start:18px;display:grid;gap:4px;font-size:13px}
+/* Payment correction dialog and history */
+#payment-correction-form{display:grid;gap:12px}
+#payment-correction-form [hidden]{display:none!important}
+.payment-correction-current{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--line,#e2e8f0);border-radius:12px;background:#f8fafc}.payment-correction-current span{color:var(--muted);font-size:12px}.payment-correction-current strong{font-size:20px}.payment-correction-current small{color:var(--muted);font-size:12px}
+.payment-correction-kinds{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin:0;padding:0;border:0}.payment-correction-kinds legend{font-weight:700;margin-bottom:6px}.payment-correction-kinds .choice-card{align-items:center;padding:10px}.payment-correction-kinds .choice-card input{width:18px;height:18px;min-height:0;margin:0;padding:0;flex:none}.payment-correction-kinds .choice-card small{font-size:11px}.payment-correction-kinds .choice-card:has(input:checked){border-color:var(--green-700);background:#f4f8fe}
+#payment-correction-form .choice-card input[type=checkbox]{width:18px;height:18px;min-height:0;margin:0;padding:0;flex:none}
+#payment-correction-change:empty{display:none}
+.payment-corrections{margin:8px 0 4px}.payment-corrections ul{margin:6px 0;padding-inline-start:18px;display:grid;gap:6px;font-size:13px}.payment-corrections small{color:var(--muted)}

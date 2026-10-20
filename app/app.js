@@ -3724,7 +3724,7 @@ function renderQuickOrderScreen() {
       <div class="form-field"><label>المبلغ المستلم فعليًا ${helpIcon("اكتب فقط المبلغ الذي استلمته المكتبة بالفعل من العميل.","شرح المبلغ المدفوع")}</label><input id="quick-order-paid-amount" inputmode="decimal" value="${quickOrderDraft.paidAmount||0}" ${canReceive&&!quickOrderDraft.paymentLocked?"":"disabled"}></div>
       <label class="choice-card"><input id="quick-order-payment-confirmed" type="checkbox" ${quickOrderDraft.paymentConfirmed?"checked":""} ${canReceive&&!quickOrderDraft.paymentLocked?"":"disabled"}><span><strong>تأكيد استلام المال</strong><small>ينشئ إيصالًا وحركة خزنة واحدة فقط. اختيار الطريقة وحده لا يكفي.</small></span></label>
       <div class="form-field"><label>الخزنة / الحساب</label><select id="quick-order-cash-account" ${canReceive&&quickOrderDraft.paymentConfirmed&&!quickOrderDraft.paymentLocked?"":"disabled"}><option value="">اختر الحساب</option>${(data.cashAccounts||[]).filter(x=>x.active!==false).map(x=>`<option value="${x.id}" ${quickOrderDraft.cashAccountId===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>
-      ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>${quickOrderDraft.paymentLocked?`تم استلام ${money(quickOrderDraft.paidAmount)} على «${esc((data.cashAccounts||[]).find(x=>x.id===quickOrderDraft.cashAccountId)?.name||"الخزنة")}»`:"يوجد مبلغ مدفوع على الطلب"}</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.${quickOrderDraft.paymentLocked?" لتعديل الدفعة نفسها استخدم التحصيل أو العكس المالي.":""}</span></div>`:""}
+      ${quickOrderDraft.savedOrderId&&Number(getOnlineOrder(quickOrderDraft.savedOrderId)?.paidAmount||0)>0?`<div class="finance-callout warning"><strong>${quickOrderDraft.paymentLocked?`تم استلام ${money(quickOrderDraft.paidAmount)} على «${esc((data.cashAccounts||[]).find(x=>x.id===quickOrderDraft.cashAccountId)?.name||"الخزنة")}»`:"يوجد مبلغ مدفوع على الطلب"}</strong><span>أي تغيير في الكتب أو الخصومات أو الشحن يعيد حساب المتبقي، ولا يحذف الدفعة القديمة.</span>${quickOrderDraft.paymentLocked&&canCorrectPayments()?(()=>{const recorded=(data.orderPayments||[]).find(item=>item.orderId===quickOrderDraft.savedOrderId&&item.status!=="reversed"&&item.confirmed!==false&&!item.deletedAt);return recorded?`<button class="btn ghost compact" type="button" data-action="correct-payment" data-payment="${esc(recorded.id)}">المبلغ أو الخزنة غلط؟ تصحيح الدفعة</button>`:"";})():""}</div>`:""}
     </article>
     <aside class="quick-order-summary card"><div class="card-header"><div><h3>مراجعة وحفظ الطلب</h3><p>${confirmed?"الطلب مؤكد وجاهز لنسخ الرسالة.":"مراجعة سريعة ثم الحفظ أو التأكيد."}</p></div>${badge(confirmed?"مؤكد":"مسودة",confirmed?"":"warning")}</div>
     <pre id="quick-order-message">${esc(quickOrderMessage(confirmed))}</pre>
@@ -4025,6 +4025,7 @@ function quickOrderPayload() {
 async function saveQuickOrderDraft({silent=false,reload=true}={}) {
   const blocked=quickOrderBlockedLines();
   if(blocked.length)throw new Error(`الطلب ${quickOrderDraft.savedOrderId} بدأ تجهيزه، و${blocked.map(line=>`«${getBook(line.bookId)?.name||line.bookId}»`).join(" و")} مش متاح. احذفه أو اضغط «طلب منفصل للكتاب ده» قبل الحفظ.`);
+  if(!confirmQuickOrderPaymentAmount())throw Object.assign(new Error("راجع المبلغ المستلم فعلًا قبل الحفظ."),{code:"PAYMENT_AMOUNT_UNCONFIRMED"});
   const payload=quickOrderPayload();
   let result;
   try{result=quickOrderDraft.savedOrderId
@@ -5135,7 +5136,7 @@ function onlineOrderPaymentSummary(order, total) {
   const ids = new Set([order.id, order.saleId].filter(Boolean));
   const live = item => item && !item.deletedAt && !["reversed", "void", "ملغى", "ملغاة"].includes(String(item.status || "").toLowerCase());
   const payments = (data.orderPayments || []).filter(item => live(item) && item.confirmed !== false && (ids.has(item.orderId) || ids.has(item.invoiceId)));
-  const rows = payments.map(item => ({ date:item.receivedAt || item.createdAt, amount:Number(item.amount || 0), method:item.paymentMethod || "—", account:item.cashAccountName || "", by:item.receivedBy || "", kind:"دفعة من العميل" }));
+  const rows = payments.map(item => ({ paymentId:item.orderId === order.id ? item.id : "", date:item.receivedAt || item.createdAt, amount:Number(item.amount || 0), method:item.paymentMethod || "—", account:item.cashAccountName || "", by:item.correctedBy ? `${item.receivedBy || ""} · صحّحها ${item.correctedBy}` : item.receivedBy || "", kind:item.correctionOf ? "دفعة من العميل (بعد التصحيح)" : "دفعة من العميل" }));
   const collections = (data.orderCollections || []).filter(item => live(item) && (ids.has(item.onlineOrderId) || ids.has(item.orderId) || ids.has(item.invoiceId)));
   // order.paidAmount already includes carrier collections, so only the part not explained by them is shown.
   const collected = collections.reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -5159,9 +5160,9 @@ function onlineOrderPaymentMarkup(order, total) {
   return `<div class="card-header" style="margin-top:16px;padding:0"><div><h3>الدفع والتحصيل</h3><p>طريقة الدفع: <strong>${esc(p.plan)}</strong></p></div>${badge(p.remaining > 0 ? (p.paid > 0 ? "مدفوع جزئيًا" : "غير مدفوع") : p.cancelled ? "ملغي" : "مدفوع بالكامل", p.remaining > 0 ? "warning" : "")}</div>
     <div class="metric-strip"><div class="mini-metric"><span>المدفوع</span><strong>${money(p.paid)}</strong></div>${p.cashRefunded ? `<div class="mini-metric"><span>رُدّ نقدًا للعميل</span><strong>${money(p.cashRefunded)}</strong></div>` : ""}${p.credited ? `<div class="mini-metric"><span>محفوظ كرصيد دائن للعميل</span><strong>${money(p.credited)}</strong></div>` : ""}<div class="mini-metric"><span>${remainingLabel}</span><strong class="${p.remaining > 0 ? "text-danger" : ""}">${money(p.remaining)}</strong></div></div>
     ${p.rows.length || p.refunds.length ? `<div class="table-wrap"><table><thead><tr><th>البيان</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الخزنة / الحساب</th><th>بواسطة</th></tr></thead><tbody>
-      ${p.rows.map(row => `<tr><td>${esc(row.kind)}</td><td>${row.date ? arabicDateTimeLabel(row.date) : "—"}</td><td class="money">${money(row.amount)}</td><td>${esc(row.method)}</td><td>${esc(row.account || "—")}</td><td>${esc(row.by || "—")}</td></tr>`).join("")}
+      ${p.rows.map(row => `<tr><td>${esc(row.kind)}${row.paymentId && !p.cancelled && canCorrectPayments() ? ` <button class="btn ghost compact" type="button" data-action="correct-payment" data-payment="${esc(row.paymentId)}">تصحيح</button>` : ""}</td><td>${row.date ? arabicDateTimeLabel(row.date) : "—"}</td><td class="money">${money(row.amount)}</td><td>${esc(row.method)}</td><td>${esc(row.account || "—")}</td><td>${esc(row.by || "—")}</td></tr>`).join("")}
       ${p.refunds.map(item => { const credit = ["customer_credit", "pending_credit"].includes(item.settlementType); return `<tr><td>${credit ? "حُفظ كرصيد دائن للعميل" : "رد مبلغ للعميل"}</td><td>${item.performedAt ? arabicDateTimeLabel(item.performedAt) : "—"}</td><td class="money ${credit ? "" : "text-danger"}">${credit ? "" : "−"}${money(item.amount)}</td><td>${credit ? "رصيد دائن (لم يُصرف نقدًا)" : "رد نقدي"}</td><td>${esc((data.cashAccounts || []).find(account => account.id === item.cashAccountId)?.name || "—")}</td><td>${esc(item.performedBy || "—")}</td></tr>`; }).join("")}
-    </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}`;
+    </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}${paymentCorrectionsMarkup(order)}`;
 }
 
 function viewOnlineOrder(id) {
@@ -6824,6 +6825,124 @@ async function submitDepositEdit(form) {
     if (error.status === 401) return;
     errorBox.innerHTML = `<div class="finance-callout danger"><strong>${esc(error.message)}</strong><span>لم يتغير أي شيء.</span></div>`;
   }
+}
+
+// Correcting a payment recorded by mistake: one dialog for a wrong amount, cash account or method, the wrong order,
+// or money that never arrived. The server reverses the original and records the right one (app/payment-correction.js).
+const canCorrectPayments = () => canAction("order.payment.receive");
+
+function paymentCorrectionsMarkup(order) {
+  const rows = (order.paymentCorrections || []).slice().reverse();
+  if (!rows.length) return "";
+  const side = part => part.amount ? `${money(part.amount)}${part.cashAccountName ? ` · ${esc(part.cashAccountName)}` : ""}` : "اتلغت";
+  return `<details class="payment-corrections"><summary>تصحيحات الدفع (${rows.length})</summary><ul>${rows.map(row => `<li>${esc(arabicDateTimeLabel(row.at))} · ${esc(row.by)}: ${row.kind === "cancel" ? `إلغاء دفعة ${money(row.before.amount)}` : `${side(row.before)} ← <strong>${side(row.after)}</strong>`}${row.before.orderId !== row.after.orderId ? ` · من ${esc(row.before.orderId)} إلى ${esc(row.after.orderId)}` : ""}<br><small>${esc(row.reason)}</small></li>`).join("")}</ul></details>`;
+}
+
+async function openPaymentCorrection(paymentId) {
+  openModal("تصحيح الدفعة", "الدفع والتحصيل", `<p class="muted">جاري التحميل…</p>`);
+  let info;
+  try { info = await websiteOrdersFetch(`/api/payments/${encodeURIComponent(paymentId)}/correction`); }
+  catch (error) { if (error.status !== 401) modalBody.innerHTML = `<div class="finance-callout danger"><strong>${esc(error.message)}</strong></div>`; return; }
+  modalBody.innerHTML = paymentCorrectionForm(info);
+  const form = modalBody.querySelector("#payment-correction-form");
+  if (!form) return;
+  form.dataset.operationKey = `pc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  form.paymentInfo = info;
+  form.addEventListener("input", () => updatePaymentCorrectionForm(form));
+  form.addEventListener("change", () => updatePaymentCorrectionForm(form));
+  updatePaymentCorrectionForm(form);
+}
+
+function paymentCorrectionForm(info) {
+  const p = info.payment, o = info.order || {};
+  const current = `<div class="payment-correction-current"><span>المسجّل دلوقتي</span><strong>${money(p.amount)}</strong><small>${esc(p.paymentMethod || "—")} · ${esc(p.cashAccountName || "—")} · ${esc(p.receivedBy || "")} · ${p.receivedAt ? esc(arabicDateTimeLabel(p.receivedAt)) : ""}</small><small>على الطلب ${esc(p.orderId)}${o.customerName ? ` · ${esc(o.customerName)}` : ""}${o.depositRequired != null ? ` · العربون المطلوب ${money(o.depositRequired)}` : ""}</small></div>`;
+  if (info.blocked) return `${current}<div class="finance-callout warning"><strong>مينفعش تصحّح الدفعة دي هنا</strong><span>${esc(info.blocked.message)}</span></div><div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>`;
+  const kind = (value, title, hint, checked = false) => `<label class="choice-card"><input type="radio" name="kind" value="${value}" ${checked ? "checked" : ""}><span><strong>${title}</strong><small>${hint}</small></span></label>`;
+  return `<form id="payment-correction-form" data-payment="${esc(p.id)}">${current}
+    <fieldset class="payment-correction-kinds"><legend>إيه اللي غلط؟</legend>
+      ${kind("edit", "المبلغ أو الخزنة غلط", "مثال: العميل دفع 100 واتكتب 50", true)}
+      ${kind("move", "متسجّلة على طلب غلط", "تتنقل للطلب الصح")}
+      ${kind("cancel", "الفلوس ما وصلتش أو متسجّلة مرتين", "الدفعة تتلغي والمتبقي يرجع على العميل")}
+    </fieldset>
+    <div class="form-grid two" data-correction-fields="edit move">
+      <div class="form-field"><label class="required">المبلغ اللي وصل فعلًا (ج.م)</label><input name="amount" inputmode="decimal" value="${esc(p.amount)}"><small>أقصى مبلغ على الطلب ده: ${money(info.maxAmount)}</small></div>
+      <div class="form-field"><label class="required">الخزنة / الحساب</label><select name="cashAccountId">${info.cashAccounts.map(item => `<option value="${esc(item.id)}" ${item.id === p.cashAccountId ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
+      <div class="form-field"><label>طريقة الدفع</label><select name="paymentMethod">${info.receiptMethods.map(item => `<option ${item === p.paymentMethod ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></div>
+      <div class="form-field" data-correction-fields="move"><label class="required">رقم الطلب الصح</label><input name="targetOrderId" placeholder="ORD-0123" autocomplete="off"></div>
+    </div>
+    <div class="form-field"><label class="required">السبب</label><input name="reason" maxlength="300" placeholder="مثال: العميل دفع 100 والموظف كتب 50"></div>
+    <div id="payment-correction-change" class="finance-callout"></div>
+    <div id="payment-correction-error"></div>
+    <div class="form-actions"><button class="btn" type="submit">حفظ التصحيح</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+}
+
+function paymentCorrectionValues(form) {
+  const values = Object.fromEntries(new FormData(form).entries());
+  const amount = Number(normalizeArabicDigits(String(values.amount || "")).replace(/[٫,]/g, "."));
+  return { ...values, amount, targetOrderId:String(values.targetOrderId || "").trim().toUpperCase(), reason:String(values.reason || "").trim() };
+}
+
+function updatePaymentCorrectionForm(form) {
+  const info = form.paymentInfo, p = info.payment, values = paymentCorrectionValues(form);
+  for (const box of form.querySelectorAll("[data-correction-fields]")) box.hidden = !box.dataset.correctionFields.split(" ").includes(values.kind);
+  const account = info.cashAccounts.find(item => item.id === values.cashAccountId)?.name || "";
+  const change = form.querySelector("#payment-correction-change");
+  let text;
+  if (values.kind === "cancel") text = `الدفعة ${money(p.amount)} هتتلغي، والمتبقي على العميل يزيد ${money(p.amount)}.`;
+  else if (!Number.isFinite(values.amount) || values.amount <= 0) text = "اكتب المبلغ اللي وصل فعلًا.";
+  else text = `${money(p.amount)} · ${p.cashAccountName || "—"} ← <strong>${money(values.amount)} · ${esc(account)}</strong>${values.kind === "move" ? ` · تتنقل من ${esc(p.orderId)} إلى ${esc(values.targetOrderId || "…")}` : ""}`;
+  change.innerHTML = `<span>${text}</span>`;
+}
+
+async function submitPaymentCorrection(form) {
+  if (form.dataset.pending === "true") return;
+  const values = paymentCorrectionValues(form), errorBox = form.querySelector("#payment-correction-error");
+  const fail = message => { errorBox.innerHTML = `<div class="finance-callout danger"><strong>${esc(message)}</strong><span>لم يتغير أي شيء.</span></div>`; };
+  if (values.kind !== "cancel" && !(Number.isFinite(values.amount) && values.amount > 0)) return fail("اكتب المبلغ اللي وصل فعلًا.");
+  if (values.kind === "move" && !values.targetOrderId) return fail("اكتب رقم الطلب الصح.");
+  if (values.reason.length < 3) return fail("اكتب سبب التصحيح.");
+  const body = { operationKey:form.dataset.operationKey, reason:values.reason, cancelPayment:values.kind === "cancel",
+    ...(values.kind === "cancel" ? {} : { amount:values.amount, cashAccountId:values.cashAccountId, paymentMethod:values.paymentMethod }),
+    ...(values.kind === "move" ? { targetOrderId:values.targetOrderId, confirmOtherCustomer:form.querySelector("[name='confirmOtherCustomer']")?.checked === true } : {}) };
+  const button = form.querySelector('button[type="submit"]');
+  form.dataset.pending = "true"; if (button) button.disabled = true; errorBox.innerHTML = "";
+  try {
+    const result = await websiteOrdersFetch(`/api/payments/${encodeURIComponent(form.dataset.payment)}/correction`, { method:"POST", body });
+    await reloadRemoteData().catch(() => {});
+    refreshQuickOrderPaymentFromData();
+    if (currentView === "onlineOrders") renderOnlineOrders();
+    const after = result.correction.after.orderId, afterOrder = getOnlineOrder(after);
+    toast(result.correction.kind === "cancel" ? "اتلغت الدفعة." : `اتصحّحت الدفعة: ${money(result.correction.after.amount)} على ${after}.`);
+    viewOnlineOrder(result.correction.before.orderId);
+    if (result.carrierNotice) modalBody.insertAdjacentHTML("afterbegin", `<div class="finance-callout warning"><strong>الطلب متسلّم لشركة الشحن: المبلغ المطلوب تحصيله عند الاستلام بقى ${afterOrder ? money(afterOrder.amountDueAtDelivery ?? afterOrder.remainingAmount) : "مختلف"}.</strong><span>بلّغ شركة الشحن بالمبلغ الجديد.</span></div>`);
+  } catch (error) {
+    delete form.dataset.pending; if (button) button.disabled = false;
+    if (error.status === 401) return;
+    if (error.code === "OTHER_CUSTOMER_CONFIRM_REQUIRED") {
+      errorBox.innerHTML = `<div class="finance-callout warning"><strong>${esc(error.message)}</strong><label class="choice-card"><input type="checkbox" name="confirmOtherCustomer"><span><strong>أيوه، الدفعة دي بتاعة ${esc(error.details?.targetCustomerName || "العميل ده")}</strong></span></label><span>علّم على التأكيد واضغط «حفظ التصحيح» تاني.</span></div>`;
+      return;
+    }
+    fail(error.message);
+  }
+}
+
+// After a correction made from the quick-order screen, the open draft shows the payment as it is now.
+function refreshQuickOrderPaymentFromData() {
+  if (!quickOrderDraft?.savedOrderId) return;
+  const payments = (data.orderPayments || []).filter(item => item.orderId === quickOrderDraft.savedOrderId && item.status !== "reversed" && item.confirmed !== false && !item.deletedAt);
+  Object.assign(quickOrderDraft, { paidAmount:payments.reduce((sum, item) => sum + Number(item.amount || 0), 0), paymentConfirmed:payments.length > 0, paymentLocked:payments.length > 0, cashAccountId:payments[0]?.cashAccountId || "",
+    paymentPlan:getOnlineOrder(quickOrderDraft.savedOrderId)?.paymentPlan || quickOrderDraft.paymentPlan });
+}
+
+// Before recording a new payment on a quick order: a received amount below the required deposit is usually a typo.
+function confirmQuickOrderPaymentAmount() {
+  if (!quickOrderDraft.paymentConfirmed || quickOrderDraft.paymentLocked) return true;
+  const paid = Number(quickOrderDraft.paidAmount || 0);
+  const order = quickOrderDraft.savedOrderId ? getOnlineOrder(quickOrderDraft.savedOrderId) : null;
+  const stored = order?.depositRequired ?? order?.deposit?.required;
+  const required = stored !== undefined && stored !== null && stored !== "" && Number.isFinite(Number(stored)) ? Number(stored) : websiteDepositDefaultValue();
+  if (!(paid > 0 && paid < required)) return true;
+  return confirm(`المبلغ اللي هيتسجّل ${money(paid)}، والعربون المطلوب ${money(required)}.\nمتأكد إن ده اللي وصل فعلًا؟`);
 }
 
 function websiteDepositDefaultValue() {
@@ -8568,6 +8687,7 @@ root.addEventListener("click", async event => {
   if (action === "shipping-price-tab") {shippingPriceTab=target.dataset.tab;document.getElementById("customer-shipping-rates").hidden=shippingPriceTab!=="customer";document.getElementById("postal-shipping-rates").hidden=shippingPriceTab!=="postal";document.querySelectorAll(".shipping-price-tabs .tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.tab===shippingPriceTab));}
   if (action === "save-postal-tariff") savePostalTariff();
   if (action === "save-website-deposit") saveWebsiteDepositDefault();
+  if (action === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(target.dataset.payment); }
   if (action === "edit-order-deposit") { const order = getOnlineOrder(target.dataset.id); if (order) openModal(`عربون الطلب ${order.id}`, "تعديل العربون المطلوب", depositEditForm(order.id, "system", order.depositRequired ?? order.deposit?.required ?? null, Number(order.total || 0))); }
   if (action === "backup-db") createBackup();
   if (action === "audit-log") showAuditLog();
@@ -9050,6 +9170,8 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "chatwood-link-preview") { previewChatwoodLink(); return; }
   if (chatwoodAction === "chatwood-link-confirm") { confirmChatwoodLink(); return; }
   if (chatwoodAction === "chatwood-correct-submit") { submitChatwoodCorrection(appAction.dataset.kind); return; }
+  // The order details dialog lists payments with a «تصحيح» button (the quick-order screen uses the main view handler).
+  if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }
   if (appAction?.dataset.action === "generate-user-password") {
     const input = appAction.closest("form")?.elements.password;
     if (input) input.value = generateTemporaryPassword();
@@ -9574,6 +9696,7 @@ modalBody.addEventListener("submit", async event => {
   if(form.id==="website-order-approve-form"){await submitWebsiteOrderApproval(form);return;}
   if(form.id==="split-shipment-form"){await submitSplitShipment(form);return;}
   if(form.id==="deposit-edit-form"){await submitDepositEdit(form);return;}
+  if(form.id==="payment-correction-form"){await submitPaymentCorrection(form);return;}
   if (form.id === "user-account-form" || form.id === "user-password-reset-form") { await submitUserAccountForm(form); return; }
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){

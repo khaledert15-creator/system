@@ -13,6 +13,7 @@ const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
 const OrderRefunds = require("./app/order-refund.js");
+const PaymentCorrection = require("./app/payment-correction.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
@@ -3501,6 +3502,29 @@ const server = http.createServer(async (req, res) => {
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
       try{return send(res,200,{ok:true,financial:OrderRefunds.cancellationPreview(db,{orderId:route.split("/")[3]}),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
       catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+    }
+
+    // Correcting a payment recorded by mistake (amount, cash account/method, wrong order, never arrived). Anyone who may
+    // record a payment may correct one; the reason, before/after and who are kept (app/payment-correction.js).
+    const paymentCorrectionRoute=route.match(/^\/api\/payments\/([^/]+)\/correction$/);
+    if (paymentCorrectionRoute && ["GET","POST"].includes(req.method)) {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      // The correction is re-checked against the stored data and saved against the revision read here.
+      const {db,revision:readRevision}=readDbForWrite();ensureTrackingDb(db);
+      if(!canOrderAction(db,user,"order.payment.receive"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تصحيح الدفعات."});
+      const paymentId=decodeURIComponent(paymentCorrectionRoute[1]);
+      try{
+        if(req.method==="GET")return send(res,200,{ok:true,...PaymentCorrection.preview(db,paymentId),revision:dbRevision()},"application/json; charset=utf-8",{"Cache-Control":"no-store","X-DB-Revision":dbRevision()});
+        const payload=await readJsonBody(req,16*1024);
+        const result=PaymentCorrection.apply(db,{...payload,paymentId},user,{randomUUID:()=>crypto.randomUUID(),nextId,appendOrderAudit});
+        if(result.existing)return send(res,200,{ok:true,...result,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+        const saved=writeDb(db,{expectedRevision:readRevision,operationType:"ORDER_PAYMENT_CORRECTED",performedBy:user.username});
+        return send(res,200,{ok:true,...result,revision:String(saved.revision)},"application/json; charset=utf-8",{"X-DB-Revision":String(saved.revision)});
+      }catch(error){
+        if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت وانت بتصحّح؛ افتح الدفعة تاني وحاول."});
+        if(!error.status)throw error;
+        return send(res,error.status,{ok:false,code:error.code,message:error.message,...(error.details||{})});
+      }
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/refunds") && req.method === "POST") {
