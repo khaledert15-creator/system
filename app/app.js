@@ -209,7 +209,10 @@ let shippingExportSelection = new Set();
 let shippingFileImportRows = [];
 let shippingImportBusy = false;
 let shippingImportPreviewRevision = null;
-const emptyQuickOrderDraft = () => ({ phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
+// requestId makes a retried save return the same order; the Chatwood fields say who the order belongs to
+// (conversation, contact, WhatsApp number), apart from phone, which is the recipient's delivery number.
+const quickOrderRequestId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `QO-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const emptyQuickOrderDraft = () => ({ requestId:quickOrderRequestId(), customerWhatsAppPhone:"", chatwootConversationId:"", chatwootContactId:"", phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", chatwootConversationId:"", savedOrderId:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 let quickOrderSearch = "";
 let quickOrderContextRender = false;
@@ -1165,6 +1168,14 @@ function openRequestedDialog() {
     requestedDialogOpened = true;
     const [kind, id] = focus.split(":");
     setTimeout(() => navigateToRecord(kind, id, params.get("mode") || "view"), 80);
+    return;
+  }
+  if (params.get("quick") === "1" && canAction("order.quick.create")) {
+    requestedDialogOpened = true;
+    const id = value => /^\d{1,18}$/.test(String(value || "")) ? String(value) : "";
+    const whatsapp = normalizePhone(params.get("whatsapp") || "");
+    quickOrderDraft = { ...emptyQuickOrderDraft(), customerWhatsAppPhone:whatsapp, phone:whatsapp, chatwootConversationId:id(params.get("chatwootConversationId")), chatwootContactId:id(params.get("chatwootContactId")) };
+    setTimeout(() => { quickOrderSearch = ""; quickOrderAutofocusPending = true; onlineOrdersMode = "quick"; if (typeof showView === "function") showView("onlineOrders"); renderOnlineOrders(); }, 80);
     return;
   }
   if (dialog === "old-invoices") {
@@ -3661,7 +3672,7 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
-      <div class="form-grid three"><div class="form-field"><label class="required">رقم الموبايل</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      ${quickOrderChatwoodMarkup()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
@@ -3929,6 +3940,12 @@ async function orderWorkflowRequest(path,{method="POST",body,revision=dbRevision
   try{return await request;}finally{orderWorkflowRequests.delete(requestKey);}
 }
 
+function quickOrderChatwoodMarkup() {
+  const d=quickOrderDraft;
+  return `<div class="form-grid three quick-chatwood-identity"><div class="form-field"><label>رقم واتساب العميل (صاحب المحادثة)</label><input id="quick-order-whatsapp" dir="ltr" inputmode="tel" value="${esc(d.customerWhatsAppPhone||"")}" placeholder="01xxxxxxxxx"><small>لو العميل بيطلب لحد تاني، رقم المستلم بيتكتب تحت.</small></div>
+    <div class="form-field"><label>رقم محادثة Chatwood</label><input id="quick-order-conversation" dir="ltr" inputmode="numeric" value="${esc(d.chatwootConversationId||"")}" placeholder="مثال: 12345"><small>${d.chatwootContactId?`جهة الاتصال #${esc(d.chatwootContactId)}`:"بيتملى لوحده لما تفتح الطلب من تبويب Chatwood."}</small></div></div>`;
+}
+
 function quickOrderPayload() {
   const {shippingManual,paymentLocked,...persistedDraft}=quickOrderDraft;
   return {...persistedDraft,shippingCompany:quickOrderDraft.shippingCompany||preferredShippingCompanyName(),phone:normalizePhone(quickOrderDraft.phone),alternativePhone:normalizeArabicDigits(quickOrderDraft.alternativePhone),customerName:quickOrderDraft.customerName||quickOrderCustomer()?.name||"",paymentMethod:paymentPlanLabel(),lines:quickOrderDraft.lines.map(line=>({bookId:line.bookId,qty:line.qty,discount:line.discount||0,discountType:line.discountType||"percent",discountScope:"unit"}))};
@@ -3977,7 +3994,7 @@ function editQuickOrder(id) {
   if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return toast("تم تجهيز الطلب. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار.","error");
   if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
   const recordedPayments=(data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed"&&item.confirmed!==false),recordedPaid=recordedPayments.reduce((sum,item)=>sum+Number(item.amount||0),0);
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
+  quickOrderDraft={...emptyQuickOrderDraft(),customerWhatsAppPhone:order.customerWhatsAppPhone||"",chatwootConversationId:order.chatwootConversationId||"",chatwootContactId:order.chatwootContactId||"",phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id};
   quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
 }
 
@@ -7916,7 +7933,7 @@ document.addEventListener("input", event => {
   if(input instanceof HTMLInputElement&&(
     input.dataset.normalizeDigits==="true"||
     ["numeric","decimal","tel"].includes(input.getAttribute("inputmode")||"")||
-    ["quick-order-phone","quick-order-alt-phone","quick-shipping-order-code","quick-shipping-tracking"].includes(input.id)||
+    ["quick-order-phone","quick-order-alt-phone","quick-order-whatsapp","quick-order-conversation","quick-shipping-order-code","quick-shipping-tracking"].includes(input.id)||
     ["tracking","trackingNumber","phone","alternativePhone"].includes(input.name)
   )){
     const before=input.value,normalized=normalizeArabicDigits(before);
@@ -8577,6 +8594,8 @@ root.addEventListener("input", event => {
   if(event.target.id==="quick-order-governorate-search"){clearQuickOrderFieldError("governorate");openQuickGovernorateList(true);filterQuickGovernorates(event.target.value);return;}
   if(event.target.id==="quick-order-name"){quickOrderDraft.customerName=event.target.value;clearQuickOrderFieldError("customerName");refreshQuickOrderComputedUi();return;}
   if(event.target.id==="quick-order-address"){quickOrderDraft.address=event.target.value;clearQuickOrderFieldError("address");refreshQuickOrderComputedUi();return;}
+  if(event.target.id==="quick-order-whatsapp"){quickOrderDraft.customerWhatsAppPhone=normalizeArabicDigits(event.target.value);return;}
+  if(event.target.id==="quick-order-conversation"){event.target.value=normalizeArabicNumericText(event.target.value).replace(/[^0-9]/g,"").slice(0,18);quickOrderDraft.chatwootConversationId=event.target.value;return;}
   const quickContactFields={"quick-order-alt-phone":"alternativePhone","quick-order-city":"city","quick-order-address-mark":"addressMark"};
   if(quickContactFields[event.target.id]){quickOrderDraft[quickContactFields[event.target.id]]=event.target.value;refreshQuickOrderComputedUi();return;}
   if(event.target.matches("[data-quick-order-qty]")){

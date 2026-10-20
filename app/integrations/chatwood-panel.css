@@ -33,3 +33,6 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .card.state { display:flex; flex-direction:column; gap:6px; } .card.state.error strong { color:#b42318; }
 .due { color:#b42318; }
 @media (max-width:360px) { .stats.four { grid-template-columns:repeat(2, 1fr); } }
+.btn.new-order { display:block; text-align:center; margin:10px 0; }
+.orders-section.recipient h2 { color:var(--muted); }
+.card.order.recipient { opacity:.9; }

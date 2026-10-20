@@ -5,7 +5,7 @@
 (function () {
   const CHATWOOD_ORIGIN = document.querySelector('meta[name="chatwood-origin"]')?.content || "";
   const TOKEN_KEY = "maktabaa-chatwood-panel-session";
-  const state = { token: sessionStorage.getItem(TOKEN_KEY) || "", user: null, phone: "", rawPhone: "", conversationId: "", contactName: "", data: null, loading: false };
+  const state = { token: sessionStorage.getItem(TOKEN_KEY) || "", user: null, phone: "", rawPhone: "", conversationId: "", contactId: "", contactName: "", data: null, loading: false };
   const $ = id => document.getElementById(id);
 
   function el(tag, attrs = {}, ...children) {
@@ -93,8 +93,10 @@
     const contact = payload.data.contact || {}, conversation = payload.data.conversation || {};
     const conversationId = String(conversation.id ?? "").trim();
     const rawPhone = String(contact.phone_number || conversation.meta?.sender?.phone_number || "").trim();
-    const changed = conversationId !== state.conversationId || rawPhone !== state.rawPhone;
+    const contactId = String(contact.id ?? conversation.meta?.sender?.id ?? "").trim();
+    const changed = conversationId !== state.conversationId || rawPhone !== state.rawPhone || contactId !== state.contactId;
     state.conversationId = /^\d{1,18}$/.test(conversationId) ? conversationId : "";
+    state.contactId = /^\d{1,18}$/.test(contactId) ? contactId : "";
     state.rawPhone = rawPhone; state.phone = normalizePhone(rawPhone); state.contactName = String(contact.name || "");
     if (!state.phone) $("manual-hint").textContent = rawPhone ? "رقم جهة الاتصال ليس رقم موبايل مصري. اكتب رقم العميل يدويًا." : "جهة الاتصال بدون رقم هاتف. اكتب رقم العميل يدويًا.";
     if (changed && state.user) showContext();
@@ -113,6 +115,7 @@
       const query = new URLSearchParams();
       if (state.phone) query.set("phone", state.phone);
       if (state.conversationId) query.set("conversationId", state.conversationId);
+      if (state.contactId) query.set("contactId", state.contactId);
       state.data = await api(`/api/integration/v1/panel/customer?${query}`);
       message(state.data.storeEnabled && !state.data.storeAvailable ? "تعذر الوصول إلى المتجر الآن؛ تظهر طلبات السيستم فقط، وطلبات الموقع غير المعتمدة قد تكون ناقصة." : "", state.data.storeEnabled && !state.data.storeAvailable ? "warning" : "");
       render();
@@ -142,19 +145,42 @@
         el("div", {}, el("span", { text: "مشتريات فعلية" }), el("b", { text: `${money(customer.purchasesTotal)} (${customer.purchasesCount})` })),
         el("div", {}, el("span", { text: "متبقي على فواتيره" }), el("b", { class: customer.outstanding > 0 ? "due" : "", text: money(customer.outstanding) })))));
     if (!customer.identified) {
-      $("orders-list").replaceChildren(el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })));
+      $("orders-list").replaceChildren(newOrderLink(), el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })), recipientSection());
       $("manual-form").hidden = false;
       return;
     }
-    if (!orders.length) { $("orders-list").replaceChildren(el("div", { class: "card state" }, el("strong", { text: "العميل مسجل ومفيش له طلبات." }))); return; }
+    if (!orders.length) { $("orders-list").replaceChildren(newOrderLink(), el("div", { class: "card state" }, el("strong", { text: "العميل مسجل ومفيش له طلبات." })), recipientSection()); return; }
     const section = (title, phases) => {
       const groups = phases.map(phase => [phase, orders.filter(order => order.phase === phase)]).filter(([, list]) => list.length);
       if (!groups.length) return el("section", { class: "orders-section" }, el("h2", { text: `${title} (0)` }), el("p", { class: "muted small", text: "لا يوجد." }));
       return el("section", { class: "orders-section" }, el("h2", { text: `${title} (${groups.reduce((sum, [, list]) => sum + list.length, 0)})` }),
         groups.map(([phase, list]) => el("div", { class: "phase" }, el("h3", { text: `${PHASE_TITLES[phase]} (${list.length})` }), list.map(orderCard))));
     };
-    $("orders-list").replaceChildren(section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY),
+    $("orders-list").replaceChildren(newOrderLink(), section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY), recipientSection(),
       state.data.truncated ? el("p", { class: "muted small", text: `يظهر أحدث ${orders.length} من ${state.data.totalOrders} طلب.` }) : "");
+  }
+
+  // Opens the System's quick order already tied to this conversation, contact and WhatsApp number (a link only;
+  // the order is made in the System with the employee's own permissions).
+  function newOrderLink() {
+    if (!state.conversationId && !state.contactId) return "";
+    const query = new URLSearchParams({ view: "onlineOrders", quick: "1" });
+    if (state.conversationId) query.set("chatwootConversationId", state.conversationId);
+    if (state.contactId) query.set("chatwootContactId", state.contactId);
+    if (state.phone) query.set("whatsapp", state.phone);
+    return el("a", { class: "btn new-order", href: `/?${query}`, target: "_blank", rel: "noopener noreferrer", text: "إنشاء طلب سريع لهذه المحادثة" });
+  }
+
+  // Orders where this number is only the delivery phone of another customer's order: status and tracking only.
+  function recipientSection() {
+    const list = state.data.recipientOrders || [];
+    if (!list.length) return "";
+    return el("section", { class: "orders-section recipient" }, el("h2", { text: `طلبات الرقم ده فيها مستلم بس (${list.length})` }),
+      el("p", { class: "muted small", text: "صاحب الطلب عميل تاني. بيظهر رقم الطلب وحالة الشحن بس." }),
+      list.map(order => el("article", { class: "card order recipient" },
+        el("div", { class: "row" }, el("span", { class: "badge sys", text: order.salesOrderId }), el("span", { class: "status", text: order.phaseLabel })),
+        el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "", order.shipment ? ` · ${order.shipment.statusLabel || order.shipment.status}` : " · لم يُشحن", order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : ""),
+        el("div", { class: "actions" }, el("a", { class: "btn ghost", href: order.links.system, target: "_blank", rel: "noopener noreferrer", text: "فتح في السيستم" })))));
   }
 
   function orderCard(order) {
@@ -168,7 +194,7 @@
     const canLink = order.websiteOrderNumber && state.conversationId && !order.linkedToConversation && !order.chatwootConversationId;
     return el("article", { class: `card order ${order.linkedToConversation ? "linked" : ""}` },
       el("div", { class: "row" }, el("div", { class: "numbers" }, numbers), el("span", { class: `status ${order.group}`, text: order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.phaseLabel || order.status || "—" })),
-      el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ", order.kind !== "website_order" && order.status && order.phaseLabel && order.status !== order.phaseLabel ? ` · ${order.status}` : "", order.matchedBy === "conversation" ? " · مربوط بالمحادثة (رقم الطلب مختلف)" : ""),
+      el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ", order.kind !== "website_order" && order.status && order.phaseLabel && order.status !== order.phaseLabel ? ` · ${order.status}` : "", order.matchedBy === "conversation" ? " · مربوط بالمحادثة" : order.matchedBy === "contact" ? " · مربوط بجهة الاتصال" : ""),
       el("ul", { class: "products" }, (order.products || []).slice(0, 8).map(item => el("li", {}, `${item.name} × ${item.qty}`))),
       el("div", { class: "stats four" },
         el("div", {}, el("span", { text: "الإجمالي" }), el("b", { text: money(order.total) })),

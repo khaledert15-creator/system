@@ -432,24 +432,51 @@ function createWebsiteOrders(deps) {
     return "previous";
   }
 
-  function panelCustomer(db, phone, storeOrders = [], { conversationId = "", config = {} } = {}) {
+  // Who owns an order, when the System knows it: the Chatwood conversation and contact it was made from and that
+  // contact's WhatsApp number; for website orders the buyer's own mobile. The delivery phone of a quick order is the
+  // recipient's and proves nothing about the owner once an owner is recorded.
+  function orderOwner(order) {
+    const phones = order.source === "website" || order.websiteOrderNumber ? [order.phone, order.alternativePhone] : [order.customerWhatsAppPhone];
+    const owner = { conversationId:/^\d{1,18}$/.test(String(order.chatwootConversationId || "").trim()) ? String(order.chatwootConversationId).trim() : "", contactId:/^\d{1,18}$/.test(String(order.chatwootContactId || "")) ? String(order.chatwootContactId) : "", phones:phones.map(normalizeEgyptPhone).filter(Boolean) };
+    return { ...owner, known:Boolean(owner.conversationId || owner.contactId || owner.phones.length) };
+  }
+
+  function panelCustomer(db, phone, storeOrders = [], { conversationId = "", contactId = "", config = {} } = {}) {
     const conversation = /^\d{1,18}$/.test(String(conversationId || "")) ? String(conversationId) : "";
+    const contact = /^\d{1,18}$/.test(String(contactId || "")) ? String(contactId) : "";
     const byPhone = value => Boolean(phone) && normalizeEgyptPhone(value) === phone;
     const customers = (db.customers || []).filter(item => !item.deletedAt && [item.phone, item.alternativePhone].some(byPhone));
     const customerIds = new Set(customers.map(item => item.id));
     const books = new Map((db.books || []).map(book => [book.id, book]));
     const products = lines => (lines || []).map(line => ({ name:books.get(line.bookId || line.productId)?.name || line.name || line.nameAr || line.bookId || "—", qty:Number(line.qty ?? line.quantity ?? 0) }));
     const sales = (db.sales || []).filter(sale => !sale.deletedAt && customerIds.has(sale.customerId));
-    const realSales = sales.filter(sale => !/ملغ|باطل|cancel|void/i.test(String(sale.status || "")) && !sale.cancelledAt && !sale.voidedAt);
+    // Owner evidence first (conversation, contact, the contact's WhatsApp number); the phone is an extra lookup.
+    // A phone match counts as this customer's order unless the recorded owner contradicts it (another contact, or
+    // another WhatsApp number): then this number is only the recipient. Another conversation alone is no
+    // contradiction, since one customer can have several conversations.
     const matchedBy = new Map();
+    const ownerMatch = owner => (conversation && owner.conversationId === conversation) ? "conversation" : (contact && owner.contactId === contact) ? "contact" : (phone && owner.phones.includes(phone)) ? "whatsapp" : "";
+    const otherOwner = owner => Boolean((contact && owner.contactId && owner.contactId !== contact) || (phone && owner.phones.length && !owner.phones.includes(phone)));
     for (const order of db.onlineOrders || []) {
       if (order.deletedAt) continue;
-      if (customerIds.has(order.customerId) || [order.phone, order.alternativePhone].some(byPhone)) matchedBy.set(order.id, "phone");
-      else if (conversation && String(order.chatwootConversationId || "").trim() === conversation) matchedBy.set(order.id, "conversation");
+      const owner = orderOwner(order), byOwner = ownerMatch(owner);
+      const phoneHit = customerIds.has(order.customerId) || [order.phone, order.alternativePhone].some(byPhone);
+      if (byOwner) matchedBy.set(order.id, byOwner);
+      else if (phoneHit) matchedBy.set(order.id, otherOwner(owner) ? "recipient" : "phone");
     }
-    // An invoice of this customer always brings its order, even when the order was saved under another phone.
-    for (const sale of sales) if (sale.onlineOrderId && !matchedBy.has(sale.onlineOrderId) && (db.onlineOrders || []).some(order => order.id === sale.onlineOrderId && !order.deletedAt)) matchedBy.set(sale.onlineOrderId, "invoice");
-    const orders = (db.onlineOrders || []).filter(order => matchedBy.has(order.id));
+    // An invoice of this customer brings its order too (saved under another phone), unless that order has another owner.
+    for (const sale of sales) {
+      const order = sale.onlineOrderId && !matchedBy.has(sale.onlineOrderId) ? (db.onlineOrders || []).find(item => item.id === sale.onlineOrderId && !item.deletedAt) : null;
+      if (order) matchedBy.set(order.id, otherOwner(orderOwner(order)) ? "recipient" : "invoice");
+    }
+    const recipientIds = new Set([...matchedBy].filter(([, how]) => how === "recipient").map(([id]) => id));
+    const realSales = sales.filter(sale => !recipientIds.has(sale.onlineOrderId) && !/ملغ|باطل|cancel|void/i.test(String(sale.status || "")) && !sale.cancelledAt && !sale.voidedAt);
+    const orders = (db.onlineOrders || []).filter(order => matchedBy.has(order.id) && !recipientIds.has(order.id));
+    // Orders where this number is only the delivery phone: enough to answer «where is my parcel», nothing more.
+    const recipientOrders = (db.onlineOrders || []).filter(order => recipientIds.has(order.id)).map(order => {
+      const shipmentRecord = orderShipment(db, order), shipment = shipmentSummary(shipmentRecord), phase = systemOrderPhase(order, shipmentRecord);
+      return { salesOrderId:order.id, websiteOrderNumber:order.websiteOrderNumber || "", createdAt:order.createdAt || order.date || "", phase, phaseLabel:PANEL_PHASES[phase].label, shipment, trackingNumber:shipment?.trackingNumber || "", links:{ system:`/?view=onlineOrders&focus=order:${encodeURIComponent(order.id)}` } };
+    }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     const storeByNumber = new Map(storeOrders.map(order => [order.orderNumber, order]));
     const storeBySalesId = new Map(storeOrders.filter(order => order.salesOrderId).map(order => [order.salesOrderId, order]));
     const storeUrl = storeOrder => storeOrder?.id != null && config.storeAdminOrderUrl ? `${config.storeAdminOrderUrl}${encodeURIComponent(String(storeOrder.id))}` : "";
@@ -509,7 +536,7 @@ function createWebsiteOrders(deps) {
       customer:{ name, phone:phone || "", known:Boolean(primary), identified:Boolean(primary) || entries.length > 0, customerIds:[...customerIds], status:realSales.length || entries.length > 1 ? "returning" : "new",
         ordersCount:entries.length, purchasesCount:realSales.length, purchasesTotal, paidTotal, outstanding, openOrders:entries.filter(entry => entry.group === "current").length },
       counts, totalOrders:entries.length, truncated:entries.length > PANEL_LIMIT,
-      orders:entries.slice(0, PANEL_LIMIT)
+      orders:entries.slice(0, PANEL_LIMIT), recipientOrders:recipientOrders.slice(0, PANEL_LIMIT)
     };
   }
 
@@ -519,6 +546,39 @@ function createWebsiteOrders(deps) {
 // PUT /api/db carries the whole database from the browser. The website deposit default (owner/manager endpoint) and
 // the website link fields of existing orders are server-owned, so a client save keeps the server's values.
 const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername"];
+// The Chatwood identity of an order (who it belongs to) and the quick-order request key are written by the server
+// only; a whole-database save keeps the stored values.
+const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "quickOrderRequestId", "chatwoodLink"];
+function preserveChatwoodIdentity(current = {}, next = {}) {
+  const currentOrders = new Map((current.onlineOrders || []).filter(order => order && order.id).map(order => [order.id, order]));
+  for (const order of next.onlineOrders || []) {
+    if (!order || typeof order !== "object") continue;
+    const previous = currentOrders.get(order.id);
+    if (!previous) { for (const key of ["chatwootContactId", "customerWhatsAppPhone", "chatwoodLink"]) delete order[key]; continue; }
+    for (const key of CHATWOOD_IDENTITY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(previous, key)) order[key] = JSON.parse(JSON.stringify(previous[key]));
+      else delete order[key];
+    }
+  }
+  return next;
+}
+
+// Links older orders to the Chatwood contact/conversation found by the history review. Only orders with no recorded
+// owner are touched; phones and customers never change; each link keeps its evidence. dryRun reports and writes nothing.
+function linkOrdersToChatwood(db, links = [], { by = "integration", now = new Date().toISOString(), dryRun = true } = {}) {
+  const result = { linked:[], skipped:[] };
+  for (const link of Array.isArray(links) ? links : []) {
+    const id = String(link?.orderId || ""), conversationId = String(link?.conversationId || ""), contactId = String(link?.contactId || "");
+    const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+    if (!order) { result.skipped.push({ orderId:id, reason:"ORDER_NOT_FOUND" }); continue; }
+    if (!/^\d{1,18}$/.test(conversationId) || !/^\d{1,18}$/.test(contactId)) { result.skipped.push({ orderId:id, reason:"INVALID_IDS" }); continue; }
+    if (order.chatwootContactId || /^\d{1,18}$/.test(String(order.chatwootConversationId || "").trim()) || order.customerWhatsAppPhone) { result.skipped.push({ orderId:id, reason:"OWNER_ALREADY_RECORDED" }); continue; }
+    if (!dryRun) Object.assign(order, { chatwootConversationId:conversationId, chatwootContactId:contactId, chatwoodLink:{ source:"history-review", evidence:Array.isArray(link.evidence) ? link.evidence.slice(0, 5).map(String) : [], linkedAt:now, linkedBy:by }, updatedAt:now });
+    result.linked.push({ orderId:id, conversationId, contactId });
+  }
+  return result;
+}
+
 function preserveServerOwnedFields(current = {}, next = {}) {
   if (next.settings && typeof next.settings === "object") {
     if (current.settings && Object.prototype.hasOwnProperty.call(current.settings, "websiteOrders")) next.settings.websiteOrders = JSON.parse(JSON.stringify(current.settings.websiteOrders));
@@ -540,4 +600,4 @@ function preserveServerOwnedFields(current = {}, next = {}) {
   return next;
 }
 
-module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields };
+module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields, preserveChatwoodIdentity, linkOrdersToChatwood };

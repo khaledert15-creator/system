@@ -583,6 +583,14 @@ function validatePreorderPermission(currentDb,nextDb,user) {
   return {ok:true};
 }
 
+// Who a quick order belongs to as seen in Chatwood: the conversation, the contact and that contact's WhatsApp number.
+// None of them is the delivery phone, which stays order.phone (the recipient). Only well-formed values are kept.
+function quickOrderChatwoodIdentity(payload={}) {
+  const id=value=>{const text=String(value??"").trim();return /^\d{1,18}$/.test(text)?text:"";};
+  const whatsapp=normalizeCustomerPhone(payload.customerWhatsAppPhone);
+  return { chatwootConversationId:id(payload.chatwootConversationId), chatwootContactId:id(payload.chatwootContactId), customerWhatsAppPhone:/^01\d{9}$/.test(whatsapp)?whatsapp:"" };
+}
+
 function normalizeCustomerPhone(value="") {
   const digits=String(value||"").replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/\D/g,"");
   if(digits.startsWith("20")&&digits.length===12)return `0${digits.slice(2)}`;
@@ -3284,11 +3292,13 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/orders/quick" && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const payload=JSON.parse(await readBody(req)||"{}"),conversationId=String(payload.chatwootConversationId||"").trim();
+      const payload=JSON.parse(await readBody(req)||"{}"),identity=quickOrderChatwoodIdentity(payload),requestId=String(payload.requestId||"").trim().slice(0,80);
       const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);
       if(!canOrderAction(db,user,"order.quick.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إنشاء طلب واتساب سريع."});
-      if(conversationId){
-        const found=(db.onlineOrders||[]).find(item=>item.chatwootConversationId===conversationId&&!item.deletedAt);
+      // A retry of the same draft (same requestId) returns the order already made. One conversation may have many
+      // orders, so the conversation id is a reference, never a duplicate key.
+      if(requestId){
+        const found=(db.onlineOrders||[]).find(item=>item.quickOrderRequestId===requestId&&!item.deletedAt);
         if(found)return send(res,200,{ok:true,order:found,existing:true,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }
       let shippingCompany;try{shippingCompany=orderShippingCompany(db,payload.shippingCompany);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
@@ -3317,7 +3327,7 @@ const server = http.createServer(async (req, res) => {
       if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
       const automaticShipping=automaticShippingFee(db,payload.governorate||customer.governorate,lines,payload.orderDiscount,payload.orderDiscountType);
       if(Math.abs(totals.shipping-automaticShipping)>.009&&!canOrderAction(db,user,"order.shipping.override"))return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة."});
-      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",sourcePlatform:"chatwoot",chatwootConversationId:conversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",quickOrderRequestId:requestId,chatwootContactId:identity.chatwootContactId,customerWhatsAppPhone:identity.customerWhatsAppPhone,sourcePlatform:"chatwoot",chatwootConversationId:identity.chatwootConversationId,paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
@@ -3363,6 +3373,8 @@ const server = http.createServer(async (req, res) => {
       if(paidBefore>totals.total)return send(res,409,{ok:false,code:"PAID_EXCEEDS_NEW_TOTAL",message:"القيمة الجديدة للطلب أقل من المبلغ المدفوع. راجع الاسترداد أو المعالجة المالية قبل الحفظ."});
       if(order.confirmedAt){reserveOrderInventory(db,order,user,lines,{allowBackorder:!["preparing","needs_review"].includes(order.workflowStage)});if(["awaiting_preparation","awaiting_stock"].includes(order.workflowStage))applyBackorderStage(order,user);}
       Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,updatedAt:now});
+      // Chatwood identity can be added to an order that has none; an existing different value is never replaced here.
+      {const identity=quickOrderChatwoodIdentity(payload);for(const key of ["chatwootConversationId","chatwootContactId","customerWhatsAppPhone"])if(identity[key]&&!order[key])order[key]=identity[key];}
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       if(preparationStarted){
@@ -4102,6 +4114,7 @@ const server = http.createServer(async (req, res) => {
       else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
       WebsiteOrders.preserveServerOwnedFields(currentSource, parsed);
       SplitShipment.preserveSplitFields(currentSource, parsed);
+      WebsiteOrders.preserveChatwoodIdentity(currentSource, parsed);
       const repairedIds = repairClientRecordIds(parsed);
       if (repairedIds) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"CLIENT_IDS_REPAIRED", performedBy:user.username, repairedIds }));
       // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.

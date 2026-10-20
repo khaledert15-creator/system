@@ -93,6 +93,7 @@ function createIntegrationServer(deps) {
       fail(res, 401, "INTEGRATION_AUTH_FAILED", "مصادقة التكامل فشلت");
       return false;
     }
+    req.integrationBody = body;
     return true;
   }
 
@@ -201,15 +202,17 @@ function createIntegrationServer(deps) {
     const phone = websiteOrders.normalizeEgyptPhone(rawPhone);
     const conversationId = String(url.searchParams.get("conversationId") || "").trim();
     if (conversationId && !/^\d{1,18}$/.test(conversationId)) return fail(res, 400, "INVALID_CONVERSATION", "رقم المحادثة غير صحيح.");
+    const contactId = String(url.searchParams.get("contactId") || "").trim();
+    if (contactId && !/^\d{1,18}$/.test(contactId)) return fail(res, 400, "INVALID_CONTACT", "رقم جهة الاتصال غير صحيح.");
     // A contact without a usable Egyptian mobile (WhatsApp username, foreign number) is still matched by conversation.
-    if (rawPhone && !phone && !conversationId) return fail(res, 400, "INVALID_PHONE", "رقم هاتف العميل غير صالح.");
-    if (!phone && !conversationId) return fail(res, 400, "CUSTOMER_NOT_IDENTIFIED", "لا يوجد رقم هاتف أو محادثة للتعرف على العميل.");
+    if (rawPhone && !phone && !conversationId && !contactId) return fail(res, 400, "INVALID_PHONE", "رقم هاتف العميل غير صالح.");
+    if (!phone && !conversationId && !contactId) return fail(res, 400, "CUSTOMER_NOT_IDENTIFIED", "لا يوجد رقم هاتف أو محادثة للتعرف على العميل.");
     let storeOrders = [], storeAvailable = false;
     if (config.storeEnabled) {
       try { storeOrders = await fetchStoreOrders({ state:"all", phone, conversationId, limit:100 }); storeAvailable = true; } catch {}
     }
     const fresh = readDbSafe();
-    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null }, JSON_TYPE, NO_STORE);
+    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, contactId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null }, JSON_TYPE, NO_STORE);
   }
 
   async function panelLink(req, res) {
@@ -384,6 +387,22 @@ function createIntegrationServer(deps) {
         send(res, 200, websiteOrders.catalogSnapshot(db, revision), JSON_TYPE, NO_STORE);
       } else if (method === "GET" && route === "/api/integration/v1/events") {
         eventStream(req, res);
+      } else if (method === "POST" && route === "/api/integration/v1/orders/chatwood-links") {
+        // Owner-approved linking of older orders to the Chatwood contact found by the history review (signed,
+        // internal network only). dryRun (the default) reports what would change and writes nothing.
+        let payload;
+        try { payload = JSON.parse(req.integrationBody || "{}"); } catch { fail(res, 400, "INVALID_REQUEST", "طلب غير صالح"); return true; }
+        const dryRun = payload.dryRun !== false;
+        const { db, revision } = readDbForWrite();
+        const result = WebsiteOrders.linkOrdersToChatwood(db, payload.links, { by:String(payload.approvedBy || "integration").slice(0, 100), dryRun });
+        if (!dryRun && result.linked.length) {
+          const now = new Date().toISOString();
+          db.audit = Array.isArray(db.audit) ? db.audit : [];
+          for (const row of result.linked) AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:"ORDER_CHATWOOD_LINKED", action:"ربط طلب بمحادثة Chatwood من مراجعة السجل", entity:"طلبات الأونلاين", entityId:row.orderId, user:String(payload.approvedBy || "integration"), username:"integration", role:"تكامل", details:`محادثة ${row.conversationId} · جهة اتصال ${row.contactId}` });
+          try { writeDb(db, { expectedRevision:revision, operationType:"ORDER_CHATWOOD_LINKED", performedBy:"integration" }); }
+          catch (error) { if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") { fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات؛ أعد المحاولة."); return true; } throw error; }
+        }
+        send(res, 200, { ok:true, dryRun, linked:result.linked.length, skipped:result.skipped }, JSON_TYPE, NO_STORE);
       } else if (method === "GET" && route === "/api/integration/v1/website-orders/links") {
         const { db, revision } = readDbForWrite();
         try { send(res, 200, websiteOrders.orderLinks(db, revision, url.searchParams.get("updatedSince") || ""), JSON_TYPE, NO_STORE); }

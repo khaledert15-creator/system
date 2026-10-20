@@ -27,7 +27,7 @@ async function request(path,{token,method="GET",body}={}){
   const stamp=Date.now();
   const payload={
     phone:`010${String(stamp).slice(-8)}`,customerName:"عميل واتساب QA",governorate:"القاهرة",city:"مدينة نصر",address:"عنوان QA معزول",
-    chatwootConversationId:`qa-whatsapp-${stamp}`,shippingCost:35,
+    requestId:`qa-whatsapp-${stamp}`,chatwootConversationId:String(stamp).slice(-9),chatwootContactId:String(stamp).slice(-7),customerWhatsAppPhone:`015${String(stamp).slice(-8)}`,shippingCost:35,
     lines:books.slice(0,2).map((book,index)=>({bookId:book.id,qty:index+1,discount:index?10:0,discountType:"percent"}))
   };
   let result=await request("/api/orders/quick",{token:accountant,method:"POST",body:payload});
@@ -35,8 +35,13 @@ async function request(path,{token,method="GET",body}={}){
   result=await request("/api/orders/quick",{token:owner,method:"POST",body:payload});
   assert(result.status===201,"quick-order draft created");
   const orderId=result.body.order.id;
+  assert(result.body.order.chatwootConversationId===payload.chatwootConversationId&&result.body.order.chatwootContactId===payload.chatwootContactId&&result.body.order.customerWhatsAppPhone===payload.customerWhatsAppPhone&&result.body.order.phone===payload.phone,"conversation, contact and WhatsApp owner are kept apart from the recipient phone");
   const duplicate=await request("/api/orders/quick",{token:owner,method:"POST",body:payload});
-  assert(duplicate.status===200&&duplicate.body.existing&&duplicate.body.order.id===orderId,"Chatwoot conversation is idempotent");
+  assert(duplicate.status===200&&duplicate.body.existing&&duplicate.body.order.id===orderId,"a retried save (same requestId) is idempotent");
+  // One conversation can have several orders: a new draft (new requestId) from the same conversation is a new order.
+  const second=await request("/api/orders/quick",{token:owner,method:"POST",body:{...payload,requestId:`qa-whatsapp-second-${stamp}`,lines:payload.lines.slice(0,1)}});
+  assert(second.status===201&&second.body.order.id!==orderId&&second.body.order.chatwootConversationId===payload.chatwootConversationId,"a second order from the same conversation is created");
+  await request(`/api/orders/${second.body.order.id}/cancel`,{token:owner,method:"POST",body:{reason:"QA"}});
   const stockBefore=books.map(book=>Number(book.stock));
   const reservedBefore=books.map(book=>Number(book.reservedStock||0));
   const firstConfirm=await request(`/api/orders/${orderId}/confirm`,{token:owner,method:"POST"});
@@ -72,7 +77,7 @@ async function request(path,{token,method="GET",body}={}){
   assert(finalDb.notifications.some(item=>item.entityId===orderId&&item.title.includes("مراجعة")),"customer-service review notification created");
   assert(finalDb.notifications.some(item=>item.entityId===orderId&&item.title.includes("جاهز للشحن")),"shipping notification created");
 
-  const cancelPayload={...payload,phone:`011${String(stamp+1).slice(-8)}`,chatwootConversationId:`qa-cancel-${stamp}`,lines:[{bookId:books[0].id,qty:1}]};
+  const cancelPayload={...payload,phone:`011${String(stamp+1).slice(-8)}`,requestId:`qa-cancel-${stamp}`,lines:[{bookId:books[0].id,qty:1}]};
   const cancelDraft=await request("/api/orders/quick",{token:owner,method:"POST",body:cancelPayload});
   await request(`/api/orders/${cancelDraft.body.order.id}/confirm`,{token:owner,method:"POST"});
   const beforeCancel=(await request("/api/db",{token:owner})).body;
@@ -85,7 +90,7 @@ async function request(path,{token,method="GET",body}={}){
   const concurrentBook={...books[0],id:`B-QA-RSV-${stamp}`,name:"كتاب آخر نسخة QA",stock:1,reservedStock:0,barcode:`QA${stamp}`,deletedAt:null};
   concurrencyDb.books.push(concurrentBook);
   assert((await request("/api/db",{token:owner,method:"PUT",body:concurrencyDb})).status===200,"isolated last-copy fixture saved");
-  const concurrentPayload=index=>({phone:`012${String(stamp+index).slice(-8)}`,customerName:`عميل تزامن ${index}`,governorate:"القاهرة",address:"QA",chatwootConversationId:`qa-concurrent-${stamp}-${index}`,lines:[{bookId:concurrentBook.id,qty:1}]});
+  const concurrentPayload=index=>({phone:`012${String(stamp+index).slice(-8)}`,customerName:`عميل تزامن ${index}`,governorate:"القاهرة",address:"QA",requestId:`qa-concurrent-${stamp}-${index}`,lines:[{bookId:concurrentBook.id,qty:1}]});
   const drafts=await Promise.all([1,2].map(index=>request("/api/orders/quick",{token:owner,method:"POST",body:concurrentPayload(index)})));
   assert(drafts.every(item=>item.status===201),"two drafts can reference the last copy without reserving it");
   const confirmations=await Promise.all(drafts.map(item=>request(`/api/orders/${item.body.order.id}/confirm`,{token:owner,method:"POST"})));
