@@ -4522,7 +4522,7 @@ function websiteOrderModalMarkup(preview) {
     !preview.totalMatches&&`إجمالي الطلب في المتجر (${money(preview.total)}) لا يطابق أسعاره وشحنه (${money(preview.computedTotal||0)}).`,
     lines.some(line=>line.status==="unavailable")&&"بعض الكتب غير متوفرة الآن ولا تسمح بالحجز المسبق؛ الاعتماد سيُرفض حتى يتوفر المخزون.",
     preorderBooks.length&&!preview.preorderConsentAtCheckout&&"العميل لم يوافق على الحجز المسبق عند الطلب؛ لا يمكن اعتماد الكتب الناقصة كحجز مسبق.",
-    (preview.priceDiffs||[]).length&&"تغير سعر بعض الكتب في السيستم. الطلب يُعتمد بسعر الموقع بعد موافقتك."
+    (preview.priceDiffs||[]).length&&`سعر الموقع مختلف عن سعر السيستم (سعر/خصم الموقع): ${(preview.priceDiffs||[]).map(diff=>`${esc(diff.name)}: الموقع ${money(diff.websitePrice)} / السيستم ${money(diff.systemPrice)}`).join("، ")}. الطلب يُعتمد بسعر الموقع.`
   ].filter(Boolean);
   if(preview.existingSalesOrder)return `${header}<div class="alert-item"><div class="alert-badge">✓</div><div><strong>تم اعتماد هذا الطلب: ${esc(preview.existingSalesOrder.id)}</strong><span>${esc(preview.existingSalesOrder.status||"")}</span></div><button class="row-action" data-website-order-action="view-sales-order" data-id="${esc(preview.existingSalesOrder.id)}">فتح الطلب</button></div>${table}`;
   const duplicates=preview.duplicateTransferWarnings||[];
@@ -4541,7 +4541,6 @@ function websiteOrderModalMarkup(preview) {
       </div>
       <label class="check-line"><input type="checkbox" name="receivedConfirmed" value="true"> تم استلام المبلغ فعليًا</label>
       ${preview.preorderConsentAtCheckout?preorderBooks.map(line=>`<label class="check-line"><input type="checkbox" name="preorder:${esc(line.bookId)}" value="true"> العميل موافق على شحن «${esc(line.name)}» عند توفره (حجز مسبق — الطلب كله ينتظر حتى تكتمل الكتب)</label>`).join(""):""}
-      ${(preview.priceDiffs||[]).length?`<label class="check-line"><input type="checkbox" name="acknowledgePriceChanges" value="true"> راجعت فرق الأسعار (${(preview.priceDiffs||[]).map(diff=>`${esc(diff.name)}: الموقع ${money(diff.websitePrice)} / السيستم ${money(diff.systemPrice)}`).join("، ")}) وأوافق على الاعتماد بسعر الموقع</label>`:""}
       <div id="website-duplicate-box">${websiteDuplicateMarkup(duplicates)}</div>
       <div id="website-approve-error"></div>
       <div class="form-actions"><button class="btn" type="submit">اعتماد وإنشاء طلب مبيعات</button><button class="btn ghost" type="button" data-website-order-action="open" data-number="${esc(order.orderNumber)}">تحديث المعاينة</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>
@@ -4571,7 +4570,7 @@ async function submitWebsiteOrderApproval(form) {
   const preorderConsent=Object.fromEntries(Object.keys(values).filter(key=>key.startsWith("preorder:")).map(key=>[key.slice(9),true]));
   const payload={
     deposit:{amount,receiptMethod:values.receiptMethod,cashAccountId:values.cashAccountId,senderPhone:values.senderPhone||"",senderName:values.senderName||"",reference:values.reference||"",receivedConfirmed:values.receivedConfirmed==="true",overrideReason:values.overrideReason||null},
-    preorderConsent,acknowledgePriceChanges:values.acknowledgePriceChanges==="true",duplicateTransferReviewed:values.duplicateTransferReviewed==="true",
+    preorderConsent,duplicateTransferReviewed:values.duplicateTransferReviewed==="true",
     shippingCompany:values.shippingCompany||"",notes:values.notes||""
   };
   const button=form.querySelector('button[type="submit"]'),errorBox=form.querySelector("#website-approve-error");

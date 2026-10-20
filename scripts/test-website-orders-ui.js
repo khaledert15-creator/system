@@ -21,7 +21,7 @@ pass("online orders have a website tab that loads from the server", () => {
   assert.match(app, /websiteOrdersFetch\("\/api\/website-orders\?state=pending"\)/);
 });
 pass("detail shows per-line availability and the approval form fields", () => {
-  for (const label of ["متوفر", "حجز مسبق", "غير متوفر", "تم استلام المبلغ فعليًا", "العربون المستلم", "طريقة الاستلام", "الخزنة / الحساب", "رقم المحوّل", "اسم المحوّل", "مرجع التحويل", "راجعت فرق الأسعار", "اعتماد وإنشاء طلب مبيعات"]) assert.ok(app.includes(label), label);
+  for (const label of ["متوفر", "حجز مسبق", "غير متوفر", "تم استلام المبلغ فعليًا", "العربون المستلم", "طريقة الاستلام", "الخزنة / الحساب", "رقم المحوّل", "اسم المحوّل", "مرجع التحويل", "سعر الموقع مختلف عن سعر السيستم", "اعتماد وإنشاء طلب مبيعات"]) assert.ok(app.includes(label), label);
   assert.match(app, /name="preorder:\$\{esc\(line\.bookId\)\}"/);
   assert.match(app, /\/api\/website-orders\/\$\{encodeURIComponent\(form\.dataset\.number\)\}\/approve/);
   assert.match(app, /form\.id==="website-order-approve-form"\)\{await submitWebsiteOrderApproval\(form\)/);

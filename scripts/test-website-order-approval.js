@@ -167,15 +167,13 @@ const item = (bookId, quantity, unitPrice, extra = {}) => ({ productId:Number(bo
     assert.equal(r.status, 201, r.text);
     console.log('PASS duplicate transfer reference / sender+amount flagged unless reviewed');
 
-    // ---- Price change needs acknowledgment; the website price is kept.
+    // ---- The website price (Store-managed price/discount) is the agreed price and never blocks approval.
     const l = add(H.storeOrder({ items:[item('B0001', 2, 90)] }));
     r = await system.api(`/api/website-orders/${l.orderNumber}`, { username:'cashier' });
     assert.deepEqual(r.body.priceDiffs, [{ bookId:'B0001', name:'كتاب B0001', websitePrice:90, systemPrice:100 }]);
     r = await approve(l);
-    assert.equal(r.status, 409); assert.equal(r.body.code, 'PRICE_CHANGED'); assert.equal(r.body.diffs[0].systemPrice, 100);
-    r = await approve(l, { acknowledgePriceChanges:true });
     assert.equal(r.status, 201); assert.equal(r.body.order.lines[0].price, 90); assert.equal(r.body.order.total, 215); assert.equal(r.body.order.priceChangesAcknowledged.length, 1);
-    console.log('PASS price changes need acknowledgePriceChanges; lines keep the website unit price');
+    console.log('PASS the website price is the agreed price; the System price difference is recorded, not blocking');
 
     // ---- Coupon, existing customer by normalized phone, total mismatch, unlinked products, not pending.
     const coupon = add(H.storeOrder({ items:[item('B0001', 1, 100)], couponDiscount:20, depositRequired:100, customer:{ name:'عميل قديم', mobile:'01001112223', altMobile:null } }));

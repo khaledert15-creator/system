@@ -254,7 +254,9 @@ function createWebsiteOrders(deps) {
     const unlinked = lines.filter(line => !line.linked);
     if (unlinked.length) throw websiteError(409, "PRODUCT_NOT_LINKED", "بعض منتجات الطلب غير مربوطة بكتاب موجود في السيستم.", { lines:unlinked.map(line => ({ productId:line.productId, externalBookId:line.externalBookId, name:line.name, deleted:line.deleted })) });
     const diffs = lines.filter(line => line.priceChanged).map(line => ({ bookId:line.bookId, name:line.name, websitePrice:line.unitPrice, systemPrice:line.systemPrice }));
-    if (diffs.length && payload.acknowledgePriceChanges !== true) throw websiteError(409, "PRICE_CHANGED", "تغير سعر بعض الكتب في السيستم عن سعر طلب الموقع. راجع الفرق ووافق عليه للمتابعة.", { diffs });
+    // Owner decision 2026-10-20: the Store dashboard owns the website price and
+    // discount, so the customer's website price is the agreed price. A difference
+    // from book.price is recorded on the order for information and never blocks.
     // Availability now. A short book may only become a pre-order when the book allows it, the customer agreed at
     // checkout AND the employee confirmed that consent for this book. Otherwise nothing is written.
     const consent = payload.preorderConsent && typeof payload.preorderConsent === "object" ? payload.preorderConsent : {};
