@@ -3434,8 +3434,10 @@ function clearCountHold(book) {
 function orderIssueNote(order, { full=false }={}) {
   const issue=order?.preparationIssue;if(!issue)return "";
   const books=(issue.missingLines||[]).map(line=>`${esc(getBook(line.bookId)?.name||line.bookId)} × ${line.qty}`).join("، ");
+  // A reported book stays held until it is counted; say so, since new copies alone do not release the order.
+  const waitingCount=order.workflowStage==="awaiting_stock"&&(issue.missingLines||[]).some(line=>bookCountHold(getBook(line.bookId)||{})>0);
   const meta=[issue.createdBy,issue.createdAt?arabicDateTimeLabel(issue.createdAt):""].filter(Boolean).join(" · ");
-  return `<div class="order-issue-note${full?" full":""}"><strong>⚠ ${esc(issue.reason||"مشكلة في التجهيز")}</strong>${books?`<span>الناقص: ${books}</span>`:""}${issue.notes?`<span>${esc(issue.notes)}</span>`:""}${full&&meta?`<small>${esc(meta)}</small>`:""}</div>`;
+  return `<div class="order-issue-note${full?" full":""}"><strong>⚠ ${esc(issue.reason||"مشكلة في التجهيز")}</strong>${books?`<span>الناقص: ${books}</span>`:""}${waitingCount?`<span class="issue-count-hold">⏳ بانتظار جرد الكتاب (من تبويب «الكتب الناقصة والحجوزات») قبل النقل للتجهيز</span>`:""}${issue.notes?`<span>${esc(issue.notes)}</span>`:""}${full&&meta?`<small>${esc(meta)}</small>`:""}</div>`;
 }
 
 function quickOrderCustomer() {

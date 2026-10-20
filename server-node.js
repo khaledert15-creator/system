@@ -3441,9 +3441,18 @@ const server = http.createServer(async (req, res) => {
       // Same rule as the automatic check (complete orders only, oldest first), run immediately.
       const { moved, changed } = autoAllocateBackorders(db, user);
       if (!moved.includes(order.id)) {
-        const names = (order.backorderLines || []).map(line => `${(db.books || []).find(item => item.id === line.bookId)?.name || line.bookId} × ${line.qty}`).join("، ");
+        // Two different reasons look the same from the list: copies that are really short, and copies the packer
+        // reported missing for this order, which wait for a stock count even after a purchase arrives.
+        const reported = aggregateOrderLines(order.preparationIssue?.missingLines || []);
+        const bookOf = bookId => (db.books || []).find(item => item.id === bookId) || {};
+        const label = line => `${bookOf(line.bookId).name || line.bookId} × ${line.qty}`;
+        const waitingCount = (order.backorderLines || []).filter(line => reported.has(line.bookId) && countHoldStock(bookOf(line.bookId)) > 0);
+        const short = (order.backorderLines || []).filter(line => !waitingCount.includes(line));
         if (changed) writeDb(db, { operationType:"BACKORDER_AUTO_ALLOCATED", performedBy:user.username });
-        return send(res,409,{ok:false,code:"NO_STOCK_AVAILABLE",message:`لم تتوفر كل كتب الطلب بعد${names?`؛ الناقص: ${names}`:""}.`,order:(db.onlineOrders||[]).find(item=>item.id===id)});
+        const parts = [];
+        if (waitingCount.length) parts.push(`بانتظار جرد: ${waitingCount.map(label).join("، ")} (المغلّف بلّغ إن الكتاب مش على الرف، فالطلب مش هيتنقل للتجهيز غير بعد جرد الكتاب من تبويب «الكتب الناقصة والحجوزات»، حتى لو وصلت كمية جديدة)`);
+        if (short.length) parts.push(`الناقص: ${short.map(label).join("، ")}`);
+        return send(res,409,{ok:false,code:waitingCount.length&&!short.length?"AWAITING_STOCK_COUNT":"NO_STOCK_AVAILABLE",message:`لم تتوفر كل كتب الطلب بعد${parts.length?`؛ ${parts.join("؛ ")}`:""}.`,awaitingCount:waitingCount.map(line=>line.bookId),order:(db.onlineOrders||[]).find(item=>item.id===id)});
       }
       const stage = order.workflowStage;
       writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_BACKORDER_ALLOCATED",performedBy:user.username});
