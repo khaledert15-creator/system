@@ -2,8 +2,8 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const source=fs.readFileSync('app/app.js','utf8'),start=source.indexOf('function quickOrderMessage('),fn=source.slice(start,source.indexOf('\n}',start)+2);
 const lines=[{bookId:'a',qty:2,price:150},{bookId:'b',qty:1,price:180,discount:10,discountType:'amount'}];
 let discount=0;
-let preorder=false;
-const ctx={quickOrderDraft:{},quickOrderCustomer:()=>null,quickOrderAvailableFor:id=>preorder&&id==='a'?0:99,quickOrderHasPreorder:()=>preorder,getBook:id=>({name:id==='a'?'الأضواء عربي 3ث':'الامتحان\nكيمياء 3ث'}),getOnlineOrder:()=>({id:'O1'}),quickOrderTotalsNow:()=>finance.calculateOrder(lines,{shippingCost:50,orderDiscount:discount,orderDiscountType:'amount'}),quickOrderPaymentNow:t=>({paidAmount:100,remainingAmount:t.total-100})};
+let preorder=false,locked=false;
+const ctx={quickOrderDraft:{},quickOrderCustomer:()=>null,quickOrderPreparationLocked:()=>locked,quickOrderAvailableFor:id=>preorder&&id==='a'?0:99,quickOrderHasPreorder:()=>preorder,getBook:id=>({name:id==='a'?'الأضواء عربي 3ث':'الامتحان\nكيمياء 3ث'}),getOnlineOrder:()=>({id:'O1'}),quickOrderTotalsNow:()=>finance.calculateOrder(lines,{shippingCost:50,orderDiscount:discount,orderDiscountType:'amount'}),quickOrderPaymentNow:t=>({paidAmount:100,remainingAmount:t.total-100})};
 vm.createContext(ctx);vm.runInContext(fn,ctx);
 let msg=ctx.quickOrderMessage();
 assert(msg.includes('• 2 * الأضواء عربي 3ث | النسخة 150 ج | الإجمالي 300 ج'));
@@ -27,3 +27,8 @@ console.log('PASS compact customer contact, address, landmark, optional fields a
 preorder=true;msg=ctx.quickOrderMessage();
 assert(msg.includes('الأضواء عربي 3ث (حجز مسبق)'));assert(!msg.includes('كيمياء 3ث (حجز مسبق)'));assert(msg.includes('⏳ الطلب فيه كتب حجز مسبق'));
 console.log('PASS pre-order books are marked in the customer message');
+
+// An order already in preparation cannot take a missing book as a pre-order: the message must not promise one.
+locked=true;ctx.quickOrderHasPreorder=()=>false;msg=ctx.quickOrderMessage(true);
+assert(msg.includes('الأضواء عربي 3ث (غير متاح حاليًا)'));assert(!msg.includes('(حجز مسبق)'));assert(!msg.includes('⏳'));
+console.log('PASS an order in preparation marks a missing book as unavailable, not as a pre-order');
