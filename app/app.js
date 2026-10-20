@@ -64,7 +64,7 @@ const ACTION_ROLES = {
   ,"order.quick.create":["مالك","مدير","كاشير"],"order.quick.confirm":["مالك","مدير","كاشير"],"order.quick.edit":["مالك","مدير","كاشير"],
   "order.discount.override":["مالك","مدير"],"order.shipping.override":["مالك","مدير"],"order.payment.receive":["مالك","مدير","كاشير"],
   "order.prepare":["مالك","مدير","مخزن"],"order.pack":["مالك","مدير","مخزن"],"order.shipping":["مالك","مدير","شحن"],
-  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],
+  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],
   "panel.view":["مالك","مدير","محاسب","كاشير","مخزن","شحن"],"panel.link":["مالك","مدير","كاشير"]
 };
 
@@ -96,7 +96,7 @@ const VIEW_DEFINITIONS = [
 const PERMISSION_ACTIONS = [
   ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
-  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب"]]],
+  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
@@ -3797,8 +3797,77 @@ function renderShortagesScreen() {
       </tbody></table></div></article>
     <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
-      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
+      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}${splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
       </tbody></table></div></article>`;
+}
+
+// Partial shipping (Option B): the books on the shelf ship now, the missing ones become a second order.
+function splitShipmentEligible(order) {
+  if(!canAction("order.split.shipment")||order.workflowStage!=="awaiting_stock"||!order.confirmedAt||order.saleId||order.shipmentId||order.splitShipment?.childOrderIds?.length||order.splitFromOrderId)return false;
+  const needed=new Map();
+  for(const line of order.lines||[])needed.set(line.bookId,(needed.get(line.bookId)||0)+Number(line.qty||0));
+  const now=[...needed].map(([bookId,qty])=>Math.min(qty,Math.max(0,bookAvailableStock(getBook(bookId)))));
+  return now.some(qty=>qty>0)&&[...needed.values()].some((qty,index)=>qty>now[index]);
+}
+
+function splitPartBadge(order) {
+  if(order.splitFromOrderId)return `<br><span class="badge" title="الشحنة الثانية من طلب مقسم">شحنة 2 · من ${esc(order.splitFromOrderId)}${order.parentWebsiteOrderNumber?` (${esc(order.parentWebsiteOrderNumber)})`:""}</span>`;
+  if(order.splitShipment?.childOrderIds?.length)return `<br><span class="badge" title="طلب مقسم على شحنتين">شحنة 1 · الباقي ${order.splitShipment.childOrderIds.map(esc).join("، ")}</span>`;
+  return "";
+}
+
+const SPLIT_CONSENT_CHANNELS=["واتساب","الموقع","مكالمة"];
+
+function splitRowsTable(rows=[]) {
+  return `<div class="table-wrap"><table><thead><tr><th>الكتاب</th><th>المطلوب</th><th>يُشحن الآن</th><th>لاحقًا</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.name)}<br><span class="muted">${esc(row.bookId)}</span></td><td>${esc(row.qty)}</td><td><strong>${esc(row.now)}</strong></td><td>${row.later?`<strong class="text-danger">${esc(row.later)}</strong>`:"0"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+async function openSplitShipment(id) {
+  openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`<p class="muted">جارٍ حساب المتوفر…</p>`);
+  try{
+    const preview=await websiteOrdersFetch(`/api/orders/${encodeURIComponent(id)}/split-shipment`);
+    if(modal.hidden)return;
+    if(!preview.splittable)return openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`${splitRowsTable(preview.rows)}<div class="finance-callout warning"><strong>${preview.nowQty?"كل الكتب متوفرة الآن؛ استخدم «نقل للتجهيز الآن».":"لا يوجد كتاب متوفر الآن لشحنة أولى."}</strong></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+    const fee=preview.suggestedFee?.amount;
+    openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`<form id="split-shipment-form" data-id="${esc(id)}">
+      <p>الكتب المتوفرة تتشحن الآن على الطلب <strong>${esc(id)}</strong> بنفس رقمه ومدفوعاته، والكتب الناقصة تنتقل لطلب جديد (حجز مسبق) يتشحن لوحده لما توصل، برسوم شحن إضافية.</p>
+      ${preview.websitePreference==="split"?`<div class="finance-callout"><strong>العميل اختار الشحن على دفعتين في الموقع</strong>${preview.suggestedFee?.source==="website"?`<span>الرسوم المعروضة عليه: ${money(fee)}</span>`:""}</div>`:""}
+      ${splitRowsTable(preview.rows)}
+      <div class="form-grid three">
+        <div class="form-field"><label class="required">رسوم شحن الشحنة الثانية</label><input name="extraShippingFee" inputmode="decimal" required value="${fee==null?"":esc(fee)}"><small>${preview.suggestedFee?.source==="website"?"المعروضة على العميل في الموقع":preview.suggestedFee?.source==="governorate"?"سعر شحن المحافظة":"اكتب المبلغ المتفق عليه"}</small></div>
+        <div class="form-field"><label>وسيلة موافقة العميل</label><select name="consentChannel">${SPLIT_CONSENT_CHANNELS.map(channel=>`<option ${channel===(preview.websitePreference==="split"?"الموقع":"واتساب")?"selected":""}>${esc(channel)}</option>`).join("")}</select></div>
+        <div class="form-field"><label>ملاحظة</label><input name="consentNote" maxlength="500" placeholder="مثال: وافق في محادثة واتساب"></div>
+      </div>
+      <label class="check-line"><input type="checkbox" name="customerConsent" value="true"> العميل وافق على الشحن على دفعتين وعلى رسوم الشحنة الثانية</label>
+      <div id="split-shipment-error"></div>
+      <div class="form-actions"><button class="btn" type="submit">تقسيم وشحن المتوفر الآن</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+  }catch(error){
+    if(error.status===401)return;
+    openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`<div class="finance-callout danger"><strong>${esc(error.message)}</strong></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+  }
+}
+
+async function submitSplitShipment(form) {
+  if(form.dataset.pending==="true")return;
+  const values=Object.fromEntries(new FormData(form).entries());
+  const fee=Number(normalizeArabicDigits(String(values.extraShippingFee||"")).replace(/[٫,]/g,"."));
+  const errorBox=form.querySelector("#split-shipment-error");
+  if(values.extraShippingFee===""||!Number.isFinite(fee)||fee<0)return toast("اكتب رسوم شحن الشحنة الثانية بشكل صحيح.","error");
+  if(values.customerConsent!=="true")return toast("أكد موافقة العميل على التقسيم والرسوم أولًا.","error");
+  const button=form.querySelector('button[type="submit"]');
+  form.dataset.pending="true";if(button)button.disabled=true;errorBox.innerHTML="";
+  try{
+    const result=await websiteOrdersFetch(`/api/orders/${encodeURIComponent(form.dataset.id)}/split-shipment`,{method:"POST",body:{extraShippingFee:fee,customerConsent:true,consentChannel:values.consentChannel||"",consentNote:values.consentNote||""}});
+    closeModal();
+    toast(`${result.existing?"الطلب مقسم بالفعل":"تم التقسيم"}: ${result.order.id} للتجهيز الآن، والباقي على ${result.child?.id||"—"}`);
+    await reloadRemoteData().catch(()=>{});
+    if(currentView==="onlineOrders")renderOnlineOrders();
+  }catch(error){
+    delete form.dataset.pending;if(button)button.disabled=false;
+    if(error.status===401)return;
+    errorBox.innerHTML=`<div class="finance-callout danger"><strong>${esc(error.message)}</strong><span>لم يتم تغيير أي بيانات.</span></div>`;
+  }
 }
 
 async function allocateBackorder(id) {
@@ -4400,7 +4469,7 @@ function renderOnlineOrders() {
 function onlineOrderPrimaryAction(order) {
   const stage=onlineOrderWorkflowStage(order);
   if(stage==="new"&&!order.confirmedAt)return `<button class="btn compact" data-action="confirm-online-order" data-id="${order.id}">تأكيد الطلب</button>`;
-  if(stage==="backorder")return canAction("order.quick.edit")&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:`<button class="btn ghost compact" data-action="online-orders-mode" data-mode="shortages">بانتظار الكتب</button>`;
+  if(stage==="backorder")return canAction("order.quick.edit")&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:`<button class="btn ghost compact" data-action="online-orders-mode" data-mode="shortages">بانتظار الكتب</button>`;
   if(stage==="new"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-start" data-id="${order.id}">بدء التجهيز</button>`;
   if(stage==="preparing"&&canAction("order.prepare"))return `<button class="btn compact" data-action="prepare-order-open" data-id="${order.id}">${order.workflowStage==="needs_review"?"مراجعة الطلب":"فتح التجهيز"}</button>`;
   if(stage==="ready"&&order.saleId&&!(Number(order.packedWeightGrams)>0)&&(canAction("order.pack")||canAction("order.shipping")))return `<button class="btn compact" data-action="packed-weight-edit" data-id="${order.id}">تسجيل وزن الطرد</button>`;
@@ -4423,7 +4492,7 @@ function onlineOrderMoreActions(order) {
 function onlineOrdersTable(list) {
   return `<table class="online-orders-master-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المحافظة</th><th>القطع</th><th>الإجمالي / الدفع</th><th>الحالة</th><th>وقت الإنشاء</th><th>الخطوة التالية</th></tr></thead><tbody>
     ${list.slice().reverse().sort((a,b)=>Number(isCarriedOverOrder(b))-Number(isCarriedOverOrder(a))).map(order => `<tr data-record-type="online-order" data-record-id="${order.id}" ${isCarriedOverOrder(order)?'class="carried-row"':""}>
-      <td><strong>${order.id}</strong>${order.websiteOrderNumber?`<br><span class="badge website-order-badge" title="طلب من الموقع">🌐 ${esc(order.websiteOrderNumber)}</span>`:""}${order.saleId?`<br><span class="muted">${esc(order.saleId)}</span>`:""}</td>
+      <td><strong>${order.id}</strong>${order.websiteOrderNumber?`<br><span class="badge website-order-badge" title="طلب من الموقع">🌐 ${esc(order.websiteOrderNumber)}</span>`:""}${splitPartBadge(order)}${order.saleId?`<br><span class="muted">${esc(order.saleId)}</span>`:""}</td>
       <td>${esc(order.customerName)}<br><span dir="ltr" class="muted">${esc(order.phone)}</span></td>
       <td>${esc(order.governorate||"—")}<br><span class="muted">${esc(order.city||"")}</span></td>
       <td><strong>${(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0)}</strong></td>
@@ -4540,12 +4609,26 @@ function websiteOrderModalMarkup(preview) {
         <div class="form-field full"><label>ملاحظات داخلية</label><input name="notes" maxlength="1000"></div>
       </div>
       <label class="check-line"><input type="checkbox" name="receivedConfirmed" value="true"> تم استلام المبلغ فعليًا</label>
-      ${preview.preorderConsentAtCheckout?preorderBooks.map(line=>`<label class="check-line"><input type="checkbox" name="preorder:${esc(line.bookId)}" value="true"> العميل موافق على شحن «${esc(line.name)}» عند توفره (حجز مسبق — الطلب كله ينتظر حتى تكتمل الكتب)</label>`).join(""):""}
+      ${preview.preorderConsentAtCheckout?preorderBooks.map(line=>`<label class="check-line"><input type="checkbox" name="preorder:${esc(line.bookId)}" value="true"> العميل موافق على شحن «${esc(line.name)}» عند توفره (حجز مسبق)</label>`).join(""):""}
+      ${websiteSplitMarkup(preview)}
       <div id="website-duplicate-box">${websiteDuplicateMarkup(duplicates)}</div>
       <div id="website-approve-error"></div>
       <div class="form-actions"><button class="btn" type="submit">اعتماد وإنشاء طلب مبيعات</button><button class="btn ghost" type="button" data-website-order-action="open" data-number="${esc(order.orderNumber)}">تحديث المعاينة</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>
     </form>`:`<div class="form-actions">${preview.permissions?.approve?"":`<span class="muted">ليس لديك صلاحية اعتماد طلبات الموقع.</span>`}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`;
   return `${header}${warnings.length?`<div class="finance-callout warning"><strong>تنبيهات قبل الاعتماد</strong><span>${warnings.join("<br>")}</span></div>`:""}${table}${form}`;
+}
+
+function websiteSplitMarkup(preview) {
+  const split=preview.split;
+  if(!split?.splittable||!preview.permissions?.splitShipment)return "";
+  const chosen=split.preference==="split";
+  return `<fieldset class="split-shipment-box"><legend>طريقة الشحن</legend>
+    <p>${chosen?`العميل اختار في الموقع <strong>الشحن على دفعتين</strong>${split.quotedFee!=null?` برسوم إضافية ${money(split.quotedFee)}`:""}.`:"العميل اختار في الموقع شحنة واحدة بعد اكتمال الكتب. التقسيم يحتاج موافقته على الرسوم الإضافية."}</p>
+    ${splitRowsTable(split.rows)}
+    <label class="check-line"><input type="checkbox" name="splitExecute" value="true" ${chosen?"checked":""}> تقسيم الشحن بعد الاعتماد: شحن المتوفر الآن والباقي عند توفره</label>
+    <div class="form-grid three"><div class="form-field"><label>رسوم شحن الشحنة الثانية</label><input name="splitFee" inputmode="decimal" value="${split.quotedFee==null?"":esc(split.quotedFee)}"></div></div>
+    <label class="check-line"><input type="checkbox" name="splitConsent" value="true"> العميل وافق على الشحن على دفعتين وعلى رسوم الشحنة الثانية</label>
+  </fieldset>`;
 }
 
 function websiteDuplicateMarkup(matches=[]) {
@@ -4568,10 +4651,18 @@ async function submitWebsiteOrderApproval(form) {
   if(!Number.isFinite(amount)||amount<0)return toast("اكتب مبلغ العربون بشكل صحيح.","error");
   if(amount>0&&values.receivedConfirmed!=="true")return toast("أكد أن المبلغ وصل فعليًا قبل الاعتماد.","error");
   const preorderConsent=Object.fromEntries(Object.keys(values).filter(key=>key.startsWith("preorder:")).map(key=>[key.slice(9),true]));
+  let splitShipment;
+  if(values.splitExecute==="true"){
+    const fee=Number(normalizeArabicDigits(String(values.splitFee||"")).replace(/[٫,]/g,"."));
+    if(values.splitFee===""||values.splitFee==null||!Number.isFinite(fee)||fee<0)return toast("اكتب رسوم شحن الشحنة الثانية بشكل صحيح.","error");
+    if(values.splitConsent!=="true")return toast("أكد موافقة العميل على التقسيم والرسوم أولًا.","error");
+    splitShipment={execute:true,extraShippingFee:fee,customerConsent:true};
+  }
   const payload={
     deposit:{amount,receiptMethod:values.receiptMethod,cashAccountId:values.cashAccountId,senderPhone:values.senderPhone||"",senderName:values.senderName||"",reference:values.reference||"",receivedConfirmed:values.receivedConfirmed==="true",overrideReason:values.overrideReason||null},
     preorderConsent,duplicateTransferReviewed:values.duplicateTransferReviewed==="true",
-    shippingCompany:values.shippingCompany||"",notes:values.notes||""
+    shippingCompany:values.shippingCompany||"",notes:values.notes||"",
+    ...(splitShipment?{splitShipment}:{})
   };
   const button=form.querySelector('button[type="submit"]'),errorBox=form.querySelector("#website-approve-error");
   form.dataset.pending="true";if(button)button.disabled=true;errorBox.innerHTML="";
@@ -4579,7 +4670,7 @@ async function submitWebsiteOrderApproval(form) {
     const result=await websiteOrdersFetch(`/api/website-orders/${encodeURIComponent(form.dataset.number)}/approve`,{method:"POST",body:payload});
     closeModal();
     websiteOrdersState.loaded=false;
-    toast(`${result.existing?"الطلب معتمد بالفعل":"تم الاعتماد"}: ${form.dataset.number} ← ${result.order.id}${result.storeNotified===false?" (سيتحدث المتجر تلقائيًا)":""}`);
+    toast(`${result.existing?"الطلب معتمد بالفعل":"تم الاعتماد"}: ${form.dataset.number} ← ${result.order.id}${result.child?` والشحنة الثانية ${result.child.id}`:""}${result.storeNotified===false?" (سيتحدث المتجر تلقائيًا)":""}`);
     await reloadRemoteData().catch(()=>{});
     if(currentView==="onlineOrders")renderOnlineOrders();
     viewOnlineOrder(result.order.id);
@@ -8007,6 +8098,7 @@ root.addEventListener("click", async event => {
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
   if (action === "backorder-allocate") allocateBackorder(target.dataset.id);
+  if (action === "split-shipment") openSplitShipment(target.dataset.id);
   if (action === "shortage-purchase") preparePurchaseForBook(target.dataset.id, Number(target.dataset.qty));
   if (action === "cancellation-open-ledger") { closeModal(); showStatement(target.dataset.id,"customer"); }
   if (action === "cancellation-finalize") {
@@ -9218,6 +9310,7 @@ modalBody.addEventListener("submit", async event => {
   }
   if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
   if(form.id==="website-order-approve-form"){await submitWebsiteOrderApproval(form);return;}
+  if(form.id==="split-shipment-form"){await submitSplitShipment(form);return;}
   if (form.id === "user-account-form" || form.id === "user-password-reset-form") { await submitUserAccountForm(form); return; }
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){

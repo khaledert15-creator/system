@@ -50,7 +50,7 @@ function latestIso(...values) {
 }
 
 function createWebsiteOrders(deps) {
-  const { normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment, appendOrderAudit, nextId, orderShippingCompany, canOrderAction, shipmentStatusLabel = value => value } = deps;
+  const { normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment, appendOrderAudit, nextId, orderShippingCompany, canOrderAction, shipmentStatusLabel = value => value, splitShipment = null } = deps;
 
   function normalizeEgyptPhone(value) {
     let digits = normalizeCustomerPhone(asciiDigits(value));
@@ -80,17 +80,38 @@ function createWebsiteOrders(deps) {
     return { ok:true, revision:String(revision), generatedAt:now.toISOString(), settings:{ websiteDepositDefault:depositDefault(db) }, books };
   }
 
+  function remainingOf(order) {
+    const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
+    return Number.isFinite(Number(order.remainingAmount)) && order.remainingAmount !== "" && order.remainingAmount != null ? round(Number(order.remainingAmount)) : round(Math.max(0, total - paid));
+  }
+
+  // Partial shipping: each part of a split website order with its own stage, totals and shipment (part 1 first).
+  function linkParts(db, order) {
+    const parts = splitShipment ? splitShipment.parts(db, order) : [];
+    return parts.map((part, index) => {
+      const shipment = orderShipment(db, part);
+      return {
+        part:index + 1, salesOrderId:part.id, workflowStage:part.workflowStage || "draft", status:part.status || "", cancelled:isCancelled(part),
+        total:round(Number(part.total || 0)), shippingFee:round(Number(part.shippingFee ?? part.shippingCost ?? 0)), paidAmount:round(Number(part.paidAmount || 0)), remainingAmount:remainingOf(part),
+        lines:(part.lines || []).map(line => ({ bookId:line.bookId, qty:Number(line.qty || 0), websiteProductId:line.websiteProductId ?? null })),
+        shipment:shipmentSummary(shipment), updatedAt:latestIso(part.updatedAt, part.createdAt, shipment?.updatedAt, shipment?.lastTrackedAt)
+      };
+    });
+  }
+
   function orderLink(db, order) {
     const shipment = orderShipment(db, order);
     const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
-    const remaining = Number.isFinite(Number(order.remainingAmount)) && order.remainingAmount !== "" && order.remainingAmount != null ? round(Number(order.remainingAmount)) : round(Math.max(0, total - paid));
+    const remaining = remainingOf(order);
+    const parts = linkParts(db, order);
     return {
       websiteOrderNumber:order.websiteOrderNumber, websiteOrderId:order.websiteOrderId ?? null, integrationId:order.integrationId || null,
       salesOrderId:order.id, workflowStage:order.workflowStage || "draft", status:order.status || "",
       total, depositAmount:round(Number(order.depositAmount ?? order.deposit?.amount ?? 0)), paidAmount:paid, remainingAmount:remaining,
       paymentStatus:order.paymentStatus || OrderFinance.calculatePayment(total, Math.min(total, paid)).paymentStatus,
       shipment:shipmentSummary(shipment), cancelled:isCancelled(order), chatwootConversationId:order.chatwootConversationId || null,
-      updatedAt:latestIso(order.updatedAt, order.createdAt, shipment?.updatedAt, shipment?.lastTrackedAt)
+      ...(parts.length ? { splitShipment:{ extraShippingFee:round(Number(order.splitShipment?.extraShippingFee || 0)), splitAt:order.splitShipment?.splitAt || null, parts } } : {}),
+      updatedAt:latestIso(order.updatedAt, order.createdAt, shipment?.updatedAt, shipment?.lastTrackedAt, ...parts.map(part => part.updatedAt))
     };
   }
 
@@ -180,9 +201,20 @@ function createWebsiteOrders(deps) {
       address:{ governorate:storeOrder.address?.governorate || "", city:storeOrder.address?.city || "", detailedAddress:storeOrder.address?.detailedAddress || "", landmark:storeOrder.address?.landmark || "" },
       notes:{ delivery:storeOrder.notes?.delivery || "", order:storeOrder.notes?.order || "" },
       subtotal:round(Number(storeOrder.subtotal || 0)), couponDiscount:round(Number(storeOrder.couponDiscount || 0)), couponCode:storeOrder.couponCode || "", shippingCost:round(Number(storeOrder.shippingCost || 0)), total:round(Number(storeOrder.total || 0)),
-      depositRequired:storeOrder.depositRequired ?? null, preorderConsent:storeOrder.preorderConsent === true, splitShipmentPreference:storeOrder.splitShipmentPreference || "single", createdAt:storeOrder.createdAt || null,
+      depositRequired:storeOrder.depositRequired ?? null, preorderConsent:storeOrder.preorderConsent === true, splitShipmentPreference:storeOrder.splitShipmentPreference || "single",
+      splitExtraShippingFee:storeOrder.splitExtraShippingFee ?? null, createdAt:storeOrder.createdAt || null,
       storeAdminUrl:config.storeAdminOrderUrl && storeOrder.id != null ? `${config.storeAdminOrderUrl}${encodeURIComponent(String(storeOrder.id))}` : ""
     };
+  }
+
+  // What would ship now and later if the order is split after approval (per book, as the shelf is shared).
+  function splitPreview(lines, storeOrder) {
+    const books = new Map();
+    for (const line of lines.filter(item => item.linked)) if (!books.has(line.bookId)) books.set(line.bookId, { bookId:line.bookId, name:line.name, qty:line.requestedForBook, now:Math.min(line.requestedForBook, line.available) });
+    const rows = [...books.values()].map(row => ({ ...row, later:row.qty - row.now }));
+    const nowQty = rows.reduce((sum, row) => sum + row.now, 0), laterQty = rows.reduce((sum, row) => sum + row.later, 0);
+    const quoted = Number(storeOrder?.splitExtraShippingFee);
+    return { preference:storeOrder?.splitShipmentPreference || "single", quotedFee:storeOrder?.splitExtraShippingFee != null && Number.isFinite(quoted) ? round(quoted) : null, rows, nowQty, laterQty, splittable:nowQty > 0 && laterQty > 0 };
   }
 
   // GET /api/website-orders/:number — everything the approval form needs, computed against the System right now.
@@ -210,7 +242,8 @@ function createWebsiteOrders(deps) {
       pending:isPending(storeOrder),
       existingSalesOrder:existing ? { id:existing.id, workflowStage:existing.workflowStage, status:existing.status } : null,
       duplicateTransferWarnings:[...warnings.values()],
-      permissions:user ? { approve:canOrderAction(db, user, "order.website.approve"), depositOverride:canOrderAction(db, user, "order.deposit.override"), receivePayment:canOrderAction(db, user, "order.payment.receive") } : undefined
+      split:splitPreview(lines, storeOrder),
+      permissions:user ? { approve:canOrderAction(db, user, "order.website.approve"), depositOverride:canOrderAction(db, user, "order.deposit.override"), receivePayment:canOrderAction(db, user, "order.payment.receive"), splitShipment:canOrderAction(db, user, "order.split.shipment") } : undefined
     };
   }
 
@@ -321,6 +354,7 @@ function createWebsiteOrders(deps) {
       depositRequired:required, depositAmount:round(amount),
       deposit:{ required, amount:round(amount), defaultAtApproval:depositDefault(db), override, overrideReason:override ? overrideReason : "", receiptMethod:amount > 0 ? receiptMethod : "" },
       websitePreorderConsent:storeOrder.preorderConsent === true, preorderConsent, websiteSplitShipmentPreference:storeOrder.splitShipmentPreference || "single",
+      ...(storeOrder.splitExtraShippingFee != null && Number.isFinite(Number(storeOrder.splitExtraShippingFee)) ? { websiteSplitExtraShippingFee:round(Number(storeOrder.splitExtraShippingFee)) } : {}),
       priceChangesAcknowledged:diffs, websiteApprovedAt:now, websiteApprovedBy:user.name || user.username, websiteApprovedByUsername:user.username,
       createdAt:now, createdBy:user.name || user.username, createdByUsername:user.username, updatedAt:now, deletedAt:null
     };
@@ -336,6 +370,16 @@ function createWebsiteOrders(deps) {
     Object.assign(order, { confirmedAt:now, confirmedBy:user.name || user.username, confirmedByUsername:user.username });
     const stage = applyBackorderStage(order, user, now);
     appendOrderAudit(db, user, order, "تأكيد الطلب وحجز المخزون", stage === "awaiting_stock" ? `حجز مسبق: ${(order.backorderLines || []).map(line => `${line.bookId}×${line.qty}`).join("، ")}` : "انتقل إلى قائمة التجهيز");
+    // Option B on approval: the employee confirms the customer's agreement to two shipments and the extra fee.
+    // A split that cannot happen fails the whole approval (nothing is written).
+    const splitRequest = payload.splitShipment && typeof payload.splitShipment === "object" ? payload.splitShipment : null;
+    if (splitRequest?.execute === true) {
+      if (!splitShipment) throw websiteError(501, "SPLIT_NOT_AVAILABLE", "تقسيم الشحن غير متاح.");
+      if (!canOrderAction(db, user, "order.split.shipment")) throw websiteError(403, "SPLIT_PERMISSION_DENIED", "ليس لديك صلاحية تقسيم شحن الطلبات.");
+      if (stage !== "awaiting_stock") throw websiteError(409, "ORDER_FULLY_AVAILABLE", "كل كتب الطلب متاحة الآن؛ لا حاجة للتقسيم.");
+      const { child } = splitShipment.split(db, order, { extraShippingFee:splitRequest.extraShippingFee, customerConsent:splitRequest.customerConsent === true, consentChannel:splitRequest.consentChannel || (storeOrder.splitShipmentPreference === "split" ? "الموقع" : "واتساب"), consentNote:splitRequest.consentNote }, user, nowValue);
+      return { order, child, existing:false };
+    }
     return { order, existing:false };
   }
 
@@ -369,6 +413,7 @@ function createWebsiteOrders(deps) {
       const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
       return {
         kind:"system_order", websiteOrderNumber:order.websiteOrderNumber || storeOrder?.orderNumber || "", storeOrderId:storeOrder?.id ?? order.websiteOrderId ?? null, salesOrderId:order.id, invoiceId:order.saleId || "",
+        splitPart:order.splitPart || null, splitFromOrderId:order.splitFromOrderId || "", parentWebsiteOrderNumber:order.parentWebsiteOrderNumber || "", splitChildOrderIds:order.splitShipment?.childOrderIds || [],
         products:products(order.lines), total, paid, remaining:round(Math.max(0, Number(order.remainingAmount ?? total - paid))), status:order.status || "", workflowStage:order.workflowStage || "",
         shipment, trackingNumber:shipment?.trackingNumber || order.trackingNumber || order.tracking || "", chatwootConversationId:order.chatwootConversationId || storeOrder?.chatwootConversationId || "",
         linkedToConversation:Boolean(conversationId) && [order.chatwootConversationId, storeOrder?.chatwootConversationId].map(String).includes(String(conversationId)),

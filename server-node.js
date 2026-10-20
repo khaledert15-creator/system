@@ -19,6 +19,7 @@ const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
 const { createDatabasePersistence, dataRevision } = require("./app/database-persistence.js");
 const IntegrationAuth = require("./app/integration-auth.js");
 const WebsiteOrders = require("./app/website-orders.js");
+const SplitShipment = require("./app/split-shipment.js");
 const { createIntegrationServer } = require("./app/integration-server.js");
 
 const ROOT = __dirname;
@@ -2980,7 +2981,9 @@ const integration = createIntegrationServer({
   config:INTEGRATION_CONFIG, send, readBody, readJsonBody, readDb, readDbForWrite, writeDb, ensureTrackingDb, dbRevision, sessionUser, canOrderAction, orderRole,
   liveClients, baseSecurityHeaders:BASE_SECURITY_HEADERS, frameAncestorHeaders,
   appRoot:APP_ROOT, isInsideDirectory, AuditIds, normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment,
-  appendOrderAudit, nextId, orderShippingCompany, shipmentStatusLabel:businessShipmentStatus
+  appendOrderAudit, nextId, orderShippingCompany, shipmentStatusLabel:businessShipmentStatus,
+  countHoldStock, aggregateOrderLines, automaticShippingFee,
+  confirmedPaid:(db, order) => confirmedOrderPayments(db, order.id).reduce((sum, item) => sum + Number(item.amount || 0), 0)
 });
 
 const server = http.createServer(async (req, res) => {
@@ -4086,6 +4089,7 @@ const server = http.createServer(async (req, res) => {
       if (Array.isArray(currentSource.users) && currentSource.users.length) parsed.users = JSON.parse(JSON.stringify(currentSource.users));
       else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
       WebsiteOrders.preserveServerOwnedFields(currentSource, parsed);
+      SplitShipment.preserveSplitFields(currentSource, parsed);
       const repairedIds = repairClientRecordIds(parsed);
       if (repairedIds) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"CLIENT_IDS_REPAIRED", performedBy:user.username, repairedIds }));
       // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.

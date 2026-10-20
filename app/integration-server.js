@@ -3,12 +3,14 @@
 // HTTP side of the Store ↔ System ↔ Chatwood integration (INTEGRATION_DOCS/INTEGRATION_API_SPEC.md §2, §5).
 // server-node.js only dispatches to handle() and injects its own helpers; no business rule lives here.
 //   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links
-//   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...
+//   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...,
+//                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B)
 //   Chatwood dashboard app:  GET /integrations/chatwood-panel (frame-ancestors limited to CHATWOOD_ORIGIN)
 const fs = require("fs");
 const path = require("path");
 const IntegrationAuth = require("./integration-auth.js");
 const WebsiteOrders = require("./website-orders.js");
+const SplitShipment = require("./split-shipment.js");
 
 const BODY_LIMIT_INTEGRATION = 64 * 1024;
 const MAX_EVENT_STREAMS = 8;
@@ -18,7 +20,8 @@ const JSON_TYPE = "application/json; charset=utf-8";
 function createIntegrationServer(deps) {
   const { config, send, readBody, readJsonBody, readDb, readDbForWrite, writeDb, ensureTrackingDb, dbRevision, sessionUser, canOrderAction, orderRole, liveClients, baseSecurityHeaders, frameAncestorHeaders, appRoot, isInsideDirectory, AuditIds, logger = event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) } = deps;
   const nonceCache = IntegrationAuth.createNonceCache();
-  const websiteOrders = WebsiteOrders.createWebsiteOrders(deps);
+  const splitShipment = SplitShipment.createSplitShipment(deps);
+  const websiteOrders = WebsiteOrders.createWebsiteOrders({ ...deps, splitShipment });
   let eventStreams = 0;
 
   const fail = (res, status, code, message, extra = {}) => send(res, status, { ok:false, code, message, ...extra }, JSON_TYPE, NO_STORE);
@@ -158,10 +161,10 @@ function createIntegrationServer(deps) {
       if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات أثناء الاعتماد؛ أعد المحاولة.", { revision:String(error.currentRevision ?? "") });
       throw error;
     }
-    logger({ operationType:"WEBSITE_ORDER_APPROVED", websiteOrderNumber:number, salesOrderId:result.order.id, workflowStage:result.order.workflowStage, performedBy:user.username });
+    logger({ operationType:"WEBSITE_ORDER_APPROVED", websiteOrderNumber:number, salesOrderId:result.order.id, workflowStage:result.order.workflowStage, splitChildOrderId:result.child?.id || null, performedBy:user.username });
     // 3. Tell the Store (short timeout). The Store's periodic links reconciliation covers a failure.
     const storeNotified = await notifySalesLink(result.order, user);
-    return send(res, 201, { ok:true, order:result.order, revision:String(saved.revision), storeNotified }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
+    return send(res, 201, { ok:true, order:result.order, ...(result.child ? { child:result.child } : {}), revision:String(saved.revision), storeNotified }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
 
   async function websiteDeposit(req, res) {
@@ -239,6 +242,49 @@ function createIntegrationServer(deps) {
     return send(res, 200, { ok:true, existing:result.body.existing === true, orderNumber, conversationId, systemOrderId, systemUpdated, systemConflict }, JSON_TYPE, NO_STORE);
   }
 
+  // Suggested fee for the second shipment: what the customer was quoted on the website, else the governorate rate
+  // for the books that wait.
+  function suggestedSplitFee(db, order, preview) {
+    const quoted = Number(order.websiteSplitExtraShippingFee);
+    if (order.websiteSplitExtraShippingFee != null && Number.isFinite(quoted) && quoted >= 0) return { amount:quoted, source:"website" };
+    if (typeof deps.automaticShippingFee !== "function") return { amount:null, source:"" };
+    const lines = splitShipment.partitionLines(order, splitShipment.availableNow(db, order)).later;
+    try { return { amount:deps.automaticShippingFee(db, order.governorate || "", lines), source:"governorate" }; } catch { return { amount:null, source:"" }; }
+  }
+
+  async function splitShipmentRoute(req, res, id) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    if (req.method === "GET") {
+      const db = readDbSafe();
+      const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+      if (!order) return fail(res, 404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
+      const preview = splitShipment.preview(db, order);
+      return send(res, 200, { ok:true, orderId:order.id, workflowStage:order.workflowStage, ...preview, alreadySplit:Boolean(order.splitShipment?.childOrderIds?.length), splitPart:order.splitPart || null,
+        suggestedFee:suggestedSplitFee(db, order, preview), websitePreference:order.websiteSplitShipmentPreference || "", canSplit:canOrderAction(db, user, "order.split.shipment"), revision:revisionOf(db) }, JSON_TYPE, NO_STORE);
+    }
+    const payload = await readJsonBody(req, 16 * 1024);
+    const { db, revision } = readDbForWrite();
+    ensureTrackingDb(db);
+    if (!canOrderAction(db, user, "order.split.shipment")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تقسيم شحن الطلبات.");
+    const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+    // A retry after a successful split returns the same parts.
+    if (order?.splitShipment?.childOrderIds?.length) {
+      const child = (db.onlineOrders || []).find(item => item.id === order.splitShipment.childOrderIds[0]) || null;
+      return send(res, 200, { ok:true, existing:true, order, child, revision:String(revision) }, JSON_TYPE, NO_STORE);
+    }
+    let result;
+    try { result = splitShipment.split(db, order, payload, user, new Date()); }
+    catch (error) { if (error.status) return errorResponse(res, error, "SPLIT_SHIPMENT_FAILED"); throw error; }
+    let saved;
+    try { saved = writeDb(db, { expectedRevision:revision, operationType:"ORDER_SPLIT_SHIPMENT", performedBy:user.username }); }
+    catch (error) {
+      if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات أثناء التقسيم؛ أعد المحاولة.", { revision:String(error.currentRevision ?? "") });
+      throw error;
+    }
+    logger({ operationType:"ORDER_SPLIT_SHIPMENT", orderId:result.order.id, childOrderId:result.child.id, websiteOrderNumber:result.order.websiteOrderNumber || "", performedBy:user.username });
+    return send(res, 201, { ok:true, order:result.order, child:result.child, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
+  }
+
   // Returns true when the request was handled here.
   async function handle(req, res, route, url) {
     const method = req.method;
@@ -267,6 +313,9 @@ function createIntegrationServer(deps) {
     }
 
     if (route === "/api/settings/website-deposit" && method === "PUT") { await websiteDeposit(req, res); return true; }
+
+    const splitRoute = route.match(/^\/api\/orders\/([^/]+)\/split-shipment$/);
+    if (splitRoute && ["GET", "POST"].includes(method)) { await splitShipmentRoute(req, res, splitRoute[1]); return true; }
 
     if (route === "/api/website-orders" && method === "GET") {
       const user = sessionOrFail(res, req); if (!user) return true;
@@ -300,7 +349,7 @@ function createIntegrationServer(deps) {
     return false;
   }
 
-  return { handle, websiteOrders, storeRequest, config };
+  return { handle, websiteOrders, splitShipment, storeRequest, config };
 }
 
 module.exports = { createIntegrationServer };

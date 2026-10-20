@@ -2056,3 +2056,6 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .finance-callout.danger{border-color:#f3b4ae;background:#fff4f2}
 .finance-callout.warning,.finance-callout.danger{align-items:flex-start;flex-direction:column;gap:4px}
 .website-deposit-setting{margin-top:12px}
+
+.split-shipment-box{border:1px solid #cbdff3;border-radius:12px;padding:12px 14px;margin:12px 0;background:#f7fbff}
+.split-shipment-box legend{font-weight:700;padding:0 6px}
