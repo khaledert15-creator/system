@@ -57,7 +57,9 @@ const H = require('./integration-test-helpers.js');
     // ---- Merged, de-duplicated list and a minimal customer card.
     const body = (await panel({ phone:'+201001234567', conversationId:'900' })).body;
     assert.equal(body.storeAvailable, true);
-    assert.deepEqual(body.customer, { name:'سارة', phone:'01001234567', known:true, customerIds:['C0001'], status:'returning', purchasesCount:2, purchasesTotal:535, paidTotal:400, outstanding:135, openOrders:2 });
+    // openOrders = orders in «الطلبات الحالية» (awaiting, preparing, shipped, pre-order), ordersCount = every listed order.
+    assert.deepEqual(body.customer, { name:'سارة', phone:'01001234567', known:true, identified:true, customerIds:['C0001'], status:'returning', ordersCount:body.orders.length, purchasesCount:2, purchasesTotal:535, paidTotal:400, outstanding:135, openOrders:body.orders.filter(order => order.group === 'current').length });
+    assert.equal(body.customer.openOrders, 4); assert.equal(body.customer.ordersCount, 6);
     const numbers = body.orders.map(order => order.websiteOrderNumber).filter(Boolean);
     assert.deepEqual(numbers.slice().sort(), ['MK261020-00001', 'MK261020-00002', 'MK261020-00003'], 'each website order once');
     const o1 = body.orders.find(order => order.salesOrderId === 'ORD-0001');
@@ -75,7 +77,8 @@ const H = require('./integration-test-helpers.js');
     const text = JSON.stringify(body);
     assert.ok(!text.includes('01119998887') && !text.includes('MK261020-00004') && !text.includes('ORD-0004'), 'no other customer data');
     assert.ok(!/passwordHash|"users"|"books"|"cost"/.test(text), 'never the database');
-    assert.deepEqual(Object.keys(body).sort(), ['conversationId', 'customer', 'ok', 'orders', 'storeAvailable']);
+    // Only the card, the orders and counts/flags about them.
+    assert.deepEqual(Object.keys(body).sort(), ['conversationId', 'counts', 'customer', 'ok', 'orders', 'phoneUsable', 'storeAvailable', 'storeEnabled', 'totalOrders', 'truncated']);
     const fresh = (await panel({ phone:'01555555555' })).body;
     assert.equal(fresh.customer.status, 'new'); assert.equal(fresh.customer.known, false); assert.deepEqual(fresh.orders, []);
     console.log('PASS panel merges Store and System orders without duplicates and returns only a minimal summary');

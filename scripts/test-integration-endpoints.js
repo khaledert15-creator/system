@@ -82,7 +82,7 @@ function openEvents(base, { now } = {}) {
     r = await H.signedFetch(on.base, '/api/integration/v1/website-orders/links');
     let links = await r.json();
     assert.equal(links.links.length, 1, 'only orders that came from the website');
-    assert.deepEqual({ ...links.links[0], updatedAt:undefined }, { websiteOrderNumber:'MK261020-00007', websiteOrderId:7, integrationId:'2b0d6a5e-1111-4a2b-9c3d-000000000007', salesOrderId:'ORD-0007', workflowStage:'shipped', status:'تم الشحن', total:235, depositAmount:100, paidAmount:100, remainingAmount:135, paymentStatus:'partially_paid', shipment:{ id:'SH-0001', trackingNumber:'EG123456789EG', status:'in_transit', statusLabel:'في مرحلة نقل', carrier:'البريد المصري' }, cancelled:false, chatwootConversationId:'55', updatedAt:undefined });
+    assert.deepEqual({ ...links.links[0], updatedAt:undefined }, { websiteOrderNumber:'MK261020-00007', websiteOrderId:7, integrationId:'2b0d6a5e-1111-4a2b-9c3d-000000000007', salesOrderId:'ORD-0007', workflowStage:'shipped', status:'تم الشحن', total:235, depositAmount:100, depositRequired:null, paidAmount:100, remainingAmount:135, paymentStatus:'partially_paid', shipment:{ id:'SH-0001', trackingNumber:'EG123456789EG', status:'in_transit', statusLabel:'في مرحلة نقل', carrier:'البريد المصري' }, cancelled:false, chatwootConversationId:'55', updatedAt:undefined });
     assert.equal(links.links[0].updatedAt, '2026-10-12T08:00:00.000Z', 'updatedAt includes shipment changes');
     r = await H.signedFetch(on.base, `/api/integration/v1/website-orders/links?updatedSince=${encodeURIComponent('2026-10-13T00:00:00.000Z')}`);
     assert.equal((await r.json()).links.length, 0);
