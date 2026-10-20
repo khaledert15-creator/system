@@ -17,6 +17,9 @@ const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
 const { createDatabasePersistence, dataRevision } = require("./app/database-persistence.js");
+const IntegrationAuth = require("./app/integration-auth.js");
+const WebsiteOrders = require("./app/website-orders.js");
+const { createIntegrationServer } = require("./app/integration-server.js");
 
 const ROOT = __dirname;
 const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
@@ -37,6 +40,8 @@ const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-in
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
+// Store/Chatwood integration (all env settings optional; without INTEGRATION_SHARED_SECRET it is disabled → 503).
+const INTEGRATION_CONFIG = IntegrationAuth.configFromEnv(process.env, event => console.warn(JSON.stringify({ timestamp:new Date().toISOString(), ...event })));
 
 function contentHash(fileName) {
   return crypto.createHash("sha256").update(fs.readFileSync(path.join(APP_ROOT, fileName))).digest("hex").slice(0, 12);
@@ -92,11 +97,12 @@ const defaultUsers = [
 ];
 
 const BASE_SECURITY_HEADERS = { "X-Content-Type-Options":"nosniff", "Referrer-Policy":"strict-origin-when-cross-origin" };
-// Origins a future route may allow to embed one of its pages, e.g. a Chatwoot dashboard app:
+// Origins a route may allow to embed one of its pages. Only /integrations/chatwood-panel opts in (Chatwood dashboard
+// app, CHATWOOD_ORIGIN, default https://chat.maktabaa.com):
 //   send(res, 200, html, "text/html; charset=utf-8", frameAncestorHeaders([FRAME_ANCESTOR_ORIGINS.chatwoot]))
-// Unused for now: every HTML page may only be framed by the system itself. (No script-src policy: the client
-// relies on inline handlers.)
-const FRAME_ANCESTOR_ORIGINS = Object.freeze({ chatwoot:"https://chat.maktabaa.com" });
+// Every other HTML page may only be framed by the system itself. (No script-src policy: the client relies on inline
+// handlers.)
+const FRAME_ANCESTOR_ORIGINS = Object.freeze({ chatwoot:INTEGRATION_CONFIG.chatwoodOrigin });
 function frameAncestorHeaders(extraOrigins = []) {
   const origins = extraOrigins.filter(origin => Object.values(FRAME_ANCESTOR_ORIGINS).includes(origin));
   const headers = { "Content-Security-Policy":["frame-ancestors 'self'", ...origins].join(" ") };
@@ -207,7 +213,7 @@ function writeDb(db, options = {}) {
   // A restore stores the backup exactly as it was (linkSeason:false); every other write links new records to the active season.
   if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDb() : {}, db);
   const result = databasePersistence.write(db, options);
-  for (const client of liveClients) { try { client.publish(); } catch { liveClients.delete(client); } }
+  for (const client of liveClients) { try { client.publish(result.revision); } catch { liveClients.delete(client); } }
   // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
   if (options.operationType !== "BACKORDER_AUTO_ALLOCATED") scheduleBackorderAllocation();
   return result;
@@ -528,9 +534,10 @@ function canOrderAction(db,user={},action) {
   const configured=db.settings?.permissions?.users?.[user.username]?.actions||db.settings?.permissions?.roles?.[role]?.actions;
   if(Array.isArray(configured))return configured.includes(action);
   const defaults={
-    "كاشير":["order.quick.create","order.quick.confirm","order.quick.edit","order.payment.receive"],
-    "مخزن":["order.prepare","order.pack"],
-    "شحن":["order.shipping"]
+    "كاشير":["order.quick.create","order.quick.confirm","order.quick.edit","order.payment.receive","order.website.view","order.website.approve","panel.view","panel.link"],
+    "محاسب":["panel.view"],
+    "مخزن":["order.prepare","order.pack","panel.view"],
+    "شحن":["order.shipping","panel.view"]
   };
   return (defaults[role]||[]).includes(action);
 }
@@ -2969,6 +2976,13 @@ function contentType(file) {
   }[ext] || "application/octet-stream";
 }
 
+const integration = createIntegrationServer({
+  config:INTEGRATION_CONFIG, send, readBody, readJsonBody, readDb, readDbForWrite, writeDb, ensureTrackingDb, dbRevision, sessionUser, canOrderAction, orderRole,
+  liveClients, baseSecurityHeaders:BASE_SECURITY_HEADERS, frameAncestorHeaders,
+  appRoot:APP_ROOT, isInsideDirectory, AuditIds, normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment,
+  appendOrderAudit, nextId, orderShippingCompany, shipmentStatusLabel:businessShipmentStatus
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -3001,6 +3015,8 @@ const server = http.createServer(async (req, res) => {
         "X-App-Build":APP_BUILD_ID
       });
     }
+
+    if (await integration.handle(req, res, route, url)) return;
 
     if (route === "/api/settings/postal-tariff" && req.method === "PUT") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
@@ -4069,6 +4085,7 @@ const server = http.createServer(async (req, res) => {
       const currentDb = ensureTrackingDb(JSON.parse(JSON.stringify(currentSource)));
       if (Array.isArray(currentSource.users) && currentSource.users.length) parsed.users = JSON.parse(JSON.stringify(currentSource.users));
       else if (Array.isArray(parsed.users)) parsed.users = JSON.parse(JSON.stringify(defaultUsers));
+      WebsiteOrders.preserveServerOwnedFields(currentSource, parsed);
       const repairedIds = repairClientRecordIds(parsed);
       if (repairedIds) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"CLIENT_IDS_REPAIRED", performedBy:user.username, repairedIds }));
       // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.
