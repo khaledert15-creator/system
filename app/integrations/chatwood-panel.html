@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>لوحة العميل</title>
+  <link rel="stylesheet" href="/integrations/chatwood-panel.css">
+</head>
+<body>
+  <main class="panel" id="panel">
+    <header class="panel-head">
+      <strong>مكتبة دوت كوم</strong>
+      <span id="panel-user" class="muted"></span>
+      <button type="button" class="link" id="logout-button" hidden>خروج</button>
+    </header>
+
+    <section id="login-view" hidden>
+      <form id="login-form" class="card" autocomplete="on">
+        <h1>دخول السيستم</h1>
+        <p class="muted">سجّل الدخول بحسابك في السيستم لعرض طلبات العميل. صلاحياتك هي نفس صلاحياتك في السيستم.</p>
+        <label>اسم المستخدم<input name="username" autocomplete="username" required></label>
+        <label>كلمة المرور<input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="btn">دخول</button>
+        <p class="message" id="login-message" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="context-view" hidden>
+      <div class="card context-card">
+        <div><span class="muted">المحادثة</span><strong id="conversation-label">—</strong></div>
+        <div><span class="muted">رقم جهة الاتصال</span><strong id="phone-label" dir="ltr">—</strong></div>
+      </div>
+      <form id="manual-form" class="card manual" hidden>
+        <p class="muted" id="manual-hint">لم تصل بيانات المحادثة من Chatwood بعد. يمكنك كتابة رقم العميل يدويًا.</p>
+        <label>رقم العميل<input name="phone" inputmode="tel" dir="ltr" placeholder="01xxxxxxxxx"></label>
+        <button type="submit" class="btn ghost">عرض</button>
+      </form>
+      <p class="message" id="panel-message" role="status"></p>
+      <div id="customer-card"></div>
+      <div id="orders-list"></div>
+    </section>
+  </main>
+  <script src="/integrations/chatwood-panel.js"></script>
+</body>
+</html>
