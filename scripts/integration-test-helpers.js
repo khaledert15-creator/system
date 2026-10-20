@@ -88,14 +88,15 @@ async function startMockStore({ secret = SECRET } = {}) {
     if (state.delayMs) await sleep(state.delayMs);
     if (state.down) { res.writeHead(503, { 'Content-Type':'text/plain' }); res.end('down'); return; }
     if (!verified.ok) return json(401, { ok:false, code:'INTEGRATION_AUTH_FAILED' });
-    const match = url.pathname.match(/^\/api\/integration\/v1\/orders(?:\/([^/]+))?(?:\/(sales-link|conversation))?$/);
+    const match = url.pathname.match(/^\/api\/integration\/v1\/orders(?:\/([^/]+))?(?:\/(sales-link|conversation|deposit-required))?$/);
     if (!match) return json(404, { ok:false, code:'NOT_FOUND' });
     const [, number, action] = match;
     if (!number && req.method === 'GET') {
       const phone = url.searchParams.get('phone');
       let orders = [...state.orders.values()];
       if (url.searchParams.get('state') !== 'all') orders = orders.filter(order => order.status === 'awaiting_confirmation' && !order.salesOrderId && !order.archived);
-      if (phone) orders = orders.filter(order => order.customer.mobile === phone || order.customer.altMobile === phone);
+      const conversationId = url.searchParams.get('conversationId');
+      if (phone || conversationId) orders = orders.filter(order => (phone && (order.customer.mobile === phone || order.customer.altMobile === phone)) || (conversationId && String(order.chatwootConversationId || '') === conversationId));
       return json(200, { ok:true, orders });
     }
     const order = state.orders.get(number);
@@ -108,6 +109,13 @@ async function startMockStore({ secret = SECRET } = {}) {
       if (order.salesOrderId) return json(409, { ok:false, code:'ALREADY_LINKED' });
       Object.assign(order, { salesOrderId:body.salesOrderId, integrationId:order.integrationId || body.integrationId, status:'confirmed' });
       return json(200, { ok:true, existing:false });
+    }
+    if (action === 'deposit-required' && req.method === 'PATCH') {
+      if (order.status !== 'awaiting_confirmation' || order.salesOrderId || order.archived) return json(409, { ok:false, code:'WEBSITE_ORDER_NOT_PENDING', message:'not pending' });
+      if (body.requiredAmount > order.total) return json(422, { ok:false, code:'DEPOSIT_EXCEEDS_TOTAL', message:'exceeds' });
+      const previous = order.depositRequired ?? null, existing = previous === body.requiredAmount;
+      order.depositRequired = body.requiredAmount; order.depositChanges = [...(order.depositChanges || []), { previous, next:body.requiredAmount, reason:body.reason, changedBy:body.changedBy }];
+      return json(200, { ok:true, existing, previous, order });
     }
     if (action === 'conversation' && req.method === 'POST') {
       if (state.conversationResult) return json(state.conversationResult.status, state.conversationResult.body);

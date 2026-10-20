@@ -52,7 +52,8 @@
     $("conversation-label").textContent = state.conversationId ? `#${state.conversationId}` : "—";
     $("phone-label").textContent = state.rawPhone || state.phone || "—";
     $("manual-form").hidden = Boolean(state.phone);
-    if (state.phone) load(); else { $("customer-card").replaceChildren(); $("orders-list").replaceChildren(); }
+    // A contact without a usable phone (WhatsApp username, foreign number) is still looked up by its conversation.
+    if (state.phone || state.conversationId) load(); else { $("customer-card").replaceChildren(); $("orders-list").replaceChildren(); }
   }
 
   function logout(callServer = true) {
@@ -100,45 +101,81 @@
   });
   if (window.parent !== window && CHATWOOD_ORIGIN) window.parent.postMessage("chatwoot-dashboard-app:fetch-info", CHATWOOD_ORIGIN);
 
+  function failure(text, retry = true) {
+    $("customer-card").replaceChildren();
+    $("orders-list").replaceChildren(el("div", { class: "card state error" }, el("strong", { text }), retry ? el("button", { type: "button", class: "btn ghost", onclick: load, text: "إعادة المحاولة" }) : ""));
+  }
+
   async function load() {
-    if (!state.phone || state.loading) return;
+    if ((!state.phone && !state.conversationId) || state.loading) return;
     state.loading = true; message("جارٍ التحميل…");
     try {
-      const query = new URLSearchParams({ phone: state.phone });
+      const query = new URLSearchParams();
+      if (state.phone) query.set("phone", state.phone);
       if (state.conversationId) query.set("conversationId", state.conversationId);
       state.data = await api(`/api/integration/v1/panel/customer?${query}`);
-      message(state.data.storeAvailable ? "" : "تعذر الوصول إلى المتجر الآن؛ تظهر طلبات السيستم فقط.", state.data.storeAvailable ? "" : "warning");
+      message(state.data.storeEnabled && !state.data.storeAvailable ? "تعذر الوصول إلى المتجر الآن؛ تظهر طلبات السيستم فقط، وطلبات الموقع غير المعتمدة قد تكون ناقصة." : "", state.data.storeEnabled && !state.data.storeAvailable ? "warning" : "");
       render();
     } catch (error) {
-      if (error.status !== 401) message(error.status === 403 ? "ليس لديك صلاحية عرض بيانات العملاء." : error.status === 503 ? "التكامل غير مفعّل في السيستم." : error.message, "error");
+      if (error.status === 401) return;
+      message("");
+      // Never «no orders» when the real reason is a failure or a missing permission.
+      if (error.status === 403) failure("ليس لديك صلاحية عرض بيانات العملاء.", false);
+      else if (error.status === 503) failure("التكامل غير مفعّل في السيستم.", false);
+      else if (error.code === "CUSTOMER_NOT_IDENTIFIED" || error.code === "INVALID_PHONE") failure("تعذر التعرف على العميل من بيانات المحادثة. اكتب رقمه يدويًا.", false);
+      else failure(`تعذر تحميل طلبات العميل: ${error.message}`);
     } finally { state.loading = false; }
   }
 
+  const CURRENT = ["awaiting_confirmation", "awaiting_deposit", "preparing", "shipped", "preorder"];
+  const HISTORY = ["delivered", "cancelled", "returned", "not_completed", "previous"];
+  const PHASE_TITLES = { awaiting_confirmation: "بانتظار التأكيد", awaiting_deposit: "بانتظار العربون", preparing: "قيد التجهيز", shipped: "تم الشحن", preorder: "حجوزات مسبقة جارية", delivered: "تم التسليم", cancelled: "ملغية", returned: "مرتجعات", not_completed: "لم تكتمل (مؤرشفة)", previous: "طلبات سابقة" };
+
   function render() {
     const { customer, orders } = state.data;
+    const name = customer.name || state.contactName || "عميل غير مسجل";
     $("customer-card").replaceChildren(el("div", { class: "card customer" },
-      el("div", { class: "row" }, el("strong", { text: customer.name || state.contactName || "عميل غير مسجل" }), el("span", { class: `badge ${customer.status === "new" ? "new" : "returning"}`, text: customer.status === "new" ? "عميل جديد" : "عميل متكرر" })),
-      el("div", { class: "muted", dir: "ltr", text: customer.phone }),
+      el("div", { class: "row" }, el("strong", { text: name }), el("span", { class: `badge ${customer.status === "new" ? "new" : "returning"}`, text: customer.status === "new" ? "عميل جديد" : "عميل سابق" })),
+      el("div", { class: "muted", dir: "ltr", text: customer.phone || (state.data.phoneUsable ? "" : "بدون رقم موبايل مصري") }),
       el("div", { class: "stats" },
+        el("div", {}, el("span", { text: "عدد الطلبات" }), el("b", { text: String(customer.ordersCount ?? orders.length) })),
         el("div", {}, el("span", { text: "مشتريات فعلية" }), el("b", { text: `${money(customer.purchasesTotal)} (${customer.purchasesCount})` })),
-        el("div", {}, el("span", { text: "المدفوع" }), el("b", { text: money(customer.paidTotal) })),
-        el("div", {}, el("span", { text: "المتبقي" }), el("b", { class: customer.outstanding > 0 ? "due" : "", text: money(customer.outstanding) })))));
-    const list = orders.length ? orders.map(orderCard) : [el("p", { class: "muted empty", text: "لا توجد طلبات لهذا الرقم." })];
-    $("orders-list").replaceChildren(el("h2", { text: `الطلبات (${orders.length})` }), ...list);
+        el("div", {}, el("span", { text: "متبقي على فواتيره" }), el("b", { class: customer.outstanding > 0 ? "due" : "", text: money(customer.outstanding) })))));
+    if (!customer.identified) {
+      $("orders-list").replaceChildren(el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })));
+      $("manual-form").hidden = false;
+      return;
+    }
+    if (!orders.length) { $("orders-list").replaceChildren(el("div", { class: "card state" }, el("strong", { text: "العميل مسجل ومفيش له طلبات." }))); return; }
+    const section = (title, phases) => {
+      const groups = phases.map(phase => [phase, orders.filter(order => order.phase === phase)]).filter(([, list]) => list.length);
+      if (!groups.length) return el("section", { class: "orders-section" }, el("h2", { text: `${title} (0)` }), el("p", { class: "muted small", text: "لا يوجد." }));
+      return el("section", { class: "orders-section" }, el("h2", { text: `${title} (${groups.reduce((sum, [, list]) => sum + list.length, 0)})` }),
+        groups.map(([phase, list]) => el("div", { class: "phase" }, el("h3", { text: `${PHASE_TITLES[phase]} (${list.length})` }), list.map(orderCard))));
+    };
+    $("orders-list").replaceChildren(section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY),
+      state.data.truncated ? el("p", { class: "muted small", text: `يظهر أحدث ${orders.length} من ${state.data.totalOrders} طلب.` }) : "");
   }
 
   function orderCard(order) {
-    const numbers = [order.websiteOrderNumber && el("span", { class: "badge web", text: `🌐 ${order.websiteOrderNumber}` }), order.salesOrderId && el("span", { class: "badge sys", text: order.salesOrderId }), order.invoiceId && el("span", { class: "badge inv", text: order.invoiceId })];
+    const numbers = [
+      el("span", { class: `badge src ${order.source}`, text: order.sourceLabel || order.source }),
+      order.websiteOrderNumber && el("span", { class: "badge web", text: `🌐 ${order.websiteOrderNumber}` }),
+      order.salesOrderId && el("span", { class: "badge sys", text: order.salesOrderId }),
+      order.invoiceId && el("span", { class: "badge inv", text: order.invoiceId }),
+      order.splitPart && el("span", { class: "badge", text: `شحنة ${order.splitPart}` })];
     const shipment = order.shipment ? `${order.shipment.statusLabel || order.shipment.status}${order.shipment.carrier ? ` · ${order.shipment.carrier}` : ""}` : "لم يُشحن";
     const canLink = order.websiteOrderNumber && state.conversationId && !order.linkedToConversation && !order.chatwootConversationId;
     return el("article", { class: `card order ${order.linkedToConversation ? "linked" : ""}` },
-      el("div", { class: "row" }, el("div", { class: "numbers" }, numbers), el("span", { class: "status", text: order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.status || "—" })),
+      el("div", { class: "row" }, el("div", { class: "numbers" }, numbers), el("span", { class: `status ${order.group}`, text: order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.phaseLabel || order.status || "—" })),
+      el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ", order.status && order.phaseLabel && order.status !== order.phaseLabel ? ` · ${order.status}` : "", order.matchedBy === "conversation" ? " · مربوط بالمحادثة (رقم الطلب مختلف)" : ""),
       el("ul", { class: "products" }, (order.products || []).slice(0, 8).map(item => el("li", {}, `${item.name} × ${item.qty}`))),
-      el("div", { class: "stats" },
+      el("div", { class: "stats four" },
         el("div", {}, el("span", { text: "الإجمالي" }), el("b", { text: money(order.total) })),
+        el("div", {}, el("span", { text: "العربون المطلوب" }), el("b", { text: order.depositRequired == null ? "—" : money(order.depositRequired) })),
         el("div", {}, el("span", { text: "المدفوع" }), el("b", { text: money(order.paid) })),
-        el("div", {}, el("span", { text: "المتبقي" }), el("b", { text: money(order.remaining) }))),
-      el("div", { class: "muted small" }, `الشحن: ${shipment}`, order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : "", order.createdAt ? ` · ${dateLabel(order.createdAt)}` : ""),
+        el("div", {}, el("span", { text: "المتبقي" }), el("b", { class: order.remaining > 0 ? "due" : "", text: money(order.remaining) }))),
+      el("div", { class: "muted small" }, `الشحن: ${shipment}`, order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : ""),
       order.linkedToConversation ? el("div", { class: "small ok", text: "✓ مربوط بهذه المحادثة" }) : order.chatwootConversationId ? el("div", { class: "small muted", text: `مربوط بمحادثة أخرى #${order.chatwootConversationId}` }) : "",
       el("div", { class: "actions" },
         order.links?.system && el("a", { class: "btn ghost", href: order.links.system, target: "_blank", rel: "noopener noreferrer", text: "فتح في السيستم" }),

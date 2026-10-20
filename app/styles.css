@@ -2059,3 +2059,5 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 
 .split-shipment-box{border:1px solid #cbdff3;border-radius:12px;padding:12px 14px;margin:12px 0;background:#f7fbff}
 .split-shipment-box legend{font-weight:700;padding:0 6px}
+
+.order-deposit-card{margin-bottom:12px}.order-deposit-card .btn{margin-top:6px}.website-deposit-history{margin:8px 0 14px}.website-deposit-history ul{margin:6px 0;padding-inline-start:18px}

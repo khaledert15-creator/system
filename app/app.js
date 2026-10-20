@@ -64,7 +64,7 @@ const ACTION_ROLES = {
   ,"order.quick.create":["مالك","مدير","كاشير"],"order.quick.confirm":["مالك","مدير","كاشير"],"order.quick.edit":["مالك","مدير","كاشير"],
   "order.discount.override":["مالك","مدير"],"order.shipping.override":["مالك","مدير"],"order.payment.receive":["مالك","مدير","كاشير"],
   "order.prepare":["مالك","مدير","مخزن"],"order.pack":["مالك","مدير","مخزن"],"order.shipping":["مالك","مدير","شحن"],
-  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
+  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"order.deposit.default":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
   "panel.view":["مالك","مدير","محاسب","كاشير","مخزن","شحن"],"panel.link":["مالك","مدير","كاشير"]
 };
 
@@ -96,7 +96,7 @@ const VIEW_DEFINITIONS = [
 const PERMISSION_ACTIONS = [
   ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["book.preorder.manage","تعديل السماح بالحجز المسبق"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
-  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"]]],
+  ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب وتعديل عربون طلب"],["order.deposit.default","تعديل العربون الافتراضي لطلبات الموقع"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
   ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
@@ -4584,7 +4584,7 @@ function websiteOrderModalMarkup(preview) {
     <p>${esc(order.address.governorate)}، ${esc(order.address.city)}، ${esc(order.address.detailedAddress)}${order.address.landmark?` (${esc(order.address.landmark)})`:""}</p>
     ${notes.length?`<div class="finance-callout"><strong>ملاحظات العميل</strong><span>${notes.map(esc).join("<br>")}</span></div>`:""}`;
   const table=`<div class="table-wrap"><table><thead><tr><th>الكتاب</th><th>الكمية</th><th>سعر الموقع</th><th>سعر السيستم الآن</th><th>المتاح الآن</th><th>الحالة</th></tr></thead><tbody>${lines.map(line=>`<tr><td>${esc(line.name)}${line.bookId?`<br><span class="muted">${esc(line.bookId)}</span>`:""}</td><td>${esc(line.quantity)}</td><td class="money">${money(line.unitPrice)}</td><td class="money ${line.priceChanged?"text-danger":""}">${line.systemPrice==null?"—":money(line.systemPrice)}</td><td>${line.linked?esc(line.available):"—"}${line.shortQuantity>0&&line.linked?`<br><span class="muted">ناقص ${esc(line.shortQuantity)}</span>`:""}</td><td>${websiteLineBadge(line.status)}</td></tr>`).join("")}</tbody></table></div>
-    <div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>الكتب</span><strong>${money(order.subtotal)}</strong></div>${order.couponDiscount?`<div class="mini-metric"><span>كوبون ${esc(order.couponCode||"")}</span><strong>− ${money(order.couponDiscount)}</strong></div>`:""}<div class="mini-metric"><span>الشحن</span><strong>${money(order.shippingCost)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>العربون المطلوب</span><strong>${money(preview.depositRequired)}</strong></div></div>`;
+    <div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>الكتب</span><strong>${money(order.subtotal)}</strong></div>${order.couponDiscount?`<div class="mini-metric"><span>كوبون ${esc(order.couponCode||"")}</span><strong>− ${money(order.couponDiscount)}</strong></div>`:""}<div class="mini-metric"><span>الشحن</span><strong>${money(order.shippingCost)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>العربون المطلوب</span><strong>${money(preview.depositRequired)}</strong>${preview.pending&&!preview.existingSalesOrder&&preview.permissions?.depositOverride?`<button class="row-action" type="button" data-website-order-action="edit-deposit" data-number="${esc(order.orderNumber)}" data-current="${esc(preview.depositRequired)}" data-total="${esc(order.total)}">تعديل</button>`:""}</div></div>`;
   const warnings=[
     !preview.pending&&`الطلب لم يعد بانتظار الاعتماد في المتجر (${esc(order.status)}${order.salesOrderId?` · ${esc(order.salesOrderId)}`:""}).`,
     (preview.unlinked||[]).length&&`منتجات غير مربوطة بكتب السيستم: ${(preview.unlinked||[]).map(line=>esc(line.name)).join("، ")}. اربطها من لوحة المتجر أولًا.`,
@@ -4689,6 +4689,7 @@ document.addEventListener("click", event => {
   event.preventDefault();
   const action=target.dataset.websiteOrderAction;
   if(!canAction("order.website.view"))return toast("ليس لديك صلاحية عرض طلبات الموقع.","error");
+  if(action==="edit-deposit")return openModal(`عربون طلب الموقع ${target.dataset.number}`,"تعديل العربون المطلوب",depositEditForm(target.dataset.number,"website",target.dataset.current,Number(target.dataset.total||0)));
   if(action==="refresh"){websiteOrdersState.loaded=false;loadWebsiteOrders();}
   if(action==="open")openWebsiteOrder(target.dataset.number);
   if(action==="view-sales-order"){closeModal();viewOnlineOrder(target.dataset.id);}
@@ -4977,7 +4978,7 @@ function viewOnlineOrder(id) {
   const shipmentButton = order.shipmentId
     ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>`
     : `<button class="btn secondary" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`;
-  openModal(order.id, "تفاصيل طلب الأونلاين", `<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
 }
 
 function saleTotals() {
@@ -6579,6 +6580,56 @@ async function savePostalTariff(){
   catch(error){if(button)button.disabled=false;toast(error.message,"error");}
 }
 
+// Who changed the default deposit, when, and from what to what (kept by the server, newest first).
+function websiteDepositHistoryMarkup() {
+  const history = (data.settings?.websiteOrders?.history || []).slice(0, 5);
+  if (!history.length) return "";
+  return `<details class="website-deposit-history"><summary>آخر تعديلات العربون الافتراضي (${history.length})</summary><ul>${history.map(row => `<li>${esc(arabicDateTimeLabel(row.at))} · ${esc(row.by || row.username || "")}: ${money(row.before)} ← <strong>${money(row.after)}</strong></li>`).join("")}</ul></details>`;
+}
+
+// Required deposit of one order, kept apart from what was paid; editing it never touches payments or cash.
+function orderDepositMarkup(order) {
+  const required = order.depositRequired ?? order.deposit?.required;
+  const has = required !== undefined && required !== null && required !== "";
+  const paid = Number(order.paidAmount || 0), total = Number(order.total || 0);
+  const canEdit = canAction("order.deposit.override") && !["cancelled","delivered","returned"].includes(order.workflowStage);
+  const history = (order.depositHistory || []).slice(-3).reverse();
+  return `<div class="order-deposit-card"><div class="metric-strip"><div class="mini-metric"><span>العربون المطلوب</span><strong>${has ? money(required) : "—"}</strong></div><div class="mini-metric"><span>المدفوع فعليًا</span><strong>${money(paid)}</strong></div><div class="mini-metric"><span>المتبقي</span><strong>${money(Math.max(0, total - paid))}</strong></div></div>
+    ${canEdit ? `<button class="btn ghost compact" type="button" data-action="edit-order-deposit" data-id="${esc(order.id)}">تعديل العربون المطلوب</button>` : ""}
+    ${history.length ? `<small class="muted">${history.map(row => `${esc(arabicDateTimeLabel(row.at))} · ${esc(row.by)}: ${row.before == null ? "—" : money(row.before)} ← ${money(row.after)} (${esc(row.reason)})`).join("<br>")}</small>` : ""}</div>`;
+}
+
+function depositEditForm(id, kind, current, total) {
+  return `<form id="deposit-edit-form" data-id="${esc(id)}" data-kind="${kind}">
+    <p class="muted">يتغير <strong>العربون المطلوب</strong> لهذا الطلب بس. المبلغ المدفوع والخزنة والطلبات التانية مش بتتغير.</p>
+    <div class="form-grid"><div class="form-field"><label class="required">العربون المطلوب (ج.م)</label><input name="amount" inputmode="decimal" required value="${current == null ? "" : esc(current)}"><small>من 0 إلى ${money(total)} (إجمالي الطلب)</small></div>
+    <div class="form-field"><label class="required">السبب</label><input name="reason" maxlength="300" required placeholder="مثال: اتفاق مع العميل على واتساب"></div></div>
+    <div id="deposit-edit-error"></div>
+    <div class="form-actions"><button class="btn" type="submit">حفظ العربون المطلوب</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`;
+}
+
+async function submitDepositEdit(form) {
+  if (form.dataset.pending === "true") return;
+  const values = Object.fromEntries(new FormData(form).entries());
+  const amount = Number(normalizeArabicDigits(String(values.amount || "")).replace(/[٫,]/g, "."));
+  if (values.amount === "" || !Number.isFinite(amount) || amount < 0) return toast("اكتب العربون المطلوب بشكل صحيح.", "error");
+  if (String(values.reason || "").trim().length < 3) return toast("اكتب سبب التعديل.", "error");
+  const button = form.querySelector('button[type="submit"]'), errorBox = form.querySelector("#deposit-edit-error");
+  form.dataset.pending = "true"; if (button) button.disabled = true; errorBox.innerHTML = "";
+  const id = form.dataset.id, website = form.dataset.kind === "website";
+  try {
+    const path = website ? `/api/website-orders/${encodeURIComponent(id)}/deposit` : `/api/orders/${encodeURIComponent(id)}/deposit-required`;
+    const result = await websiteOrdersFetch(path, { method:website ? "PUT" : "PATCH", body:{ amount, reason:String(values.reason).trim() } });
+    toast(result.existing ? "العربون المطلوب كما هو." : `تم تعديل العربون المطلوب إلى ${money(amount)}.`);
+    if (website) { websiteOrdersState.loaded = false; openWebsiteOrder(id); }
+    else { await reloadRemoteData().catch(() => {}); if (currentView === "onlineOrders") renderOnlineOrders(); viewOnlineOrder(id); }
+  } catch (error) {
+    delete form.dataset.pending; if (button) button.disabled = false;
+    if (error.status === 401) return;
+    errorBox.innerHTML = `<div class="finance-callout danger"><strong>${esc(error.message)}</strong><span>لم يتغير أي شيء.</span></div>`;
+  }
+}
+
 function websiteDepositDefaultValue() {
   const value = Number(data.settings?.websiteOrders?.depositDefault);
   return Number.isFinite(value) && value >= 0 ? value : 100;
@@ -6613,7 +6664,7 @@ function renderSettings() {
       </div></article>
       <article class="card"><div class="card-header"><div><h3>التكاملات</h3><p>تُفعّل عند تجهيز حسابات الخدمات</p></div></div><div class="card-body alert-list">
         <div class="alert-item"><div class="alert-badge blue">●</div><div><strong>المتجر الإلكتروني</strong><span>طلبات الموقع تُراجع وتُعتمد من «طلبات الأونلاين ← طلبات الموقع». الأسعار والكميات والحجز المسبق تُرسل للمتجر من السيرفر.</span></div>${badge("ربط عبر السيرفر","blue")}</div>
-        <div class="form-grid website-deposit-setting"><div class="form-field"><label>العربون الافتراضي لطلبات الموقع (ج.م)</label><input id="website-deposit-default" inputmode="decimal" value="${esc(websiteDepositDefaultValue())}" ${canAction("save-website-deposit")?"":"readonly"}><small>من 0 إلى 10000. يُطبق على طلبات الموقع الجديدة فقط، ويُحفظ مع كل طلب.</small></div><div class="form-field"><label>&nbsp;</label><button class="btn secondary" type="button" data-action="save-website-deposit" ${canAction("save-website-deposit")?"":"disabled"}>حفظ العربون</button></div></div>
+        <div class="form-grid website-deposit-setting"><div class="form-field"><label>العربون الافتراضي لطلبات الموقع (ج.م)</label><input id="website-deposit-default" inputmode="decimal" value="${esc(websiteDepositDefaultValue())}" ${canAction("order.deposit.default")?"":"readonly"}><small>من 0 إلى 10000. يُطبق على طلبات الموقع الجديدة فقط، ويُحفظ مع كل طلب.</small></div><div class="form-field"><label>&nbsp;</label><button class="btn secondary" type="button" data-action="save-website-deposit" ${canAction("order.deposit.default")?"":"disabled"}>حفظ العربون</button></div></div>${websiteDepositHistoryMarkup()}
         <div class="alert-item"><div class="alert-badge">▣</div><div><strong>شركات الشحن</strong><span>جاهز لتسجيل الأكواد والحالات يدويًا، ويمكن ربط API لاحقًا.</span></div>${badge("جزئي","blue")}</div>
         <div class="alert-item"><div class="alert-badge red">▧</div><div><strong>الفاتورة الإلكترونية المصرية</strong><span>غير مفعلة لأن النشاط غير منضم حاليًا للمنظومة.</span></div>${badge("غير مفعلة","gray")}</div>
         <div class="alert-item"><div class="alert-badge blue">◎</div><div><strong>تقارير WhatsApp</strong><span>يحتاج رقم المستلم وحساب WhatsApp Business API.</span></div>${badge("بانتظار الربط","warning")}</div>
@@ -8313,6 +8364,7 @@ root.addEventListener("click", async event => {
   if (action === "shipping-price-tab") {shippingPriceTab=target.dataset.tab;document.getElementById("customer-shipping-rates").hidden=shippingPriceTab!=="customer";document.getElementById("postal-shipping-rates").hidden=shippingPriceTab!=="postal";document.querySelectorAll(".shipping-price-tabs .tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.tab===shippingPriceTab));}
   if (action === "save-postal-tariff") savePostalTariff();
   if (action === "save-website-deposit") saveWebsiteDepositDefault();
+  if (action === "edit-order-deposit") { const order = getOnlineOrder(target.dataset.id); if (order) openModal(`عربون الطلب ${order.id}`, "تعديل العربون المطلوب", depositEditForm(order.id, "system", order.depositRequired ?? order.deposit?.required ?? null, Number(order.total || 0))); }
   if (action === "backup-db") createBackup();
   if (action === "audit-log") showAuditLog();
   if (action === "customize-role") customizeRole(target.dataset.role);
@@ -9311,6 +9363,7 @@ modalBody.addEventListener("submit", async event => {
   if(form.id==="packing-edit-form"){await savePackingEdit(form);return;}
   if(form.id==="website-order-approve-form"){await submitWebsiteOrderApproval(form);return;}
   if(form.id==="split-shipment-form"){await submitSplitShipment(form);return;}
+  if(form.id==="deposit-edit-form"){await submitDepositEdit(form);return;}
   if (form.id === "user-account-form" || form.id === "user-password-reset-form") { await submitUserAccountForm(form); return; }
   const formData = Object.fromEntries(new FormData(form).entries());
   if(form.id==="cancellation-settlement-form"){

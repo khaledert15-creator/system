@@ -99,6 +99,12 @@ function createWebsiteOrders(deps) {
     });
   }
 
+  // Required deposit of a System order (the per-order value, else the approval snapshot); null when none was set.
+  function depositRequiredOf(order) {
+    const value = order.depositRequired ?? order.deposit?.required;
+    return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : round(Number(value));
+  }
+
   function orderLink(db, order) {
     const shipment = orderShipment(db, order);
     const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
@@ -107,7 +113,7 @@ function createWebsiteOrders(deps) {
     return {
       websiteOrderNumber:order.websiteOrderNumber, websiteOrderId:order.websiteOrderId ?? null, integrationId:order.integrationId || null,
       salesOrderId:order.id, workflowStage:order.workflowStage || "draft", status:order.status || "",
-      total, depositAmount:round(Number(order.depositAmount ?? order.deposit?.amount ?? 0)), paidAmount:paid, remainingAmount:remaining,
+      total, depositAmount:round(Number(order.depositAmount ?? order.deposit?.amount ?? 0)), depositRequired:depositRequiredOf(order), paidAmount:paid, remainingAmount:remaining,
       paymentStatus:order.paymentStatus || OrderFinance.calculatePayment(total, Math.min(total, paid)).paymentStatus,
       shipment:shipmentSummary(shipment), cancelled:isCancelled(order), chatwootConversationId:order.chatwootConversationId || null,
       ...(parts.length ? { splitShipment:{ extraShippingFee:round(Number(order.splitShipment?.extraShippingFee || 0)), splitAt:order.splitShipment?.splitAt || null, parts } } : {}),
@@ -386,57 +392,110 @@ function createWebsiteOrders(deps) {
   function salesLinkBody(order, user) {
     return {
       salesOrderId:order.id, integrationId:order.integrationId || null, workflowStage:order.workflowStage || "awaiting_preparation",
-      depositAmount:round(Number(order.depositAmount || 0)), paidAmount:round(Number(order.paidAmount || 0)), remainingAmount:round(Number(order.remainingAmount ?? order.total ?? 0)),
+      depositAmount:round(Number(order.depositAmount || 0)), depositRequired:depositRequiredOf(order), paidAmount:round(Number(order.paidAmount || 0)), remainingAmount:round(Number(order.remainingAmount ?? order.total ?? 0)),
       paymentStatus:order.paymentStatus || "unpaid", approvedBy:user?.username || order.websiteApprovedByUsername || null, approvedAt:order.websiteApprovedAt || order.createdAt || null
     };
   }
 
-  // Chatwood panel: a minimal customer card plus one merged order list. Store orders already linked to a System
-  // order are folded into it (by Store salesOrderId or System websiteOrderNumber), so no order appears twice.
+  // Chatwood panel (read-only): one customer card plus every order of that customer, grouped into current orders
+  // and history. A customer is the phone (primary or alternate, after normalization) and, for the open
+  // conversation, any order linked to that conversation id. Orders without a conversation id are found by phone.
+  // Store orders already linked to a System order are folded into it, so no order appears twice.
+  const PANEL_LIMIT = 200;
+  const PANEL_PHASES = {
+    awaiting_confirmation:{ group:"current", label:"بانتظار التأكيد" }, awaiting_deposit:{ group:"current", label:"بانتظار العربون" },
+    preparing:{ group:"current", label:"قيد التجهيز" }, shipped:{ group:"current", label:"تم الشحن" }, preorder:{ group:"current", label:"حجز مسبق جارٍ" },
+    delivered:{ group:"history", label:"تم التسليم" }, cancelled:{ group:"history", label:"ملغي" }, returned:{ group:"history", label:"مرتجع" },
+    not_completed:{ group:"history", label:"لم يكتمل (مؤرشف)" }, previous:{ group:"history", label:"طلب سابق" }
+  };
+  const SOURCE_LABELS = { website:"الموقع", whatsapp:"واتساب", system:"السيستم", cashier:"مبيعات السيستم" };
+
+  function systemOrderPhase(order, shipment) {
+    if (isCancelled(order)) return "cancelled";
+    const stage = String(order.workflowStage || ""), ship = String(shipment?.normalizedStatus || shipment?.shippingStatus || "");
+    if (stage === "returned" || /return/.test(ship) || /مرتجع/.test(String(order.status || ""))) return "returned";
+    if (stage === "delivered" || ship === "delivered" || order.status === "تم التسليم") return "delivered";
+    if (stage === "shipped" || order.shipmentId) return "shipped";
+    if (stage === "awaiting_stock") return "preorder";
+    if (!order.confirmedAt && ["draft", "new", ""].includes(stage)) return "awaiting_confirmation";
+    const required = Number(order.depositRequired || 0), paid = Number(order.paidAmount || 0);
+    if (required > 0 && paid < required) return "awaiting_deposit";
+    return "preparing";
+  }
+
+  function storeOrderPhase(storeOrder) {
+    if (isPending(storeOrder)) return "awaiting_confirmation";
+    if (storeOrder.archived) return "not_completed";
+    if (["cancelled"].includes(storeOrder.status)) return "cancelled";
+    if (["returned", "partially_returned"].includes(storeOrder.status)) return "returned";
+    if (storeOrder.status === "delivered") return "delivered";
+    return "previous";
+  }
+
   function panelCustomer(db, phone, storeOrders = [], { conversationId = "", config = {} } = {}) {
-    const customers = (db.customers || []).filter(item => !item.deletedAt && [item.phone, item.alternativePhone].some(value => normalizeEgyptPhone(value) === phone));
+    const conversation = /^\d{1,18}$/.test(String(conversationId || "")) ? String(conversationId) : "";
+    const byPhone = value => Boolean(phone) && normalizeEgyptPhone(value) === phone;
+    const customers = (db.customers || []).filter(item => !item.deletedAt && [item.phone, item.alternativePhone].some(byPhone));
     const customerIds = new Set(customers.map(item => item.id));
     const books = new Map((db.books || []).map(book => [book.id, book]));
-    const products = lines => (lines || []).map(line => ({ name:books.get(line.bookId || line.productId)?.name || line.name || line.bookId || "—", qty:Number(line.qty ?? line.quantity ?? 0) }));
-    const orders = (db.onlineOrders || []).filter(order => !order.deletedAt && (customerIds.has(order.customerId) || [order.phone, order.alternativePhone].some(value => normalizeEgyptPhone(value) === phone)));
+    const products = lines => (lines || []).map(line => ({ name:books.get(line.bookId || line.productId)?.name || line.name || line.nameAr || line.bookId || "—", qty:Number(line.qty ?? line.quantity ?? 0) }));
     const sales = (db.sales || []).filter(sale => !sale.deletedAt && customerIds.has(sale.customerId));
     const realSales = sales.filter(sale => !/ملغ|باطل|cancel|void/i.test(String(sale.status || "")) && !sale.cancelledAt && !sale.voidedAt);
+    const matchedBy = new Map();
+    for (const order of db.onlineOrders || []) {
+      if (order.deletedAt) continue;
+      if (customerIds.has(order.customerId) || [order.phone, order.alternativePhone].some(byPhone)) matchedBy.set(order.id, "phone");
+      else if (conversation && String(order.chatwootConversationId || "").trim() === conversation) matchedBy.set(order.id, "conversation");
+    }
+    // An invoice of this customer always brings its order, even when the order was saved under another phone.
+    for (const sale of sales) if (sale.onlineOrderId && !matchedBy.has(sale.onlineOrderId) && (db.onlineOrders || []).some(order => order.id === sale.onlineOrderId && !order.deletedAt)) matchedBy.set(sale.onlineOrderId, "invoice");
+    const orders = (db.onlineOrders || []).filter(order => matchedBy.has(order.id));
     const storeByNumber = new Map(storeOrders.map(order => [order.orderNumber, order]));
     const storeBySalesId = new Map(storeOrders.filter(order => order.salesOrderId).map(order => [order.salesOrderId, order]));
     const storeUrl = storeOrder => storeOrder?.id != null && config.storeAdminOrderUrl ? `${config.storeAdminOrderUrl}${encodeURIComponent(String(storeOrder.id))}` : "";
+    const describe = phase => ({ phase, phaseLabel:PANEL_PHASES[phase].label, group:PANEL_PHASES[phase].group });
     const merged = new Set();
     const entries = orders.map(order => {
-      const storeOrder = storeBySalesId.get(order.id) || (order.websiteOrderNumber ? storeByNumber.get(order.websiteOrderNumber) : null) || null;
-      if (storeOrder) merged.add(storeOrder.orderNumber);
-      const sale = order.saleId ? sales.find(item => item.id === order.saleId) : null;
-      const shipment = shipmentSummary(orderShipment(db, order));
+      const storeOrder = storeBySalesId.get(order.id) || (order.websiteOrderNumber ? storeByNumber.get(order.websiteOrderNumber) : null) || (order.parentWebsiteOrderNumber ? storeByNumber.get(order.parentWebsiteOrderNumber) : null) || null;
+      if (storeOrder && !order.parentWebsiteOrderNumber) merged.add(storeOrder.orderNumber);
+      const sale = order.saleId ? (db.sales || []).find(item => item.id === order.saleId) : null;
+      const shipmentRecord = orderShipment(db, order), shipment = shipmentSummary(shipmentRecord);
       const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
+      const required = order.depositRequired ?? order.deposit?.required;
+      const source = order.source === "website" || order.websiteOrderNumber || order.parentWebsiteOrderNumber ? "website" : order.source === "whatsapp" ? "whatsapp" : "system";
       return {
-        kind:"system_order", websiteOrderNumber:order.websiteOrderNumber || storeOrder?.orderNumber || "", storeOrderId:storeOrder?.id ?? order.websiteOrderId ?? null, salesOrderId:order.id, invoiceId:order.saleId || "",
-        splitPart:order.splitPart || null, splitFromOrderId:order.splitFromOrderId || "", parentWebsiteOrderNumber:order.parentWebsiteOrderNumber || "", splitChildOrderIds:order.splitShipment?.childOrderIds || [],
-        products:products(order.lines), total, paid, remaining:round(Math.max(0, Number(order.remainingAmount ?? total - paid))), status:order.status || "", workflowStage:order.workflowStage || "",
+        kind:"system_order", source, sourceLabel:SOURCE_LABELS[source], websiteOrderNumber:order.websiteOrderNumber || order.parentWebsiteOrderNumber || storeOrder?.orderNumber || "", storeOrderId:storeOrder?.id ?? order.websiteOrderId ?? null,
+        salesOrderId:order.id, invoiceId:order.saleId || "", splitPart:order.splitPart || null, splitFromOrderId:order.splitFromOrderId || "", parentWebsiteOrderNumber:order.parentWebsiteOrderNumber || "", splitChildOrderIds:order.splitShipment?.childOrderIds || [],
+        products:products(order.lines), total, depositRequired:required == null || required === "" ? null : round(Number(required)), paid, remaining:round(Math.max(0, Number(order.remainingAmount ?? total - paid))),
+        status:order.status || "", workflowStage:order.workflowStage || "", ...describe(systemOrderPhase(order, shipmentRecord)),
         shipment, trackingNumber:shipment?.trackingNumber || order.trackingNumber || order.tracking || "", chatwootConversationId:order.chatwootConversationId || storeOrder?.chatwootConversationId || "",
-        linkedToConversation:Boolean(conversationId) && [order.chatwootConversationId, storeOrder?.chatwootConversationId].map(String).includes(String(conversationId)),
-        createdAt:order.createdAt || order.date || "", invoiceStatus:sale?.status || "",
+        linkedToConversation:Boolean(conversation) && [order.chatwootConversationId, storeOrder?.chatwootConversationId].map(value => String(value || "")).includes(conversation),
+        matchedBy:matchedBy.get(order.id), createdAt:order.createdAt || order.date || "", invoiceStatus:sale?.status || "",
         links:{ system:`/?view=onlineOrders&focus=order:${encodeURIComponent(order.id)}`, store:storeUrl(storeOrder) || (order.websiteOrderId != null ? storeUrl({ id:order.websiteOrderId }) : "") }
       };
     });
     const linkedSaleIds = new Set(orders.map(order => order.saleId).filter(Boolean));
     for (const sale of sales.filter(item => !linkedSaleIds.has(item.id) && !item.onlineOrderId)) {
+      const total = round(Number(sale.total || 0));
       entries.push({
-        kind:"sale", websiteOrderNumber:"", storeOrderId:null, salesOrderId:"", invoiceId:sale.id, products:products(sale.lines),
-        total:round(Number(sale.total || 0)), paid:round(Number(sale.paid ?? sale.paidAmount ?? 0)), remaining:round(Number(sale.remaining ?? sale.remainingAmount ?? 0)),
-        status:sale.status || "", workflowStage:"", shipment:null, trackingNumber:"", chatwootConversationId:"", linkedToConversation:false, createdAt:sale.createdAt || sale.date || "",
+        kind:"sale", source:"cashier", sourceLabel:SOURCE_LABELS.cashier, websiteOrderNumber:"", storeOrderId:null, salesOrderId:"", invoiceId:sale.id, products:products(sale.lines),
+        total, depositRequired:null, paid:round(Number(sale.paid ?? sale.paidAmount ?? 0)), remaining:round(Number(sale.remaining ?? sale.remainingAmount ?? 0)),
+        status:sale.status || "", workflowStage:"", ...describe(/ملغ|باطل|cancel|void/i.test(String(sale.status || "")) ? "cancelled" : "previous"),
+        shipment:null, trackingNumber:"", chatwootConversationId:"", linkedToConversation:false, matchedBy:"phone", createdAt:sale.createdAt || sale.date || "",
         links:{ system:`/?view=sales&focus=invoice:${encodeURIComponent(sale.id)}`, store:"" }
       });
     }
     for (const storeOrder of storeOrders.filter(order => !merged.has(order.orderNumber))) {
+      // A Store order confirmed into a System order that this customer card did not match stays a Store-only line.
+      const total = round(Number(storeOrder.total || 0)), paid = round(Number(storeOrder.paidAmount || 0));
+      const storePhone = [storeOrder.customer?.mobile, storeOrder.customer?.altMobile].some(byPhone);
       entries.push({
-        kind:"website_order", websiteOrderNumber:storeOrder.orderNumber, storeOrderId:storeOrder.id ?? null, salesOrderId:storeOrder.salesOrderId || "", invoiceId:"",
+        kind:"website_order", source:"website", sourceLabel:SOURCE_LABELS.website, websiteOrderNumber:storeOrder.orderNumber, storeOrderId:storeOrder.id ?? null, salesOrderId:storeOrder.salesOrderId || "", invoiceId:"",
         products:(storeOrder.items || []).map(item => ({ name:item.nameAr || item.externalBookId || "—", qty:Number(item.quantity || 0) })),
-        total:round(Number(storeOrder.total || 0)), paid:0, remaining:round(Number(storeOrder.total || 0)), status:storeOrder.status || "", workflowStage:"", shipment:null, trackingNumber:"",
-        chatwootConversationId:storeOrder.chatwootConversationId || "", linkedToConversation:Boolean(conversationId) && String(storeOrder.chatwootConversationId || "") === String(conversationId),
-        awaitingApproval:isPending(storeOrder), createdAt:storeOrder.createdAt || "", links:{ system:"", store:storeUrl(storeOrder) }
+        total, depositRequired:storeOrder.depositRequired == null ? null : round(Number(storeOrder.depositRequired)), paid, remaining:round(Math.max(0, total - paid)),
+        status:storeOrder.status || "", workflowStage:"", ...describe(storeOrderPhase(storeOrder)),
+        shipment:null, trackingNumber:"", chatwootConversationId:storeOrder.chatwootConversationId || "", linkedToConversation:Boolean(conversation) && String(storeOrder.chatwootConversationId || "") === conversation,
+        matchedBy:storePhone ? "phone" : "conversation", awaitingApproval:isPending(storeOrder), createdAt:storeOrder.createdAt || "", links:{ system:"", store:storeUrl(storeOrder) }
       });
     }
     entries.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -445,19 +504,21 @@ function createWebsiteOrders(deps) {
     const purchasesTotal = round(realSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0));
     const paidTotal = round(realSales.reduce((sum, sale) => sum + Number(sale.paid ?? sale.paidAmount ?? 0), 0));
     const outstanding = round(realSales.reduce((sum, sale) => sum + Math.max(0, Number(sale.remaining ?? sale.remainingAmount ?? 0)), 0));
-    const knownOrders = orders.length + storeOrders.filter(order => !merged.has(order.orderNumber)).length;
+    const counts = Object.fromEntries(Object.keys(PANEL_PHASES).map(phase => [phase, entries.filter(entry => entry.phase === phase).length]));
     return {
-      customer:{ name, phone, known:Boolean(primary), customerIds:[...customerIds], status:realSales.length || knownOrders > 1 ? "returning" : "new", purchasesCount:realSales.length, purchasesTotal, paidTotal, outstanding, openOrders:orders.filter(order => !isCancelled(order) && !order.saleId).length },
-      orders:entries.slice(0, 60)
+      customer:{ name, phone:phone || "", known:Boolean(primary), identified:Boolean(primary) || entries.length > 0, customerIds:[...customerIds], status:realSales.length || entries.length > 1 ? "returning" : "new",
+        ordersCount:entries.length, purchasesCount:realSales.length, purchasesTotal, paidTotal, outstanding, openOrders:entries.filter(entry => entry.group === "current").length },
+      counts, totalOrders:entries.length, truncated:entries.length > PANEL_LIMIT,
+      orders:entries.slice(0, PANEL_LIMIT)
     };
   }
 
-  return { normalizeEgyptPhone, catalogSnapshot, orderLinks, orderLink, findWebsiteOrder, duplicateTransferMatches, evaluateLines, requiredDeposit, approvalPreview, listSummary, approve, salesLinkBody, panelCustomer, isPending };
+  return { normalizeEgyptPhone, catalogSnapshot, orderLinks, orderLink, findWebsiteOrder, duplicateTransferMatches, evaluateLines, requiredDeposit, depositRequiredOf, approvalPreview, listSummary, approve, salesLinkBody, panelCustomer, isPending };
 }
 
 // PUT /api/db carries the whole database from the browser. The website deposit default (owner/manager endpoint) and
 // the website link fields of existing orders are server-owned, so a client save keeps the server's values.
-const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername"];
+const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername"];
 function preserveServerOwnedFields(current = {}, next = {}) {
   if (next.settings && typeof next.settings === "object") {
     if (current.settings && Object.prototype.hasOwnProperty.call(current.settings, "websiteOrders")) next.settings.websiteOrders = JSON.parse(JSON.stringify(current.settings.websiteOrders));

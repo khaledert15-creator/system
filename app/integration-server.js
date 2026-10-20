@@ -4,7 +4,8 @@
 // server-node.js only dispatches to handle() and injects its own helpers; no business rule lives here.
 //   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links
 //   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...,
-//                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B)
+//                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B),
+//                            PATCH /api/orders/:id/deposit-required, PUT /api/website-orders/:number/deposit
 //   Chatwood dashboard app:  GET /integrations/chatwood-panel (frame-ancestors limited to CHATWOOD_ORIGIN)
 const fs = require("fs");
 const path = require("path");
@@ -55,9 +56,10 @@ function createIntegrationServer(deps) {
     return { order:result.body.order };
   }
 
-  async function fetchStoreOrders({ state = "pending", phone = "", limit = 100 } = {}) {
+  async function fetchStoreOrders({ state = "pending", phone = "", conversationId = "", limit = 100 } = {}) {
     const query = new URLSearchParams({ state, limit:String(limit) });
     if (phone) query.set("phone", phone);
+    if (conversationId) query.set("conversationId", conversationId);
     const result = await storeRequest("GET", `/api/integration/v1/orders?${query}`);
     if (result.status !== 200 || !result.body?.ok || !Array.isArray(result.body.orders)) {
       logStore("STORE_ORDERS_FETCH_FAILED", { storeStatus:result.status, code:result.body?.code || "" });
@@ -169,7 +171,8 @@ function createIntegrationServer(deps) {
 
   async function websiteDeposit(req, res) {
     const user = sessionOrFail(res, req); if (!user) return;
-    if (!(user.username === "owner" || ["مالك", "مدير"].includes(orderRole(user)))) return fail(res, 403, "PERMISSION_DENIED", "تعديل العربون الافتراضي متاح للمالك والمدير فقط.");
+    // Owner and manager always; any other role only when granted order.deposit.default.
+    if (!canOrderAction(readDbSafe(), user, "order.deposit.default")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل العربون الافتراضي.");
     const payload = await readJsonBody(req, 16 * 1024);
     const expected = payload.expectedRevision ?? req.headers["x-db-revision"] ?? req.headers["if-match"];
     if (expected === undefined || expected === null || expected === "") return fail(res, 428, "PRECONDITION_REQUIRED", "حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات.");
@@ -181,9 +184,10 @@ function createIntegrationServer(deps) {
     if (previous === amount && db.settings?.websiteOrders?.depositDefault !== undefined) return send(res, 200, { ok:true, unchanged:true, depositDefault:amount, revision:String(revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(revision) });
     const now = new Date().toISOString();
     db.settings = db.settings || {};
-    db.settings.websiteOrders = { ...(db.settings.websiteOrders || {}), depositDefault:amount, updatedAt:now, updatedBy:user.username };
+    const change = { at:now, by:user.name || user.username, username:user.username, before:previous, after:amount };
+    db.settings.websiteOrders = { ...(db.settings.websiteOrders || {}), depositDefault:amount, updatedAt:now, updatedBy:user.username, history:[change, ...((db.settings.websiteOrders || {}).history || [])].slice(0, 50) };
     db.audit = Array.isArray(db.audit) ? db.audit : [];
-    AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:"WEBSITE_DEPOSIT_DEFAULT_CHANGED", action:"تعديل العربون الافتراضي لطلبات الموقع", entity:"الإعدادات", entityId:"WEBSITE-DEPOSIT", user:user.name || user.username, username:user.username, role:user.role, details:`${previous} ← ${amount} (للطلبات الجديدة فقط)` });
+    AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:"WEBSITE_DEPOSIT_DEFAULT_CHANGED", action:"تعديل العربون الافتراضي لطلبات الموقع", entity:"الإعدادات", entityId:"WEBSITE-DEPOSIT", user:user.name || user.username, username:user.username, role:user.role, before:previous, after:amount, details:`${previous} ← ${amount} (للطلبات الجديدة فقط)` });
     const saved = writeDb(db, { expectedRevision:revision, operationType:"WEBSITE_DEPOSIT_DEFAULT_CHANGED", performedBy:user.username });
     return send(res, 200, { ok:true, depositDefault:amount, previous, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
@@ -193,16 +197,19 @@ function createIntegrationServer(deps) {
     const db = readDbSafe();
     if (!canOrderAction(db, user, "panel.view")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية عرض بيانات العميل.");
     if (!config.enabled) return disabled(res);
-    const phone = websiteOrders.normalizeEgyptPhone(url.searchParams.get("phone") || "");
-    if (!phone) return fail(res, 400, "INVALID_PHONE", "رقم هاتف العميل غير صالح.");
+    const rawPhone = url.searchParams.get("phone") || "";
+    const phone = websiteOrders.normalizeEgyptPhone(rawPhone);
     const conversationId = String(url.searchParams.get("conversationId") || "").trim();
     if (conversationId && !/^\d{1,18}$/.test(conversationId)) return fail(res, 400, "INVALID_CONVERSATION", "رقم المحادثة غير صحيح.");
+    // A contact without a usable Egyptian mobile (WhatsApp username, foreign number) is still matched by conversation.
+    if (rawPhone && !phone && !conversationId) return fail(res, 400, "INVALID_PHONE", "رقم هاتف العميل غير صالح.");
+    if (!phone && !conversationId) return fail(res, 400, "CUSTOMER_NOT_IDENTIFIED", "لا يوجد رقم هاتف أو محادثة للتعرف على العميل.");
     let storeOrders = [], storeAvailable = false;
     if (config.storeEnabled) {
-      try { storeOrders = await fetchStoreOrders({ state:"all", phone, limit:50 }); storeAvailable = true; } catch {}
+      try { storeOrders = await fetchStoreOrders({ state:"all", phone, conversationId, limit:100 }); storeAvailable = true; } catch {}
     }
     const fresh = readDbSafe();
-    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, config }), storeAvailable, conversationId:conversationId || null }, JSON_TYPE, NO_STORE);
+    return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null }, JSON_TYPE, NO_STORE);
   }
 
   async function panelLink(req, res) {
@@ -285,6 +292,79 @@ function createIntegrationServer(deps) {
     return send(res, 201, { ok:true, order:result.order, child:result.child, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
 
+  // Required deposit of one order, apart from the default and from what was paid. Payments, cash and totals never
+  // change here. Website orders before approval live in the Store; after approval the System order is the record.
+  function parseRequiredDeposit(payload, total) {
+    const amount = Number(String(payload.amount ?? payload.depositRequired ?? "").replace(/[٠-٩]/g, d => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))));
+    if (payload.amount === "" || payload.amount == null || !Number.isFinite(amount) || amount < 0 || amount > WebsiteOrders.DEPOSIT_MAX) throw Object.assign(new Error(`العربون المطلوب يجب أن يكون رقمًا من 0 إلى ${WebsiteOrders.DEPOSIT_MAX} ج.م.`), { status:400, code:"DEPOSIT_INVALID" });
+    const rounded = Math.round(amount * 100) / 100;
+    if (Number.isFinite(total) && rounded > total) throw Object.assign(new Error("العربون المطلوب لا يمكن أن يتجاوز إجمالي الطلب."), { status:409, code:"DEPOSIT_EXCEEDS_TOTAL", details:{ total } });
+    const reason = String(payload.reason || "").trim().slice(0, 300);
+    if (reason.length < 3) throw Object.assign(new Error("اكتب سبب تعديل العربون."), { status:400, code:"DEPOSIT_REASON_REQUIRED" });
+    return { amount:rounded, reason };
+  }
+
+  async function websiteOrderDeposit(req, res, number) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    if (!WebsiteOrders.WEBSITE_ORDER_NUMBER_PATTERN.test(number)) return fail(res, 400, "INVALID_ORDER_NUMBER", "رقم طلب الموقع غير صحيح.");
+    const payload = await readJsonBody(req, 16 * 1024);
+    if (!canOrderAction(readDbSafe(), user, "order.deposit.override")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل عربون طلب.");
+    if (!config.storeEnabled) return disabled(res);
+    if (websiteOrders.findWebsiteOrder(readDbSafe(), number)) return fail(res, 409, "WEBSITE_ORDER_APPROVED", "الطلب معتمد بالفعل؛ عدّل العربون من طلب السيستم.");
+    let fetched;
+    try { fetched = await fetchStoreOrder(number); } catch (error) { return storeUnavailable(res, error.storeStatus ? { storeStatus:error.storeStatus } : {}); }
+    if (fetched.notFound) return fail(res, 404, "WEBSITE_ORDER_NOT_FOUND", "طلب الموقع غير موجود.");
+    let input;
+    try { input = parseRequiredDeposit(payload, Number(fetched.order.total)); } catch (error) { return errorResponse(res, error, "DEPOSIT_INVALID"); }
+    let result;
+    try { result = await storeRequest("PATCH", `/api/integration/v1/orders/${encodeURIComponent(number)}/deposit-required`, { requiredAmount:input.amount, reason:input.reason, changedBy:user.username }); }
+    catch { return storeUnavailable(res); }
+    if (result.status !== 200 || result.body?.ok !== true) {
+      if ([400, 404, 409, 422].includes(result.status) && result.body?.code) return fail(res, result.status, result.body.code, result.body.message || "رفض المتجر التعديل.");
+      return storeUnavailable(res, { storeStatus:result.status });
+    }
+    // The System keeps who changed it as well (the Store keeps its own audit row with before/after).
+    if (!result.body.existing) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const { db, revision } = readDbForWrite();
+        const now = new Date().toISOString();
+        db.audit = Array.isArray(db.audit) ? db.audit : [];
+        AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:"WEBSITE_ORDER_DEPOSIT_CHANGED", action:"تعديل العربون المطلوب لطلب موقع", entity:"طلبات الموقع", entityId:number, user:user.name || user.username, username:user.username, role:user.role, before:result.body.previous ?? null, after:input.amount, details:`${result.body.previous ?? "—"} ← ${input.amount} · ${input.reason}` });
+        try { writeDb(db, { expectedRevision:revision, operationType:"WEBSITE_ORDER_DEPOSIT_CHANGED", performedBy:user.username }); break; }
+        catch (error) { if (error.code !== "DATABASE_WRITE_BLOCKED_STALE_REVISION") throw error; }
+      }
+    }
+    return send(res, 200, { ok:true, existing:result.body.existing === true, previous:result.body.previous ?? null, depositRequired:input.amount, order:result.body.order }, JSON_TYPE, NO_STORE);
+  }
+
+  async function systemOrderDeposit(req, res, id) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const payload = await readJsonBody(req, 16 * 1024);
+    const { db, revision } = readDbForWrite();
+    ensureTrackingDb(db);
+    if (!canOrderAction(db, user, "order.deposit.override")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل عربون طلب.");
+    const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+    if (!order) return fail(res, 404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
+    if (["cancelled", "delivered", "returned"].includes(order.workflowStage) || ["ملغي", "تم التسليم"].includes(order.status)) return fail(res, 409, "ORDER_CLOSED", "لا يمكن تعديل عربون طلب ملغي أو مسلّم.");
+    let input;
+    try { input = parseRequiredDeposit(payload, Number(order.total || 0)); } catch (error) { return errorResponse(res, error, "DEPOSIT_INVALID"); }
+    const previous = websiteOrders.depositRequiredOf(order);
+    if (previous === input.amount) return send(res, 200, { ok:true, existing:true, order, revision:String(revision) }, JSON_TYPE, NO_STORE);
+    const now = new Date().toISOString();
+    order.depositRequired = input.amount;
+    if (order.deposit && typeof order.deposit === "object") order.deposit.required = input.amount;
+    order.depositHistory = [...(Array.isArray(order.depositHistory) ? order.depositHistory : []), { at:now, by:user.name || user.username, username:user.username, before:previous, after:input.amount, reason:input.reason }];
+    order.updatedAt = now;
+    deps.appendOrderAudit(db, user, order, "تعديل العربون المطلوب", `${previous ?? "—"} ← ${input.amount} ج.م · ${input.reason} (المدفوع بدون تغيير: ${Number(order.paidAmount || 0)} ج.م)`);
+    let saved;
+    try { saved = writeDb(db, { expectedRevision:revision, operationType:"ORDER_DEPOSIT_REQUIRED_CHANGED", performedBy:user.username }); }
+    catch (error) {
+      if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات أثناء الحفظ؛ أعد المحاولة.");
+      throw error;
+    }
+    return send(res, 200, { ok:true, order, previous, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
+  }
+
   // Returns true when the request was handled here.
   async function handle(req, res, route, url) {
     const method = req.method;
@@ -313,6 +393,11 @@ function createIntegrationServer(deps) {
     }
 
     if (route === "/api/settings/website-deposit" && method === "PUT") { await websiteDeposit(req, res); return true; }
+
+    const depositRoute = route.match(/^\/api\/orders\/([^/]+)\/deposit-required$/);
+    if (depositRoute && method === "PATCH") { await systemOrderDeposit(req, res, depositRoute[1]); return true; }
+    const websiteDepositRoute = route.match(/^\/api\/website-orders\/([^/]+)\/deposit$/);
+    if (websiteDepositRoute && method === "PUT") { await websiteOrderDeposit(req, res, websiteDepositRoute[1]); return true; }
 
     const splitRoute = route.match(/^\/api\/orders\/([^/]+)\/split-shipment$/);
     if (splitRoute && ["GET", "POST"].includes(method)) { await splitShipmentRoute(req, res, splitRoute[1]); return true; }
