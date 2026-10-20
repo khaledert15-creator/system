@@ -1162,9 +1162,22 @@ async function initializeDatabase() {
 }
 
 let requestedDialogOpened = false;
+// One-shot parameters (an order to focus, the quick-order opener, the Chatwood context token, a dialog) are read once
+// and then removed from the address bar, so a reload or a bookmark of the tab does not reopen them.
+const ONE_SHOT_PARAMS = ["focus", "mode", "quick", "ctx", "dialog", "chatwootConversationId", "chatwootContactId", "whatsapp"];
+function clearOneShotParams() {
+  try {
+    const url = new URL(location.href);
+    if (!ONE_SHOT_PARAMS.some(key => url.searchParams.has(key))) return;
+    for (const key of ONE_SHOT_PARAMS) url.searchParams.delete(key);
+    history.replaceState(history.state, "", `${url.pathname}${url.searchParams.toString() ? `?${url.searchParams}` : ""}${url.hash}`);
+  } catch { /* the address bar is cosmetic here */ }
+}
+
 function openRequestedDialog() {
   if (requestedDialogOpened) return;
   const params = new URLSearchParams(location.search);
+  clearOneShotParams();
   const dialog = params.get("dialog");
   const focus = params.get("focus");
   if (focus?.includes(":")) {
