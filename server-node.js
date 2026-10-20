@@ -1071,8 +1071,26 @@ function canOverrideNegativeStock(db, user) {
   return actions.includes("allow-negative-stock");
 }
 
+// Reserved copies an online order hands to the new invoice that this save creates for it (the legacy client
+// "convert order to invoice" path). reconcileReservationWrite consumes exactly these reservations.
+function reservationsConsumedByNewSales(currentDb, nextDb, existingSaleIds) {
+  const newSaleIds = new Set((nextDb.sales || []).filter(sale => !existingSaleIds.has(sale.id)).map(sale => sale.id));
+  const currentOrders = new Map((currentDb.onlineOrders || []).map(order => [order.id, order]));
+  const consumed = new Map();
+  for (const order of nextDb.onlineOrders || []) {
+    const previous = currentOrders.get(order.id), reservation = previous && activeReservation(previous);
+    if (!reservation || previous.saleId || !order.saleId || !newSaleIds.has(order.saleId)) continue;
+    for (const [bookId, quantity] of aggregateOrderLines(reservation.lines)) consumed.set(bookId, (consumed.get(bookId) || 0) + quantity);
+  }
+  return consumed;
+}
+
+// New sales may only take copies that are free: stock minus copies reserved for confirmed orders and copies held for a
+// stock count, plus the reservation of an order this save invoices. Taking reserved/held copies is a 409 that no
+// negative-stock permission overrides; selling beyond the shelf keeps the existing allowNegativeStock override rule.
 function validateNegativeStockWrite(currentDb, nextDb, user) {
   const existingSaleIds = new Set((currentDb.sales || []).map(sale => sale.id));
+  const consumedReservations = reservationsConsumedByNewSales(currentDb, nextDb, existingSaleIds);
   const requestedByBook = new Map();
   for (const sale of (nextDb.sales || []).filter(item => !item.deletedAt && item.status !== "ملغاة" && !existingSaleIds.has(item.id))) {
     for (const line of sale.lines || []) {
@@ -1081,15 +1099,17 @@ function validateNegativeStockWrite(currentDb, nextDb, user) {
       if (bookId && quantity > 0) requestedByBook.set(bookId, Number(requestedByBook.get(bookId) || 0) + quantity);
     }
   }
-  const violations = [];
+  const violations = [], reservedConflicts = [];
   for (const [bookId, requested] of requestedByBook) {
     const book = (currentDb.books || []).find(item => item.id === bookId);
-    const available = Number(book?.stock || 0);
-    if (requested > available) violations.push({ bookId, name:book?.name || bookId, available, requested });
+    const onHand = Number(book?.stock || 0);
+    const held = Math.max(0, reservedStock(book) - (consumedReservations.get(bookId) || 0)) + countHoldStock(book);
+    if (requested > onHand) violations.push({ bookId, name:book?.name || bookId, available:onHand, requested });
+    else if (requested > onHand - held) reservedConflicts.push({ bookId, name:book?.name || bookId, available:Math.max(0, onHand - held), requested, held });
   }
-  if (!violations.length) return { ok:true, violations:[] };
+  if (!violations.length) return { ok:!reservedConflicts.length, violations:[], reservedConflicts };
   const allowed = nextDb.settings?.allowNegativeStock === true && canOverrideNegativeStock(nextDb, user);
-  return { ok:allowed, violations };
+  return { ok:allowed && !reservedConflicts.length, violations, reservedConflicts };
 }
 
 function validateCommercialFields(db) {
@@ -4029,6 +4049,10 @@ const server = http.createServer(async (req, res) => {
       const overReserved=(parsed.books||[]).find(book=>reservedStock(book)>Math.max(0,Number(book.stock||0)));
       if(overReserved)return send(res,409,{ok:false,code:"RESERVED_STOCK_CONFLICT",message:`لا يمكن خفض الرصيد الفعلي لـ«${overReserved.name}» عن الكمية المحجوزة (${reservedStock(overReserved)}).`});
       const stockValidation = validateNegativeStockWrite(currentDb, parsed, user);
+      if (stockValidation.reservedConflicts.length) {
+        const row = stockValidation.reservedConflicts[0];
+        return send(res, 409, { ok:false, code:"RESERVED_STOCK_UNAVAILABLE", message:`لا يمكن إتمام البيع. المتاح للبيع من «${row.name}» هو ${row.available} والكمية المطلوبة ${row.requested}؛ باقي النسخ محجوزة لطلبات مؤكدة أو بانتظار الجرد.`, violations:stockValidation.reservedConflicts });
+      }
       if (!stockValidation.ok) {
         const row = stockValidation.violations[0];
         return send(res, 403, { ok:false, code:"NEGATIVE_STOCK_FORBIDDEN", message:`لا يمكن إتمام البيع. الرصيد المتاح من «${row.name}» هو ${row.available} والكمية المطلوبة ${row.requested}.`, violations:stockValidation.violations });
