@@ -13,7 +13,9 @@ async function login(username){
   return body.token;
 }
 async function request(path,{token,method="GET",body}={}){
-  const response=await fetch(`${base}${path}`,{method,headers:{"X-Session-Token":token,...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
+  // Whole-database saves must name the revision they replace (If-Match).
+  const ifMatch=method==="PUT"&&path==="/api/db"?{"If-Match":(await (await fetch(`${base}/api/live-revision`,{headers:{"X-Session-Token":token}})).json()).revision}:{};
+  const response=await fetch(`${base}${path}`,{method,headers:{"X-Session-Token":token,...(body?{"Content-Type":"application/json"}:{}),...ifMatch},body:body?JSON.stringify(body):undefined});
   return {status:response.status,body:await response.json().catch(()=>({}))};
 }
 
@@ -49,7 +51,10 @@ async function request(path,{token,method="GET",body}={}){
   assert(result.status===200,"warehouse started preparation");
   const locked=await request(`/api/orders/${orderId}/prepare/start`,{token:owner,method:"POST"});
   assert(locked.status===409&&locked.body.code==="ORDER_LOCKED","preparation lock prevents a second employee");
-  const issue=await request(`/api/orders/${orderId}/prepare/issue`,{token:warehouse,method:"POST",body:{reason:"صنف غير متوفر",notes:"اختبار QA"}});
+  // A shortage reason must name the missing book and quantity (it moves the order to pre-order); other reasons stop for review.
+  const shortageWithoutBooks=await request(`/api/orders/${orderId}/prepare/issue`,{token:warehouse,method:"POST",body:{reason:"صنف غير متوفر",notes:"اختبار QA"}});
+  assert(shortageWithoutBooks.status===400&&shortageWithoutBooks.body.code==="MISSING_BOOKS_REQUIRED","shortage issue requires the missing books");
+  const issue=await request(`/api/orders/${orderId}/prepare/issue`,{token:warehouse,method:"POST",body:{reason:"يحتاج مراجعة خدمة العملاء",notes:"اختبار QA"}});
   assert(issue.status===200&&issue.body.order.workflowStage==="needs_review","preparation issue stops the workflow for review");
   payload.lines.push({bookId:books[2].id,qty:1,discount:0,discountType:"percent"});
   const updated=await request(`/api/orders/${orderId}/quick`,{token:owner,method:"PATCH",body:payload});
@@ -84,11 +89,14 @@ async function request(path,{token,method="GET",body}={}){
   const drafts=await Promise.all([1,2].map(index=>request("/api/orders/quick",{token:owner,method:"POST",body:concurrentPayload(index)})));
   assert(drafts.every(item=>item.status===201),"two drafts can reference the last copy without reserving it");
   const confirmations=await Promise.all(drafts.map(item=>request(`/api/orders/${item.body.order.id}/confirm`,{token:owner,method:"POST"})));
-  assert(confirmations.map(item=>item.status).sort().join(",")==="200,409","concurrent confirmation of the last copy yields one success and one conflict");
+  // Since pre-orders (4de00f3, 4303712) the order that misses the last copy becomes a pre-order holding no copies
+  // instead of being rejected; exactly one order may hold the copy.
+  const stages=confirmations.map(item=>item.body.order?.workflowStage);
+  assert(confirmations.every(item=>item.status===200)&&stages.slice().sort().join(",")==="awaiting_preparation,awaiting_stock","concurrent confirmation of the last copy reserves it for one order and makes the other a pre-order");
   const afterConcurrent=(await request("/api/db",{token:owner})).body;
   assert(Number(afterConcurrent.books.find(item=>item.id===concurrentBook.id).reservedStock||0)===1,"concurrent confirmation leaves exactly one reserved copy");
-  const failedIndex=confirmations.findIndex(item=>item.status===409),failedOrder=afterConcurrent.onlineOrders.find(item=>item.id===drafts[failedIndex].body.order.id);
-  assert(!failedOrder.confirmedAt&&failedOrder.workflowStage==="draft","failed reservation never enters the preparation queue");
+  const preorderIndex=stages.indexOf("awaiting_stock"),preorder=afterConcurrent.onlineOrders.find(item=>item.id===drafts[preorderIndex].body.order.id);
+  assert(preorder.workflowStage==="awaiting_stock"&&preorder.inventoryReservation?.status!=="active"&&JSON.stringify(preorder.backorderLines)===JSON.stringify([{bookId:concurrentBook.id,qty:1}]),"the pre-order holds no copy and never enters the preparation queue");
 
   const siteDb=(await request("/api/db",{token:owner})).body;
   const siteOrderId=`ORD-QA-SITE-${stamp}`;

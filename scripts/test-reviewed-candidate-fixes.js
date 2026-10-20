@@ -47,7 +47,10 @@ pass("unrelated validation does not materialize new fields",()=>{
   assert.doesNotMatch(server,/db\.settings\.shippingRules\s*=|row\.(?:notes|shippingFee|shippingCost|shipping)\s*=/);
 });
 pass("mobile quick sale keeps discount value and type visible",()=>{
-  assert.match(css,/\.quick-sale-line \.discount-field \{[^}]*display: grid/);
+  // Since the unified line-pricing layout the discount value and type are two inputs (percent and amount) per line.
+  assert.match(app,/class="quick-order-line quick-sale-line[\s\S]*?class="sale-discount-percent discount-field"[\s\S]*?class="sale-discount-amount discount-field"/);
+  const hidden=[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([,,body])=>/display:\s*none/.test(body)).flatMap(([,selectors])=>selectors.split(",").map(item=>item.trim()));
+  assert.deepStrictEqual(hidden.filter(selector=>/(?:quick-discount-field|discount-field)(?:\s+input)?$/.test(selector)),[]);
   assert.doesNotMatch(css,/invoice-line \.discount-field[^\n]*display:\s*none/);
 });
 pass("shipping fallback prefers shippingFee then shippingCost",()=>{
