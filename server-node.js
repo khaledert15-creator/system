@@ -571,6 +571,18 @@ function validateShippingOverridePermission(currentDb,nextDb,user) {
   return {ok:true};
 }
 
+// The pre-order permission is offered to website customers, so only book.preorder.manage (owner/manager by default)
+// may turn it on or off; permissions come from the stored database, not from the save being checked.
+function validatePreorderPermission(currentDb,nextDb,user) {
+  if(canOrderAction(currentDb,user,"book.preorder.manage"))return {ok:true};
+  const currentById=new Map((currentDb.books||[]).map(book=>[book.id,book]));
+  for(const book of nextDb.books||[]){
+    const previous=currentById.get(book.id);
+    if((previous?.allowPreorder===true)!==(book.allowPreorder===true))return {ok:false,bookId:book.id};
+  }
+  return {ok:true};
+}
+
 function normalizeCustomerPhone(value="") {
   const digits=String(value||"").replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/\D/g,"");
   if(digits.startsWith("20")&&digits.length===12)return `0${digits.slice(2)}`;
@@ -4133,6 +4145,8 @@ const server = http.createServer(async (req, res) => {
       if(!commercialValidation.ok)return send(res,400,{ok:false,code:commercialValidation.code,message:commercialValidation.message});
       const shippingPermission=validateShippingOverridePermission(currentDb,parsed,user);
       if(!shippingPermission.ok)return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة.",recordId:shippingPermission.recordId});
+      const preorderPermission=validatePreorderPermission(currentDb,parsed,user);
+      if(!preorderPermission.ok)return send(res,403,{ok:false,code:"PREORDER_PERMISSION_DENIED",message:"تعديل «يسمح بالحجز المسبق» متاح للمالك والمدير فقط.",bookId:preorderPermission.bookId});
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
       if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});

@@ -64,7 +64,7 @@ const ACTION_ROLES = {
   ,"order.quick.create":["مالك","مدير","كاشير"],"order.quick.confirm":["مالك","مدير","كاشير"],"order.quick.edit":["مالك","مدير","كاشير"],
   "order.discount.override":["مالك","مدير"],"order.shipping.override":["مالك","مدير"],"order.payment.receive":["مالك","مدير","كاشير"],
   "order.prepare":["مالك","مدير","مخزن"],"order.pack":["مالك","مدير","مخزن"],"order.shipping":["مالك","مدير","شحن"],
-  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],
+  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
   "panel.view":["مالك","مدير","محاسب","كاشير","مخزن","شحن"],"panel.link":["مالك","مدير","كاشير"]
 };
 
@@ -94,7 +94,7 @@ const VIEW_DEFINITIONS = [
 ];
 
 const PERMISSION_ACTIONS = [
-  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
+  ["الأصناف والمخزون", [["add-book","إضافة صنف"],["view-book","عرض صنف"],["view-item-movement","عرض كشف حركة الصنف"],["view-item-cost-profit","عرض تكلفة/ربحية الصنف"],["allow-negative-stock","السماح بالبيع فوق الرصيد"],["edit-book","تعديل صنف"],["book.preorder.manage","تعديل السماح بالحجز المسبق"],["delete-book","حذف صنف"],["adjust-stock","تسوية مخزون"],["stock-count","جرد المخزون"]]],
   ["المبيعات", [["new-sale-invoice","فاتورة جديدة"],["add-sale-line","إضافة صنف للفاتورة"],["reset-sale","تفريغ الفاتورة"],["save-sale","حفظ فاتورة بيع"],["show-sales-list","عرض فواتير البيع"],["print-sale","طباعة فاتورة بيع"],["register-sale-customer","تسجيل عميل من الفاتورة"],["edit-sale-payment","تعديل/تحصيل فاتورة"],["limited-edit-sale","تعديل محدود لفاتورة"],["cancel-sale","إلغاء فاتورة بيع"],["close-sales-day","قفل اليومية"],["print-sales-day","طباعة تقرير اليوم"],["view-sales-profit","عرض أرباح وتكلفة المبيعات"]]],
   ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
@@ -7310,7 +7310,7 @@ function addBookModal(book = null) {
         <div class="form-field"><label>حد إعادة الطلب</label><input name="reorder" type="number" min="0" value="${book?.reorder ?? 5}"></div>
         <div class="form-field"><label>نوع الملكية</label><select name="owned"><option value="true" ${book?.owned !== false ? "selected" : ""}>مملوك</option><option value="false" ${book?.owned === false ? "selected" : ""}>أمانة / تصريف</option></select></div>
         <div class="form-field"><label>آخر موعد للمرتجع</label><input name="returnDeadline" type="date" value="${book?.returnDeadline || ""}"></div>
-        <div class="form-field"><label class="check-line"><input type="checkbox" name="allowPreorder" value="true" ${book?.allowPreorder === true ? "checked" : ""}> يسمح بالحجز المسبق</label><small>يظهر للعميل على الموقع عند نفاد الكمية، ويُعتمد الطلب كحجز مسبق بموافقته.</small></div>
+        <div class="form-field"><label class="check-line"><input type="checkbox" name="allowPreorder" value="true" ${book?.allowPreorder === true ? "checked" : ""} ${canAction("book.preorder.manage") ? "" : "disabled"}> يسمح بالحجز المسبق</label><small>يظهر للعميل على الموقع عند نفاد الكمية، ويُعتمد الطلب كحجز مسبق بموافقته.</small></div>
       </div>
       <div class="form-actions"><button class="btn" type="submit">حفظ الصنف</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
     </form>`);
@@ -9561,7 +9561,8 @@ modalBody.addEventListener("submit", async event => {
       stock: Number(formData.stock),
       reorder: Number(formData.reorder),
       owned: formData.owned === "true",
-      allowPreorder: formData.allowPreorder === "true",
+      // Only book.preorder.manage changes the pre-order permission (it is offered to website customers).
+      allowPreorder: canAction("book.preorder.manage") ? formData.allowPreorder === "true" : getBook(form.dataset.editId)?.allowPreorder === true,
       returnDeadline: formData.returnDeadline,
       lastSale: getBook(form.dataset.editId)?.lastSale || null,
       createdAt: getBook(form.dataset.editId)?.createdAt || now, updatedAt: now, deletedAt: null
