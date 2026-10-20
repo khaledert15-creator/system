@@ -12,7 +12,9 @@ pass("permission keys are editable and default to the spec roles", () => {
 });
 pass("book form saves allowPreorder through the normal client save", () => {
   assert.match(app, /name="allowPreorder" value="true"[^>]*> يسمح بالحجز المسبق/);
-  assert.match(app, /allowPreorder: formData\.allowPreorder === "true"/);
+  // Only book.preorder.manage changes it; without it the stored value is kept and the box is disabled.
+  assert.match(app, /allowPreorder: canAction\("book\.preorder\.manage"\) \? formData\.allowPreorder === "true" : getBook\(form\.dataset\.editId\)\?\.allowPreorder === true/);
+  assert.match(app, /name="allowPreorder"[^>]*\$\{canAction\("book\.preorder\.manage"\) \? "" : "disabled"\}/);
   assert.match(app, /function bookEditFingerprint[\s\S]*book\.allowPreorder === true/);
 });
 pass("online orders have a website tab that loads from the server", () => {
