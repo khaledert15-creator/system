@@ -168,8 +168,8 @@ function readDbForWrite() {
 const liveClients = new Set();
 
 function writeDb(db, options = {}) {
-  const current = fs.existsSync(DB_PATH) ? readDb() : {};
-  SeasonDataManagement.linkNewRecordsToActiveSeason(current, db);
+  // A restore stores the backup exactly as it was (linkSeason:false); every other write links new records to the active season.
+  if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDb() : {}, db);
   const result = databasePersistence.write(db, options);
   for (const client of liveClients) { try { client.publish(); } catch { liveClients.delete(client); } }
   // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
@@ -348,6 +348,28 @@ function changeUserAccount(actor, operation, username, payload) {
   if (endSessions) endUserSessions(target.username);
   else for (const session of sessions.values()) if (session.user?.username === target.username) Object.assign(session.user, { name:target.name, role:target.role });
   return { user:withoutCredentials({ users:[target] }).users[0], revision:String(saved.revision) };
+}
+
+// Server copy of the browser rules for backup-db / restore-db (ACTION_ROLES plus saved role/user permissions).
+// Restore is never granted beyond owner and manager, whatever the saved permissions say.
+const BACKUP_ACTION_ROLES = { "backup-db":["مالك", "مدير", "محاسب"], "restore-db":["مالك", "مدير"] };
+function canBackupAction(db, user, action) {
+  if (isOwnerAccount(user)) return true;
+  const role = accountRole(user);
+  if (action === "restore-db" && role !== "مدير") return false;
+  const configured = db.settings?.permissions?.users?.[user?.username]?.actions || db.settings?.permissions?.roles?.[role]?.actions;
+  return Array.isArray(configured) ? configured.includes(action) : (BACKUP_ACTION_ROLES[action] || []).includes(role);
+}
+
+// Permissions for backup/restore must still be checkable when database.json is missing or unreadable (that is
+// when a restore is needed): saved permissions are then unknown and the role defaults apply.
+function readDbForPermissions() {
+  try { return fs.existsSync(DB_PATH) ? readDb() : {}; } catch { return {}; }
+}
+
+function isInsideDirectory(root, file) {
+  const relative = path.relative(path.resolve(root), path.resolve(file));
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function canPartyAction(db, user, action) {
@@ -4171,14 +4193,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "/api/backup" && req.method === "POST") {
-      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canBackupAction(readDbForPermissions(), user, "backup-db")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"ليس لديك صلاحية إنشاء نسخة احتياطية." });
       const backup = createBackup();
       if (!backup) return send(res, 404, { ok:false, message:"There is no database to back up." });
       return send(res, 200, { ok:true, file:path.basename(backup) });
     }
 
     if (route === "/api/backups" && req.method === "GET") {
-      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      const permissionDb = readDbForPermissions();
+      if (!canBackupAction(permissionDb, user, "backup-db") && !canBackupAction(permissionDb, user, "restore-db")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"ليس لديك صلاحية عرض النسخ الاحتياطية." });
       ensureDirs();
       const backups = fs.readdirSync(BACKUP_ROOT)
         .filter(name => /^database-.*\.json$/i.test(name))
@@ -4193,14 +4220,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "/api/restore" && req.method === "POST") {
-      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canBackupAction(readDbForPermissions(), user, "restore-db")) return send(res, 403, { ok:false, code:"PERMISSION_DENIED", message:"استعادة النسخ الاحتياطية متاحة للمالك والمدير فقط." });
       const payload = JSON.parse(await readBody(req) || "{}");
       const fileName = path.basename(String(payload.file || ""));
       const source = path.join(BACKUP_ROOT, fileName);
-      if (!fileName || !source.startsWith(BACKUP_ROOT) || !fs.existsSync(source)) return send(res, 404, { ok:false, message:"Backup not found." });
+      if (!fileName || !isInsideDirectory(BACKUP_ROOT, source) || !fs.existsSync(source)) return send(res, 404, { ok:false, message:"Backup not found." });
+      let restored;
+      try { restored = JSON.parse(fs.readFileSync(source, "utf8")); } catch { restored = null; }
+      if (!restored || typeof restored !== "object" || Array.isArray(restored)) return send(res, 422, { ok:false, code:"BACKUP_INVALID", message:"ملف النسخة الاحتياطية تالف ولا يمكن استعادته." });
       createBackup();
-      fs.copyFileSync(source, DB_PATH);
-      return send(res, 200, { ok:true, revision: dbRevision() });
+      // An unreadable current file is already copied by createBackup; remove it so the restore can be written.
+      try { if (fs.existsSync(DB_PATH)) databasePersistence.read(); } catch { fs.rmSync(DB_PATH, { force:true }); }
+      const now = new Date().toISOString();
+      restored.audit = Array.isArray(restored.audit) ? restored.audit : [];
+      AuditIds.appendAuditRecord(restored.audit, { date:now, createdAt:now, action:"استعادة نسخة احتياطية", operationType:"DATABASE_RESTORED", entity:"النسخ الاحتياطي", entityId:fileName, documentNo:fileName, user:user.name || user.username, username:user.username, role:user.role });
+      // Normal write path: the revision moves forward past anything clients have seen (never back to the backup's
+      // revision), live clients are told to reload, and pre-orders are re-checked against the restored stock.
+      const saved = writeDb(restored, { minimumRevision:databasePersistence.highestRevision(), linkSeason:false, operationType:"DATABASE_RESTORED", performedBy:user.username });
+      return send(res, 200, { ok:true, revision:String(saved.revision) }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
     }
 
     if (route === "/api/reset" && req.method === "POST") {
