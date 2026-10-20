@@ -155,7 +155,12 @@ function createIntegrationServer(deps) {
     const file = path.join(appRoot, "integrations", "chatwood-panel.html");
     if (!isInsideDirectory(appRoot, file) || !fs.existsSync(file)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
     const origin = config.chatwoodOrigin.replace(/[&<>"']/g, "");
-    const html = fs.readFileSync(file, "utf8").replace("</head>", `  <meta name="chatwood-origin" content="${origin}">\n</head>`);
+    // The tab's script and stylesheet are referenced with the build id: the public edge and browsers cache
+    // /integrations/*.js for hours, and a stale tab script after a deploy builds links the System refuses.
+    const version = encodeURIComponent(String(deps.appBuildId || "dev"));
+    const html = fs.readFileSync(file, "utf8").replace("</head>", `  <meta name="chatwood-origin" content="${origin}">\n</head>`)
+      .replace('href="/integrations/chatwood-panel.css"', `href="/integrations/chatwood-panel.css?v=${version}"`)
+      .replace('src="/integrations/chatwood-panel.js"', `src="/integrations/chatwood-panel.js?v=${version}"`);
     return send(res, 200, html, "text/html; charset=utf-8", { ...frameAncestorHeaders([config.chatwoodOrigin]), "Cache-Control":"no-store" });
   }
 

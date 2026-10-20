@@ -120,6 +120,13 @@ const H = require('./integration-test-helpers.js');
     assert.equal(unreachable.readDb().meta.dataRevision, 0, 'nothing written');
     assert.equal((await unreachable.api('/api/integration/v1/panel/customer?phone=01001234567', { username:'cashier' })).body.storeAvailable, false);
     console.log('PASS unreachable Store: panel degrades to System data, approval returns 502 without writing');
+    // The tab page references its script and stylesheet by build id, so a deploy is never masked by a cached script.
+    {
+      const html = await (await fetch(`${system.base}/integrations/chatwood-panel`)).text();
+      assert.match(html, /chatwood-panel\.js\?v=[A-Za-z0-9._-]+"/); assert.match(html, /chatwood-panel\.css\?v=[A-Za-z0-9._-]+"/);
+      assert.equal((await fetch(`${system.base}/integrations/chatwood-panel.js?v=x`)).status, 200);
+      console.log('PASS tab assets are versioned by build id');
+    }
     console.log('PASS chatwood panel checks completed');
   } finally {
     for (const server of servers) server.stop();

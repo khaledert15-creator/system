@@ -3008,7 +3008,7 @@ function contentType(file) {
 const integration = createIntegrationServer({
   config:INTEGRATION_CONFIG, send, readBody, readJsonBody, readDb, readDbForWrite, writeDb, ensureTrackingDb, dbRevision, sessionUser, canOrderAction, orderRole,
   liveClients, baseSecurityHeaders:BASE_SECURITY_HEADERS, frameAncestorHeaders,
-  appRoot:APP_ROOT, isInsideDirectory, AuditIds, normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment,
+  appRoot:APP_ROOT, appBuildId:APP_BUILD_ID, isInsideDirectory, AuditIds, normalizeCustomerPhone, availableStock, reserveOrderInventory, applyBackorderStage, applyQuickOrderPayment,
   appendOrderAudit, nextId, orderShippingCompany, shipmentStatusLabel:businessShipmentStatus,
   countHoldStock, aggregateOrderLines, automaticShippingFee,
   confirmedPaid:(db, order) => confirmedOrderPayments(db, order.id).reduce((sum, item) => sum + Number(item.amount || 0), 0)
