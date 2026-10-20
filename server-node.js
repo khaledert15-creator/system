@@ -16,7 +16,7 @@ const OrderRefunds = require("./app/order-refund.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
-const { createDatabasePersistence } = require("./app/database-persistence.js");
+const { createDatabasePersistence, dataRevision } = require("./app/database-persistence.js");
 
 const ROOT = __dirname;
 const APP_ROOT = process.env.APP_STATIC_ROOT || path.join(ROOT, "app");
@@ -155,6 +155,14 @@ function recordLoginFailure(key) {
 
 function readDb() {
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+}
+
+// The DB plus the revision it was read at. A handler that mutates reads the request body FIRST, then does
+// read → validate → mutate → writeDb(db, { expectedRevision:revision }) with no await in between, so a save that
+// lands while a slow body is still uploading can never be silently overwritten (lost update).
+function readDbForWrite() {
+  const db = readDb();
+  return { db, revision:dataRevision(db) };
 }
 
 const liveClients = new Set();
@@ -3101,10 +3109,11 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/admin/demo-data/purge" && req.method === "POST") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
-      const db = readDb();
+      // Body first: read → validate → write must run with no await in between (see readDbForWrite).
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const { db, revision } = readDbForWrite();
       if (!canManageSeasonData(db, user, "purge_demo_data")) return send(res, 403, { ok:false, message:"ليس لديك صلاحية حذف البيانات التجريبية." });
       if (!SEASON_PURGE_ENABLED) return send(res, 403, { ok:false, code:"PURGE_DISABLED", message:"تنفيذ الحذف معطّل في بيئة التطوير. المعاينة فقط متاحة." });
-      const payload = JSON.parse(await readBody(req) || "{}");
       const credential = users().find(item => item.username === user.username);
       if (!credential || !verifyPassword(credential, payload.password)) return send(res, 401, { ok:false, code:"IDENTITY_CONFIRMATION_FAILED", message:"تعذر تأكيد هوية المالك." });
       const preview = SeasonDataManagement.buildDemoPreview(db);
@@ -3112,7 +3121,7 @@ const server = http.createServer(async (req, res) => {
       const backup = verifiedDatabaseBackup("pre-demo-purge");
       try {
         const result = SeasonDataManagement.purgeDemoDataset(db, { productIds:SeasonDataManagement.DEMO_PRODUCT_IDS, confirmation:payload.confirmation, operationKey:String(payload.operationKey || ""), performedBy:user.name || user.username, backup });
-        writeDb(result.db);
+        writeDb(result.db, { expectedRevision:revision });
         return send(res, 200, { ok:true, deleted:result.deleted, audit:result.audit, backupReference:backup.reference, revision:dbRevision() });
       } catch (error) {
         return send(res, error.code === "MIXED_RECORDS_BLOCKED" ? 409 : 400, { ok:false, code:error.code || "PURGE_FAILED", message:error.message, blockedRecords:error.blockedRecords || [], orphans:error.orphans || {} });
@@ -3122,9 +3131,9 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/admin/seasons/start" && req.method === "POST") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
-      const db = readDb();
-      if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"بدء موسم جديد متاح لمالك النظام فقط." });
       const payload = JSON.parse(await readBody(req) || "{}");
+      const { db, revision } = readDbForWrite();
+      if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"بدء موسم جديد متاح لمالك النظام فقط." });
       const activeSeason = SeasonDataManagement.activeSeason(db);
       const open = SeasonDataManagement.openOperations(db, activeSeason?.id || "");
       if (open.total && !(payload.administrativeOverride && String(payload.reason || "").trim())) return send(res, 409, { ok:false, code:"OPEN_OPERATIONS", message:"توجد عمليات مفتوحة يجب معالجتها قبل بدء موسم جديد.", openOperations:open });
@@ -3132,7 +3141,7 @@ const server = http.createServer(async (req, res) => {
         let next = db;
         if (activeSeason) next = SeasonDataManagement.closeSeason(next, activeSeason.id, { administrativeOverride:payload.administrativeOverride, reason:payload.reason }, user).db;
         const created = SeasonDataManagement.createSeason(next, payload, user);
-        writeDb(created.db);
+        writeDb(created.db, { expectedRevision:revision });
         return send(res, 201, { ok:true, season:created.season, revision:dbRevision() });
       } catch (error) { return send(res, 409, { ok:false, code:error.code || "SEASON_START_FAILED", message:error.message, openOperations:error.openOperations || open }); }
     }
@@ -3140,12 +3149,13 @@ const server = http.createServer(async (req, res) => {
     if (/^\/api\/admin\/seasons\/[^/]+\/close$/.test(route) && req.method === "POST") {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
-      const db = readDb();
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const { db, revision } = readDbForWrite();
       if (!canManageSeasonData(db, user, "manage_seasons")) return send(res, 403, { ok:false, message:"إغلاق الموسم متاح لمالك النظام فقط." });
-      const seasonId = route.split("/")[4], payload = JSON.parse(await readBody(req) || "{}");
+      const seasonId = route.split("/")[4];
       try {
         const closed = SeasonDataManagement.closeSeason(db, seasonId, payload, user);
-        writeDb(closed.db);
+        writeDb(closed.db, { expectedRevision:revision });
         return send(res, 200, { ok:true, season:closed.season, openOperations:closed.openOperations, revision:dbRevision() });
       } catch (error) { return send(res, 409, { ok:false, code:error.code || "SEASON_CLOSE_FAILED", message:error.message, openOperations:error.openOperations || {} }); }
     }
@@ -3153,9 +3163,9 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/orders/quick" && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());
-      if(!canOrderAction(db,user,"order.quick.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إنشاء طلب واتساب سريع."});
       const payload=JSON.parse(await readBody(req)||"{}"),conversationId=String(payload.chatwootConversationId||"").trim();
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);
+      if(!canOrderAction(db,user,"order.quick.create"))return send(res,403,{ok:false,message:"ليس لديك صلاحية إنشاء طلب واتساب سريع."});
       if(conversationId){
         const found=(db.onlineOrders||[]).find(item=>item.chatwootConversationId===conversationId&&!item.deletedAt);
         if(found)return send(res,200,{ok:true,order:found,existing:true,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
@@ -3190,20 +3200,20 @@ const server = http.createServer(async (req, res) => {
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
-      writeDb(db);
+      writeDb(db,{expectedRevision:revision});
       return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/quick") && req.method === "PATCH") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());
+      const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);
       if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تعديل الطلب السريع."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
       if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,code:"REOPEN_PREPARATION_REQUIRED",message:"تم تجهيز هذا الطلب بالفعل. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار."});
-      const payload=JSON.parse(await readBody(req)||"{}"),phone=normalizeCustomerPhone(payload.phone);
       let shippingCompany;try{shippingCompany=orderShippingCompany(db,payload.shippingCompany,order.shippingCompany);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
@@ -3243,7 +3253,7 @@ const server = http.createServer(async (req, res) => {
         db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-updated-${order.id}-${Date.now()}`,title:"تم تعديل طلب بعد بدء التجهيز",description:`${order.id} — راجع قائمة الكتب المحدثة`,source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
       }
       appendOrderAudit(db,user,order,"تعديل طلب واتساب سريع",preparationStarted?"تم تحديث قائمة التجهيز وإعادة ضبط علاماتها":"تحديث المسودة");
-      writeDb(db);
+      writeDb(db,{expectedRevision:revision});
       return send(res,200,{ok:true,order,preparationReset:preparationStarted,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -3458,21 +3468,21 @@ const server = http.createServer(async (req, res) => {
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/checklist") && req.method === "PATCH") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تجهيز الطلب."});
+      const payload=JSON.parse(await readBody(req)||"{}"),doneIds=new Set(payload.doneBookIds||[]);
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تجهيز الطلب."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:`الطلب محجوز لدى ${order.preparingBy||"موظف آخر"}.`});
-      const payload=JSON.parse(await readBody(req)||"{}"),doneIds=new Set(payload.doneBookIds||[]);
-      order.preparationChecklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneIds.has(line.bookId)}));order.updatedAt=new Date().toISOString();writeDb(db);
+      order.preparationChecklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneIds.has(line.bookId)}));order.updatedAt=new Date().toISOString();writeDb(db,{expectedRevision:revision});
       return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/issue") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل مشكلة تجهيز."});
+      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString(),reason=String(payload.reason||"مشكلة في الطلب"),notes=String(payload.notes||"").trim();
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تسجيل مشكلة تجهيز."});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(!["awaiting_preparation","preparing","needs_review"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,message:"الطلب غير متاح لتسجيل مشكلة تجهيز."});
-      const payload=JSON.parse(await readBody(req)||"{}"),now=new Date().toISOString(),reason=String(payload.reason||"مشكلة في الطلب"),notes=String(payload.notes||"").trim();
       const ordered=aggregateOrderLines(order.lines||[]),missing=new Map();
       for(const row of Array.isArray(payload.missingLines)?payload.missingLines:[]){
         const qty=Math.trunc(Number(row?.qty||0));if(!(qty>0))continue;
@@ -3500,7 +3510,7 @@ const server = http.createServer(async (req, res) => {
       }else Object.assign(order,{status:"يحتاج مراجعة",workflowStage:"needs_review",updatedAt:now});
       const bookNames=missingLines.map(line=>`${(db.books||[]).find(item=>item.id===line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");
       db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-review-${order.id}`,title:shortage?"طلب انتقل للحجز المسبق أثناء التجهيز":"طلب يحتاج مراجعة أثناء التجهيز",description:[`${order.id} — ${reason}`,bookNames,notes].filter(Boolean).join(" · "),source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
-      appendOrderAudit(db,user,order,shortage?"نقص كتب أثناء التجهيز ونقل للحجز المسبق":"تسجيل مشكلة أثناء التجهيز",[reason,bookNames,notes].filter(Boolean).join(" · "));writeDb(db);return send(res,200,{ok:true,order,stage:order.workflowStage,revision:dbRevision()});
+      appendOrderAudit(db,user,order,shortage?"نقص كتب أثناء التجهيز ونقل للحجز المسبق":"تسجيل مشكلة أثناء التجهيز",[reason,bookNames,notes].filter(Boolean).join(" · "));writeDb(db,{expectedRevision:revision});return send(res,200,{ok:true,order,stage:order.workflowStage,revision:dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/complete") && req.method === "POST") {
@@ -3565,9 +3575,10 @@ const server = http.createServer(async (req, res) => {
 
     if (route.startsWith("/api/orders/") && route.endsWith("/ship") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلب."});
-      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt),payload=JSON.parse(await readBody(req)||"{}");
-      try{const shipment=createReadyOrderShipment(db,order,payload,user);writeDb(db);return send(res,201,{ok:true,order,shipment,revision:dbRevision()});}
+      const payload=JSON.parse(await readBody(req)||"{}");
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلب."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      try{const shipment=createReadyOrderShipment(db,order,payload,user);writeDb(db,{expectedRevision:revision});return send(res,201,{ok:true,order,shipment,revision:dbRevision()});}
       catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message,shipmentId:error.shipmentId});}
     }
 
@@ -3596,15 +3607,15 @@ const server = http.createServer(async (req, res) => {
 
     if (route === "/api/orders/shipping/batch" && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلبات."});
       const payload=JSON.parse(await readBody(req)||"{}"),rows=Array.isArray(payload.rows)?payload.rows:[],results=[];
-      if(payload.previewRevision!=null&&String(payload.previewRevision)!==dbRevision())return send(res,409,{ok:false,code:"STALE_SHIPPING_PREVIEW",message:"تغيرت البيانات منذ معاينة الملف. ارفع ملف Packages مرة أخرى قبل تأكيد الشحن."});
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);if(!canOrderAction(db,user,"order.shipping")&&!canOrderAction(db,user,"order.pack"))return send(res,403,{ok:false,message:"ليس لديك صلاحية شحن الطلبات."});
+      if(payload.previewRevision!=null&&String(payload.previewRevision)!==String(revision))return send(res,409,{ok:false,code:"STALE_SHIPPING_PREVIEW",message:"تغيرت البيانات منذ معاينة الملف. ارفع ملف Packages مرة أخرى قبل تأكيد الشحن."});
       for(const row of rows){
         const order=(db.onlineOrders||[]).find(item=>item.id===String(row.orderId||"").trim()&&!item.deletedAt);
         try{const shipment=createReadyOrderShipment(db,order,{...row,company:order?.shippingCompany||row.company||payload.company},user);results.push({orderId:order.id,trackingNumber:shipment.trackingNumber,ok:true,shipmentId:shipment.id});}
         catch(error){results.push({orderId:String(row.orderId||""),trackingNumber:normalizeTrackingNumber(row.trackingNumber||""),ok:false,code:error.code||"SHIPMENT_FAILED",message:error.message});}
       }
-      if(results.some(row=>row.ok))writeDb(db);
+      if(results.some(row=>row.ok))writeDb(db,{expectedRevision:revision});
       return send(res,200,{ok:true,results,revision:dbRevision()});
     }
 
@@ -3873,7 +3884,8 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith("/api/finance/order-collections/") && route.endsWith("/reverse") && req.method === "POST") {
       const user=sessionUser(req);
       if(!user)return send(res,401,{ok:false,message:"Authentication required."});
-      const source=readDb(),db=ensureFinanceDb(source);
+      const payload=JSON.parse(await readBody(req)||"{}");
+      const {db:source,revision}=readDbForWrite(),db=ensureFinanceDb(source);
       if(!canFinance(db,user,"finance.collection.reverse"))return send(res,403,{ok:false,message:"ليس لديك صلاحية عكس التحصيل."});
       const id=decodeURIComponent(route.split("/")[4]||"");
       const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
@@ -3886,9 +3898,9 @@ const server = http.createServer(async (req, res) => {
       if(shipment?.collectionId===collection.id)Object.assign(shipment,{financialCollectionStatus:"",collectionId:"",collectedAmount:0,collectedAt:"",collectedBy:""});
       (next.cash||[]).filter(item=>item.collectionId===collection.id&&!item.deletedAt).forEach(item=>{item.deletedAt=now;item.reversedBy=actor.name;});
       (next.expenses||[]).filter(item=>item.collectionId===collection.id&&item.status!=="ملغي").forEach(item=>{item.status="ملغي";item.reversedAt=now;item.reversedBy=actor.name;});
-      AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(JSON.parse(await readBody(req)||"{}").reason||"")});
+      AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(payload.reason||"")});
       pruneLazyFinanceFields(source,next);
-      writeDb(next);
+      writeDb(next,{expectedRevision:revision});
       return send(res,200,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -4191,6 +4203,7 @@ const server = http.createServer(async (req, res) => {
         : { "Cache-Control":"public, max-age=300" };
     return send(res, 200, fs.readFileSync(file), contentType(file), cacheHeaders);
   } catch (error) {
+    if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision ?? "") });
     return send(res, 500, { ok:false, message: error.message || "Server error." });
   }
 });

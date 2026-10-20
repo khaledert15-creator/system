@@ -14,13 +14,18 @@ function dataRevision(db) {
 function createDatabasePersistence({ filePath, logger = () => {} }) {
   if (!path.isAbsolute(filePath)) throw new Error("Database path must be absolute.");
   let writing = false;
+  // Highest revision this process has read or written. A restore over a missing/unreadable file uses it as a floor so
+  // the revision clients hold is never reused.
+  let highestRevision = 0;
 
   function read() {
     const raw = fs.readFileSync(filePath);
-    return { db:JSON.parse(raw), raw, revision:dataRevision(JSON.parse(raw)), sha256:sha256(raw) };
+    const result = { db:JSON.parse(raw), raw, revision:dataRevision(JSON.parse(raw)), sha256:sha256(raw) };
+    highestRevision = Math.max(highestRevision, result.revision);
+    return result;
   }
 
-  function write(nextValue, { expectedRevision, operationType = "DATABASE_WRITE", performedBy = "system" } = {}) {
+  function write(nextValue, { expectedRevision, minimumRevision = 0, operationType = "DATABASE_WRITE", performedBy = "system" } = {}) {
     if (writing) throw Object.assign(new Error("Database write already in progress."), { code:"DATABASE_WRITE_LOCKED" });
     writing = true;
     let tempPath = "", fd;
@@ -32,7 +37,7 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
       }
       const next = clone(nextValue || {});
       next.meta = next.meta && typeof next.meta === "object" ? next.meta : {};
-      next.meta.dataRevision = current.revision + 1;
+      next.meta.dataRevision = Math.max(current.revision, Number(minimumRevision) || 0) + 1;
       const body = `${JSON.stringify(next, null, 2)}\n`;
       JSON.parse(body);
       tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
@@ -46,6 +51,7 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
       try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
       const after = fs.readFileSync(filePath);
       const result = { revision:next.meta.dataRevision, beforeSha256:current.sha256, afterSha256:sha256(after), size:after.length };
+      highestRevision = Math.max(highestRevision, result.revision);
       logger({ operationType:"DATABASE_WRITE", sourceOperationType:operationType, performedBy, ...result });
       return result;
     } finally {
@@ -55,7 +61,7 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
     }
   }
 
-  return { read, write, revision:() => fs.existsSync(filePath) ? read().revision : 0 };
+  return { read, write, revision:() => fs.existsSync(filePath) ? read().revision : 0, highestRevision:() => highestRevision };
 }
 
 module.exports = { createDatabasePersistence, dataRevision, sha256 };
