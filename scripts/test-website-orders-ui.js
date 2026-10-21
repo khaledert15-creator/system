@@ -18,7 +18,7 @@ pass("book form saves allowPreorder through the normal client save", () => {
   assert.match(app, /function bookEditFingerprint[\s\S]*book\.allowPreorder === true/);
 });
 pass("online orders have a website tab that loads from the server", () => {
-  assert.match(app, /\["website","طلبات الموقع",canAction\("order\.website\.view"\)\]/);
+  assert.match(app, /canAction\("order\.website\.view"\)\?link\(\{mode:"website"\},`طلبات الموقع/);
   assert.match(app, /onlineOrdersMode==="website"&&canAction\("order\.website\.view"\)\)\{root\.innerHTML=renderWebsiteOrdersScreen\(\)/);
   assert.match(app, /websiteOrdersFetch\("\/api\/website-orders\?state=pending"\)/);
 });

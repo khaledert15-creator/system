@@ -2083,3 +2083,16 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 #split-shipment-form [hidden]{display:none!important}
 .ship-available-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin:0;padding:0;border:0}.ship-available-modes legend{font-weight:700;margin-bottom:6px}.ship-available-modes .choice-card{align-items:center;padding:10px}.ship-available-modes .choice-card input{width:18px;height:18px;min-height:0;margin:0;padding:0;flex:none}.ship-available-modes .choice-card small{font-size:11px}.ship-available-modes .choice-card:has(input:checked){border-color:var(--green-700);background:#f4f8fe}
 .search-scope-note{margin:0 0 8px;padding:8px 12px;border-radius:10px;background:#f4f8fe;color:var(--muted);font-size:13px}
+/* Orders navigation: two create buttons, the five order stages in order, and a quiet «الكل / ملغي» line */
+.orders-nav{display:grid;gap:10px;margin:0 0 16px}
+.orders-nav-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.orders-nav-actions .btn b{display:inline-grid;place-items:center;min-width:22px;height:22px;margin-inline-start:6px;padding:0 6px;border-radius:999px;background:#fff3d6;color:#8a5a00;font-size:12px}
+.orders-nav-actions .btn.active{outline:2px solid #a9c9ed}
+.orders-stage-row{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:8px;overflow-x:auto;padding-bottom:2px}
+.orders-stage{display:grid;gap:2px;justify-items:start;text-align:start;padding:10px 12px;border:1px solid var(--border);border-radius:14px;background:#fff;color:var(--muted);font:inherit;cursor:pointer;min-width:0}
+.orders-stage span{font-weight:700;font-size:13px}.orders-stage b{font-size:22px;line-height:1.2;color:var(--text)}.orders-stage small{font-size:11px;color:var(--muted)}
+.orders-stage:hover{border-color:#a9c9ed;background:#f7fbff}
+.orders-stage.active{border:2px solid var(--primary);background:#eef6ff;color:var(--primary)}.orders-stage.active b{color:var(--primary)}
+.orders-nav-secondary{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:13px}
+.orders-nav-secondary button{border:0;background:none;color:var(--muted);font:inherit;cursor:pointer;padding:2px 6px;border-radius:8px}
+.orders-nav-secondary button b{color:var(--text)}.orders-nav-secondary button.active,.orders-nav-secondary button:hover{background:#eef6ff;color:var(--primary)}
