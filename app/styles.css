@@ -2121,3 +2121,14 @@ button.shortage-stat.warning.active{border-color:#d99a2b;background:#fff9ee}
 .stage-search .search{flex:1;max-width:none}
 .stage-search input{width:100%;min-height:44px;font-size:15px}
 #stage-search-count{white-space:nowrap;font-size:13px}
+/* «حجز مسبق»: waiting orders with why they wait and what each missing book needs */
+.preorder-summary{grid-template-columns:repeat(3,minmax(0,1fr))}
+button.shortage-stat.ok b{color:#1f7a45}
+.preorder-state{display:inline-block;margin-inline-start:6px;padding:1px 8px;border-radius:999px;font-style:normal;font-size:11px;font-weight:700}
+.preorder-state.buy{background:#fdecea;color:#a3352d}.preorder-state.count{background:#fff3d6;color:#8a5a00}.preorder-state.ok{background:#e6f6ec;color:#1f7a45}
+.preorder-reason{display:grid;gap:2px;min-width:180px}.preorder-reason strong{font-size:13px}.preorder-reason small{color:var(--muted);font-size:12px}
+.preorder-reason-tag{justify-self:start;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#eef3f8;color:var(--text)}
+.preorder-reason.staff .preorder-reason-tag{background:#eef6ff;color:var(--primary)}.preorder-reason.count .preorder-reason-tag{background:#fff3d6;color:#8a5a00}.preorder-reason.website .preorder-reason-tag{background:#e6f6ec;color:#1f7a45}
+.preorders-table td small{display:block}
+.nav-count{display:inline-grid;place-items:center;margin-inline-start:6px;padding:0 8px;border-radius:999px;background:#fdecea;color:#a3352d;font-size:12px}
+.orders-books-button.active{border:2px solid var(--primary);background:#eef6ff;color:var(--primary)}

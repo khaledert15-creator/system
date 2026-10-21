@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";
-// «حجز مسبق · الكتب الناقصة»: each summary box is a button that shows only its books in the table; pressing the
+// «الكتب المطلوبة» (the books screen): each summary box is a button that shows only its books in the table; pressing the
 // active box again (or «عرض كل الكتب») shows them all. Runs the real renderShortagesScreen from app/app.js.
 const assert = require("assert"), fs = require("fs"), path = require("path"), vm = require("vm");
 const source = fs.readFileSync(path.join(__dirname, "../app/app.js"), "utf8");

@@ -203,6 +203,7 @@ let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
 let shortageFilter = "";
+let preorderFilter = "";
 let stageSearchTerm = "";
 let shippingSessionCompany = "";
 let quickShippingOrderId = "";
@@ -3445,7 +3446,7 @@ function orderIssueNote(order, { full=false }={}) {
   // A reported book stays held until it is counted; say so, since new copies alone do not release the order.
   const waitingCount=order.workflowStage==="awaiting_stock"&&(issue.missingLines||[]).some(line=>bookCountHold(getBook(line.bookId)||{})>0);
   const meta=[issue.createdBy,issue.createdAt?arabicDateTimeLabel(issue.createdAt):""].filter(Boolean).join(" · ");
-  return `<div class="order-issue-note${full?" full":""}"><strong>⚠ ${esc(issue.reason||"مشكلة في التجهيز")}</strong>${books?`<span>الناقص: ${books}</span>`:""}${waitingCount?`<span class="issue-count-hold">⏳ بانتظار جرد الكتاب (من تبويب «الكتب الناقصة والحجوزات») قبل النقل للتجهيز</span>`:""}${issue.notes?`<span>${esc(issue.notes)}</span>`:""}${full&&meta?`<small>${esc(meta)}</small>`:""}</div>`;
+  return `<div class="order-issue-note${full?" full":""}"><strong>⚠ ${esc(issue.reason||"مشكلة في التجهيز")}</strong>${books?`<span>الناقص: ${books}</span>`:""}${waitingCount?`<span class="issue-count-hold">⏳ بانتظار جرد الكتاب (من «الكتب المطلوبة») قبل النقل للتجهيز</span>`:""}${issue.notes?`<span>${esc(issue.notes)}</span>`:""}${full&&meta?`<small>${esc(meta)}</small>`:""}</div>`;
 }
 
 function quickOrderCustomer() {
@@ -3790,9 +3791,9 @@ function workflowModeTabs(active="orders") {
   const live=(data.onlineOrders||[]).filter(order=>!order.deletedAt);
   const stageCount=stage=>live.filter(order=>onlineOrderWorkflowStage(order)===stage).length;
   const prepScreen=canAction("order.prepare"),shipScreen=canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping");
-  const current=active==="orders"?onlineOrderQuickFilter:active==="shortages"?"backorder":active==="preparation"?"prep":active==="ready-shipping"?"ready":"";
+  const current=active==="orders"?onlineOrderQuickFilter:active==="preorders"?"backorder":active==="preparation"?"prep":active==="ready-shipping"?"ready":"";
   const stages=[
-    ["backorder","حجز مسبق","",backorderOrders().length,{mode:"shortages"}],
+    ["backorder","حجز مسبق","",backorderOrders().length,{mode:"preorders"}],
     ["prep","جاهز للتغليف","",preparationOrders().length,prepScreen?{mode:"preparation"}:{mode:"orders",filter:"prep"}],
     ["ready","مغلف ومنتظر كود تتبع","",shipScreen?readyShippingOrders().length:stageCount("ready"),shipScreen?{mode:"ready-shipping"}:{mode:"orders",filter:"ready"}],
     ["shipped","تم الشحن","",stageCount("shipped"),{mode:"orders",filter:"shipped"}],
@@ -3811,8 +3812,9 @@ function workflowModeTabs(active="orders") {
     <div class="orders-nav-secondary" role="group" aria-label="كل الطلبات والملغي">
       ${link({mode:"orders"},`<span class="nav-icon" aria-hidden="true">☰</span> كل الطلبات <b>${live.length}</b>`,`orders-all-button ${active==="orders"&&!onlineOrderQuickFilter?"active":""}`)}
       ${link({mode:"orders",filter:"cancelled"},`<span class="nav-icon" aria-hidden="true">✕</span> ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,`orders-cancelled-button ${current==="cancelled"?"active":""}`)}
+      ${link({mode:"shortages"},`<span class="nav-icon" aria-hidden="true">📚</span> الكتب المطلوبة`,`orders-books-button ${active==="shortages"?"active":""}`)}
     </div>
-    ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):""}
+    ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):active==="preorders"?stageSearchBox("ابحث في الحجز المسبق: رقم الطلب، العميل، الموبايل، الكتاب"):""}
   </div>`;
 }
 
@@ -3824,7 +3826,10 @@ function backorderOrders() {
 function backorderAllocatable(order) {
   const needed=new Map();
   for(const line of order.lines||[])needed.set(line.bookId,(needed.get(line.bookId)||0)+Number(line.qty||0));
-  return needed.size>0&&[...needed].every(([bookId,qty])=>bookAvailableStock(getBook(bookId))>=qty);
+  // A book the packer reported missing for this order waits for a stock count first (the server refuses with
+  // AWAITING_STOCK_COUNT), so it does not count as available here either.
+  const reported=new Set((order.preparationIssue?.missingLines||[]).map(line=>line.bookId));
+  return needed.size>0&&[...needed].every(([bookId,qty])=>!(reported.has(bookId)&&bookCountHold(getBook(bookId)||{})>0)&&bookAvailableStock(getBook(bookId))>=qty);
 }
 
 function sinceLabel(value) {
@@ -3877,6 +3882,51 @@ function shortageOrdersMarkup(row) {
   return `<details class="shortage-orders"><summary>الطلبات (${items.length})</summary><ul>${items.map(({order,qty,kind,tone})=>`<li><button type="button" class="inline-link" data-action="view-online-order" data-id="${esc(order.id)}">${esc(order.id)}</button><span>${esc(order.customerName||"—")}</span><b>× ${qty}</b><em class="shortage-kind ${tone}">${kind}</em></li>`).join("")}</ul></details>`;
 }
 
+// Why a pre-order is waiting: the packer's report (by whom, when, the note), a stock count that set the book to zero,
+// the system at confirmation (a book was not on the shelf), the second part of a split order, or the customer's choice
+// on the website. Re-filed and counted reports keep naming who asked for them.
+function preorderReason(order={}) {
+  const issue=order.preparationIssue,release=String(order.inventoryReservation?.releaseReason||"");
+  if(issue&&PREPARATION_SHORTAGE_REASONS.includes(issue.reason)){
+    const refiled=/تصحيح بلاغات/.test(issue.createdBy||"");
+    return {source:"staff",tag:"👤 الموظف",title:issue.reason,detail:[issue.notes,refiled?"بلاغ قديم أُعيد تسجيله":issue.createdBy].filter(Boolean).join(" · "),at:issue.createdAt};
+  }
+  if(/جرد = 0/.test(release))return {source:"count",tag:"📦 جرد",title:"الكتاب مش موجود في الجرد",detail:"رصيده اتصفّر بعد الجرد",at:order.inventoryReservation?.releasedAt};
+  if(order.splitFromOrderId)return {source:"split",tag:"✂ تقسيم",title:`الشحنة التانية من ${order.splitFromOrderId}`,detail:"الكتب الناقصة اتنقلت لطلب لوحده",at:order.createdAt};
+  if(order.websiteOrderNumber&&order.websitePreorderConsent)return {source:"website",tag:"🌐 العميل",title:"العميل وافق على الحجز المسبق من الموقع",detail:order.websiteOrderNumber,at:order.websiteApprovedAt||order.confirmedAt};
+  return {source:"system",tag:"⚙ تلقائي من السيستم",title:"الكتاب مكانش متوفر وقت تأكيد الطلب",detail:"",at:order.backorderSince||order.confirmedAt};
+}
+
+// What each missing book is waiting for right now: a stock count, a purchase, or nothing (it is on the shelf again).
+function preorderBookState(order,line) {
+  const book=getBook(line.bookId)||{},free=bookAvailableStock(book);
+  const reported=(order.preparationIssue?.missingLines||[]).some(item=>item.bookId===line.bookId);
+  if(reported&&bookCountHold(book)>0)return {cls:"count",text:"مستني جرد"};
+  if(free>=Number(line.qty||0))return {cls:"ok",text:`متاح دلوقتي ${free}`};
+  return {cls:"buy",text:free>0?`متاح ${free} بس · محتاج شراء`:"محتاج شراء"};
+}
+
+function renderPreordersScreen() {
+  const orders=backorderOrders();
+  const ready=orders.filter(backorderAllocatable),partial=orders.filter(order=>!backorderAllocatable(order)&&splitShipmentEligible(order));
+  const filters={ready:["يقدر يتغلّف دلوقتي",ready],partial:["جزء من كتبه متاح",partial]};
+  const filter=filters[preorderFilter]?preorderFilter:"",shown=filter?filters[filter][1]:orders;
+  const box=(key,value,title,hint)=>`<button type="button" class="shortage-stat ${key==="ready"&&value?"ok":""} ${filter===key||(!key&&!filter)?"active":""}" data-action="preorder-filter" data-filter="${filter===key?"":key}"><b>${value}</b><span>${title}</span><small>${hint}</small></button>`;
+  const books=order=>(order.backorderLines||[]).map(line=>{const state=preorderBookState(order,line);return `<span class="shortage-line">${esc(getBook(line.bookId)?.name||line.bookId)} × ${line.qty} <em class="preorder-state ${state.cls}">${esc(state.text)}</em></span>`;}).join("")||`<span class="muted">—</span>`;
+  const reason=order=>{const r=preorderReason(order);return `<div class="preorder-reason ${r.source}"><span class="preorder-reason-tag">${esc(r.tag)}</span><strong>${esc(r.title)}</strong>${r.detail?`<small>${esc(r.detail)}</small>`:""}${r.at?`<small>${esc(arabicDateTimeLabel(r.at))}</small>`:""}</div>`;};
+  const toBuy=shortageRows().filter(row=>row.shortfall).length;
+  return `${workflowModeTabs("preorders")}
+    <div class="section-title"><div><span class="eyebrow">طلبات مستنية كتب</span><h2>حجز مسبق</h2><p>كل طلب هنا مستني كتاب أو أكتر، ومعاه سبب ترحيله. لما كل كتبه توصل بيتنقل للتغليف لوحده.</p></div><button type="button" class="btn ghost" data-action="orders-nav" data-mode="shortages" data-filter="">📚 الكتب المطلوبة${toBuy?` <b class="nav-count">${toBuy} ناقص</b>`:""}</button></div>
+    <div class="shortage-summary preorder-summary" role="group" aria-label="فلترة الحجز المسبق">
+      ${box("",orders.length,"كل الحجز المسبق","الأقدم الأول")}
+      ${box("ready",ready.length,"يقدر يتغلّف دلوقتي","كل كتبه بقت متاحة")}
+      ${box("partial",partial.length,"جزء من كتبه متاح","تقدر تشحن الموجود")}
+    </div>
+    <article class="card"><div class="table-wrap"><table class="preorders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>سبب الترحيل</th><th>منذ</th><th>الإجراء</th></tr></thead><tbody>
+      ${shown.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong>${order.websiteOrderNumber?`<small>🌐 ${esc(order.websiteOrderNumber)}</small>`:""}${splitPartBadge(order)}</td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div></td><td>${reason(order)}</td><td><strong>${esc(sinceLabel(order.backorderSince||order.confirmedAt)||"—")}</strong></td><td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="6" class="muted">${filter?"مفيش طلبات في الفلتر ده دلوقتي.":"مفيش طلبات حجز مسبق دلوقتي."}</td></tr>`}
+    </tbody></table></div></article>`;
+}
+
 function renderShortagesScreen() {
   const orders=backorderOrders(),rows=shortageRows(),canEdit=canAction("order.quick.edit");
   const sum=(list,key)=>list.reduce((total,row)=>total+Number(row[key]||0),0);
@@ -3890,7 +3940,7 @@ function renderShortagesScreen() {
   const stat=(key,tone,value,title,hint)=>`<button type="button" class="shortage-stat ${tone} ${filter===key?"active":""}" data-action="shortage-filter" data-filter="${filter===key?"":key}" aria-pressed="${filter===key}"><b>${value}</b><span>${title}</span><small>${hint}</small></button>`;
   const actions=row=>`<div class="shortage-actions">${row.countHold&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">أمر شراء ${row.toBuy}</button>`:""}</div>`;
   return `${workflowModeTabs("shortages")}
-    <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>حجز مسبق · الكتب الناقصة</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
+    <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>الكتب المطلوبة</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
     <div class="shortage-summary" role="group" aria-label="فلترة الكتب الناقصة">
       ${stat("buy","danger",sum(toBuy,"shortfall"),"نسخة ناقصة يجب شراؤها",`${toBuy.length} كتاب`)}
       ${stat("preorder","",sum(rows,"preorder"),"نسخة مطلوبة للحجز المسبق",`${ordersCountLabel(orders.length)} في الانتظار`)}
@@ -4149,7 +4199,7 @@ async function saveAndConfirmQuickOrder() {
     quickOrderSearch="";
     quickOrderAutofocusPending=true;
     onlineOrdersMode="quick";
-    renderOnlineOrders();toast(confirmResult?.order?.workflowStage==="awaiting_stock"?`تم تأكيد الطلب ${confirmedId} كحجز مسبق؛ سيظهر في «الكتب الناقصة والحجوزات» حتى توفر الكتب.`:`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد${quickOrderDraft.chatwoodContext?` لنفس المحادثة #${quickOrderDraft.chatwoodContext.conversationId}`:""}.`);
+    renderOnlineOrders();toast(confirmResult?.order?.workflowStage==="awaiting_stock"?`تم تأكيد الطلب ${confirmedId} كحجز مسبق؛ هيظهر في «حجز مسبق» لحد ما الكتب توصل.`:`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد${quickOrderDraft.chatwoodContext?` لنفس المحادثة #${quickOrderDraft.chatwoodContext.conversationId}`:""}.`);
   }catch(error){toast(error.message,"error");}
   finally{quickOrderConfirmPending=false;}
 }
@@ -4740,6 +4790,7 @@ function renderOnlineOrders() {
   if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();applyStageSearch();return;}
   if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();applyStageSearch();return;}
   if(onlineOrdersMode==="shortages"){root.innerHTML=renderShortagesScreen();applyStageSearch();return;}
+  if(onlineOrdersMode==="preorders"){root.innerHTML=renderPreordersScreen();applyStageSearch();return;}
   if(onlineOrdersMode==="website"&&canAction("order.website.view")){root.innerHTML=renderWebsiteOrdersScreen();return;}
   if(onlineOrdersMode==="quick-shipping"){root.innerHTML=renderQuickShippingScreen();if (!liveRendering) setTimeout(()=>document.getElementById("quick-shipping-order-code")?.focus(),0);return;}
   const active = data.onlineOrders.filter(order => !order.deletedAt);
@@ -8495,6 +8546,7 @@ root.addEventListener("click", async event => {
   if (action === "dashboard-stat") showDashboardStatDetails(target.dataset.stat);
   if (action === "sales-stat") showSalesStatDetails(target.dataset.stat);
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
+  if (action === "preorder-filter") { preorderFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "shortage-filter") { shortageFilter=target.dataset.filter||"";renderOnlineOrders();document.querySelector(".shortage-table")?.scrollIntoView({behavior:"smooth",block:"start"});return; }
   if (action === "open-unconfirmed-orders") { const list=unconfirmedOrders();if(list.length===1&&canAction("order.quick.edit"))editQuickOrder(list[0].id);else{onlineOrdersMode="orders";onlineOrderQuickFilter="new";renderOnlineOrders();}return; }
   if (action === "orders-nav") { stageSearchTerm="";const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
