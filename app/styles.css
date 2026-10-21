@@ -2082,3 +2082,4 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 #split-shipment-form{display:grid;gap:12px}
 #split-shipment-form [hidden]{display:none!important}
 .ship-available-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin:0;padding:0;border:0}.ship-available-modes legend{font-weight:700;margin-bottom:6px}.ship-available-modes .choice-card{align-items:center;padding:10px}.ship-available-modes .choice-card input{width:18px;height:18px;min-height:0;margin:0;padding:0;flex:none}.ship-available-modes .choice-card small{font-size:11px}.ship-available-modes .choice-card:has(input:checked){border-color:var(--green-700);background:#f4f8fe}
+.search-scope-note{margin:0 0 8px;padding:8px 12px;border-radius:10px;background:#f4f8fe;color:var(--muted);font-size:13px}

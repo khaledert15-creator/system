@@ -3324,7 +3324,7 @@ const SHIPMENT_READY_ORDER_STATUSES = ["تم إنشاء الفاتورة","لم 
 
 function onlineOrderQuickFilterLabel(filter = onlineOrderQuickFilter) {
   return ({
-    new: "جديد",
+    new: "جديد · مستني التجهيز",
     backorder: "حجز مسبق",
     preparing: "قيد التجهيز",
     ready: "مغلّف · لم يُشحن بعد",
@@ -3349,7 +3349,10 @@ function onlineOrderWorkflowLabel(order={}) {
   const stage=onlineOrderWorkflowStage(order);
   if(order.workflowStage==="needs_review")return "يحتاج مراجعة";
   if(stage==="cancelled")return order.status==="مرتجع"||order.workflowStage==="returned"?"مرتجع":"ملغي";
-  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"جاري التجهيز",ready:"مغلّف · لم يُشحن بعد",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
+  // Each label names the card the order is counted under (the stored order.status can differ, e.g. «قيد التجهيز»
+  // on a confirmed order nobody has started packing).
+  if(stage==="new"&&order.confirmedAt)return "جديد · مستني التجهيز";
+  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"قيد التجهيز",ready:"مغلّف · لم يُشحن بعد",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
 }
 
 // A packed order stays in the store until it gets a tracking code, so its badge says so plainly and names what it waits
@@ -4688,7 +4691,7 @@ function renderOnlineOrders() {
     ${workflowModeTabs("orders")}
     <div class="section-title"><div><span class="eyebrow">السجل الرئيسي</span><h2>كل طلبات الأونلاين</h2><p>كل طلب يظل هنا منذ إنشائه وحتى التسليم أو الإلغاء.</p></div><button class="btn" data-action="add-online-order">＋ طلب جديد</button></div>
     <div class="order-stage-filters" role="group" aria-label="فلترة الطلبات حسب المرحلة">
-      ${[["","الكل",active.length],["new","جديد",count("new")],["backorder","حجز مسبق",count("backorder")],["preparing","قيد التجهيز",count("preparing")],["ready","مغلّف · لم يُشحن",count("ready")],["shipped","تم الشحن",count("shipped")],["delivered","تم التسليم",count("delivered")],["cancelled","ملغي / مرتجع",count("cancelled")]].map(([value,label,total])=>`<button class="${onlineOrderQuickFilter===value?"active":""}" data-action="online-order-stat" data-stat="online-orders:${value||"all"}"><span>${label}</span><b>${total}</b></button>`).join("")}
+      ${[["","الكل",active.length],["new","جديد · مستني التجهيز",count("new")],["backorder","حجز مسبق",count("backorder")],["preparing","قيد التجهيز",count("preparing")],["ready","مغلّف · لم يُشحن",count("ready")],["shipped","تم الشحن",count("shipped")],["delivered","تم التسليم",count("delivered")],["cancelled","ملغي / مرتجع",count("cancelled")]].map(([value,label,total])=>`<button class="${onlineOrderQuickFilter===value?"active":""}" data-action="online-order-stat" data-stat="online-orders:${value||"all"}"><span>${label}</span><b>${total}</b></button>`).join("")}
     </div>
     <article class="card">
       ${quickLabel ? `<div class="alert-item" style="margin-bottom:12px"><div class="alert-badge blue">↥</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>يمكنك فتح أي طلب أو تعديله من الجدول بالأسفل.</span></div><button class="row-action" data-action="online-order-stat" data-stat="online-orders:all">عرض كل الطلبات</button></div>` : ""}
@@ -10570,13 +10573,14 @@ function filterShipments() {
 
 function filterOnlineOrders() {
   const term = document.getElementById("online-order-search")?.value.trim() || "";
-  const list = smartFilter(data.onlineOrders.filter(order=>!order.deletedAt&&onlineOrderMatchesQuickFilter(order)), term, order => {
+  // A search looks through every order, whatever card is selected; each row's badge names the card it belongs to.
+  const list = smartFilter(data.onlineOrders.filter(order=>!order.deletedAt&&(term||onlineOrderMatchesQuickFilter(order))), term, order => {
     const sale=(data.sales||[]).find(item=>item.id===order.saleId||item.onlineOrderId===order.id);
     const shipment=(data.shipments||[]).find(item=>item.id===order.shipmentId||item.onlineOrderId===order.id);
     return [order.id,order.saleId||sale?.id,order.customerName,order.phone,order.alternativePhone,order.governorate,order.city,order.tracking,order.trackingNumber,shipment?.trackingNumber,shipment?.tracking,(order.lines||[]).map(line=>getBook(line.bookId)?.name||line.name)];
   });
   const table = document.getElementById("online-orders-table");
-  if (table) table.innerHTML = onlineOrdersTable(list);
+  if (table) table.innerHTML = `${term&&onlineOrderQuickFilter?`<p class="search-scope-note">نتايج البحث من كل الطلبات، مش من «${esc(onlineOrderQuickFilterLabel())}» بس.</p>`:""}${onlineOrdersTable(list)}`;
   scheduleStickyTableScrollbar();
 }
 
