@@ -1797,13 +1797,29 @@ function normalizeData(value) {
   return normalized;
 }
 
+// The whole database (about 8 MB) is gzip-compressed before upload (under 1 MB), which is what makes a save slow on
+// ordinary connections. A browser without CompressionStream, or a proxy that refuses the compressed body, gets the
+// uncompressed save.
+let compressedSaveRefused = false;
+async function gzipText(text) {
+  if (compressedSaveRefused || typeof CompressionStream !== "function") return null;
+  try { return await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer(); }
+  catch { return null; }
+}
+
 async function persistToServer() {
-  const response = await fetch("/api/db", {
+  const text = JSON.stringify(data), compressed = await gzipText(text);
+  const send = body => fetch("/api/db", {
     method: "PUT",
-    headers: authHeaders({ "Content-Type": "application/json; charset=utf-8", ...(dbRevision ? { "If-Match": dbRevision } : {}) }),
-    body: JSON.stringify(data),
+    headers: authHeaders({ "Content-Type": "application/json; charset=utf-8", ...(body === text ? {} : { "Content-Encoding": "gzip" }), ...(dbRevision ? { "If-Match": dbRevision } : {}) }),
+    body,
     signal: AbortSignal.timeout(20000)
   });
+  let response = await send(compressed || text);
+  if (compressed && [400, 415].includes(response.status)) {
+    const refused = await response.clone().json().catch(() => ({}));
+    if (["INVALID_COMPRESSED_BODY", "UNSUPPORTED_ENCODING"].includes(refused.code) || refused.code === undefined) { compressedSaveRefused = true; response = await send(text); }
+  }
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));
     if (response.status === 409) saveConflict = true;
@@ -4179,7 +4195,8 @@ function quickOrderWebsiteEditMarkup() {
     <div class="website-edit-fields"><label>طلبه عن طريق<select id="quick-order-customer-edit-channel">${channels.map(item=>`<option ${item===quickOrderDraft.customerEditChannel?"selected":""}>${item}</option>`).join("")}</select></label><label>إيه اللي طلبه (اختياري)<input id="quick-order-customer-edit-note" maxlength="500" value="${esc(quickOrderDraft.customerEditNote||"")}" placeholder="مثلًا: شيل كتاب الفيزيا وزوّد نسخة رياضيات"></label></div></div>`;
 }
 
-async function saveQuickOrderDraft({silent=false,reload=true}={}) {
+// The saved order comes back in the reply and is shown at once; the full data refresh runs in the background.
+async function saveQuickOrderDraft({silent=false,reload="background"}={}) {
   const blocked=quickOrderBlockedLines();
   if(blocked.length)throw new Error(`الطلب ${quickOrderDraft.savedOrderId} بدأ تجهيزه، و${blocked.map(line=>`«${getBook(line.bookId)?.name||line.bookId}»`).join(" و")} مش متاح. احذفه أو اضغط «طلب منفصل للكتاب ده» قبل الحفظ.`);
   if(!confirmQuickOrderPaymentAmount())throw Object.assign(new Error("راجع المبلغ المستلم فعلًا قبل الحفظ."),{code:"PAYMENT_AMOUNT_UNCONFIRMED"});
@@ -4350,7 +4367,7 @@ async function editQuickOrder(id) {
   if(blocked)return toast(blocked,"error");
   if(order.saleId||order.preparedAt){
     if(!confirm(`الطلب ${order.id} اتغلّف${order.saleId?` وليه فاتورة ${order.saleId}`:""}.\nعشان يتعدل هيرجع «جاهز للتغليف»${order.saleId?" وفاتورته هتتلغي":""}، والكتب هتفضل محجوزة له. بعد التعديل افتح الطرد وغلّفه من جديد.\nمتأكد؟`))return;
-    try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/reopen-for-edit`,{body:{confirm:true,operationKey:`reopen-edit-${order.id}-${order.saleId||order.preparedAt}`}});}
+    try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/reopen-for-edit`,{body:{confirm:true,operationKey:`reopen-edit-${order.id}-${order.saleId||order.preparedAt}`},reload:"background"});}
     catch(error){return toast(error.message,"error");}
     order=getOnlineOrder(id);if(!order)return;
     toast(`الطلب ${order.id} رجع «جاهز للتغليف»${order.reopenedForEdit?.at(-1)?.previousSaleId?` واتلغت الفاتورة ${order.reopenedForEdit.at(-1).previousSaleId}`:""}. عدّله واحفظ.`);
@@ -4507,7 +4524,7 @@ async function confirmExistingOnlineOrder(id) {
 
 async function openPreparationOrder(id,start=false) {
   try{
-    if(start)await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/start`);
+    if(start)await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/start`,{reload:"background"});
     const order=getOnlineOrder(id);if(!order)return;
     const doneMap=new Map((order.preparationChecklist||[]).map(item=>[item.bookId,Boolean(item.done)])),checklist=(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:doneMap.get(line.bookId)||false}));
     const totals=onlineOrderTotals(order.lines,order.orderDiscount,order.orderDiscountType,orderShippingFee(order));

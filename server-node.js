@@ -1,6 +1,7 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
+const zlib = require("zlib");
 const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
@@ -141,6 +142,30 @@ function readBody(req, limit = BODY_LIMIT_DEFAULT) {
     req.on("end", () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks).toString("utf8")); } });
     req.on("error", error => { if (!settled) { settled = true; reject(error); } });
     if (Number(req.headers["content-length"] || 0) > limit) tooLarge();
+  });
+}
+
+// PUT /api/db may arrive gzip-compressed: the browser compresses the whole database (8 MB → under 1 MB) before
+// sending it. The decompressed size has the same limit as an uncompressed body.
+function readDatabaseBody(req) {
+  return new Promise((resolve, reject) => {
+    const encoding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    if (encoding && encoding !== "identity" && encoding !== "gzip") return reject(Object.assign(new Error("ترميز الحفظ غير مدعوم."), { status:415, code:"UNSUPPORTED_ENCODING" }));
+    const chunks = [];
+    let size = 0, settled = false;
+    const fail = error => { if (!settled) { settled = true; chunks.length = 0; reject(error); } };
+    const tooLarge = () => fail(Object.assign(new Error("حجم البيانات المرسلة أكبر من المسموح."), { status:413, code:"PAYLOAD_TOO_LARGE", limit:BODY_LIMIT_DATABASE }));
+    req.on("data", chunk => { if (settled) return; size += chunk.length; if (size > BODY_LIMIT_DATABASE) tooLarge(); else chunks.push(chunk); });
+    req.on("error", fail);
+    req.on("end", () => {
+      if (settled) return;
+      const buffer = Buffer.concat(chunks);
+      // A proxy may drop the header but keep the compressed bytes; gzip starts with 1f 8b, JSON never does.
+      const gzipped = encoding === "gzip" || (buffer[0] === 0x1f && buffer[1] === 0x8b);
+      if (!gzipped) { settled = true; return resolve({ text:buffer.toString("utf8"), bytes:buffer.length, compressed:false }); }
+      try { const text = zlib.gunzipSync(buffer, { maxOutputLength:BODY_LIMIT_DATABASE }).toString("utf8"); settled = true; resolve({ text, bytes:buffer.length, compressed:true }); }
+      catch (error) { error.code === "ERR_BUFFER_TOO_LARGE" ? tooLarge() : fail(Object.assign(new Error("بيانات الحفظ المضغوطة تالفة."), { status:400, code:"INVALID_COMPRESSED_BODY" })); }
+    });
   });
 }
 
@@ -4237,7 +4262,11 @@ const server = http.createServer(async (req, res) => {
       if (!expected && databaseExists) return send(res, 428, { ok:false, code:"PRECONDITION_REQUIRED", message:"حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات (If-Match)." });
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
-      const body = await readBody(req, BODY_LIMIT_DATABASE);
+      const saveStartedAt = Date.now();
+      let received;
+      try { received = await readDatabaseBody(req); }
+      catch (error) { return send(res, error.status || 400, { ok:false, code:error.code, message:error.message }); }
+      const body = received.text;
       const parsedSource=JSON.parse(body);
       const parsed = ensureTrackingDb(parsedSource);
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
@@ -4317,6 +4346,8 @@ const server = http.createServer(async (req, res) => {
       try {
         // Bootstrap (no If-Match) only succeeds while the file is still missing (revision 0); a parallel first save loses with 409.
         const saved = writeDb(parsed, { expectedRevision:expected ? Number(expected) : 0, operationType:"CLIENT_SAVE", performedBy:user.username });
+        // How big the save was on the wire and how long the server took, to follow save speed in the logs.
+        console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"DB_SAVE_TIMING", user:user.username, bytes:received.bytes, compressed:received.compressed, serverMs:Date.now() - saveStartedAt }));
         return send(res, 200, { ok:true, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
       } catch (error) {
         if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision) });
