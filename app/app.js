@@ -3907,6 +3907,8 @@ function preorderReason(order={}) {
     const refiled=/تصحيح بلاغات/.test(issue.createdBy||"");
     return {source:"staff",tag:"👤 الموظف",title:issue.reason,detail:[issue.notes,refiled?"بلاغ قديم أُعيد تسجيله":issue.createdBy].filter(Boolean).join(" · "),at:issue.createdAt};
   }
+  const given=[...(order.reservationTransfers||[])].reverse().find(row=>row.fromOrderId===order.id);
+  if(given&&!issue)return {source:"transfer",tag:"↪ استثناء",title:`نسخته اتاخدت لطلب ${given.toOrderId}`,detail:[given.reason,given.by].filter(Boolean).join(" · "),at:given.at};
   if(/جرد = 0/.test(release))return {source:"count",tag:"📦 جرد",title:"الكتاب مش موجود في الجرد",detail:"رصيده اتصفّر بعد الجرد",at:order.inventoryReservation?.releasedAt};
   if(order.splitFromOrderId)return {source:"split",tag:"✂ تقسيم",title:`الشحنة التانية من ${order.splitFromOrderId}`,detail:"الكتب الناقصة اتنقلت لطلب لوحده",at:order.createdAt};
   if(order.websiteOrderNumber&&order.websitePreorderConsent)return {source:"website",tag:"🌐 العميل",title:"العميل وافق على الحجز المسبق من الموقع",detail:order.websiteOrderNumber,at:order.websiteApprovedAt||order.confirmedAt};
@@ -4465,6 +4467,7 @@ document.addEventListener("input", event => {
 });
 document.addEventListener("submit", event => {
   if (event.target.id === "order-add-payment-form") { event.preventDefault(); submitAddOrderPayment(event.target); return; }
+  if (event.target.id === "take-reserved-form") { event.preventDefault(); submitTakeReservedCopy(event.target); return; }
   if (event.target.id !== "order-cancel-complete-form") return;
   event.preventDefault();
   submitOrderCancelComplete(event.target);
@@ -4881,6 +4884,47 @@ function onlineOrderPrimaryAction(order) {
   return `<button class="btn ghost compact" data-action="view-online-order" data-id="${order.id}">عرض الطلب</button>`;
 }
 
+// Copies other customers' orders hold of the books this pre-order is missing, that can be taken by exception: only
+// from orders not packed yet (waiting for packing or being prepared).
+function reservedCopiesFor(order) {
+  const missing = new Map(((order.backorderLines || []).length ? order.backorderLines : order.lines || []).map(line => [line.bookId, Number(line.qty || 0)]));
+  const rows = [];
+  for (const other of data.onlineOrders || []) {
+    if (other.id === order.id || other.deletedAt || other.saleId || other.preparedAt || !["awaiting_preparation", "preparing", "needs_review"].includes(other.workflowStage)) continue;
+    const reservation = other.inventoryReservation?.status === "active" ? other.inventoryReservation : null;
+    for (const line of reservation?.lines || []) if (missing.has(line.bookId) && Number(line.qty) > 0) rows.push({ order:other, bookId:line.bookId, qty:Number(line.qty), needed:missing.get(line.bookId) });
+  }
+  return rows.sort((a, b) => String(b.order.confirmedAt || "").localeCompare(String(a.order.confirmedAt || "")));
+}
+
+function openTakeReservedCopy(id) {
+  const order = getOnlineOrder(id); if (!order) return;
+  const rows = reservedCopiesFor(order);
+  if (!rows.length) return toast("مفيش طلب تاني حاجز نسخة من الكتب الناقصة.", "error");
+  const stageName = other => ({ awaiting_preparation:"جاهز للتغليف", preparing:"بيتجهّز دلوقتي", needs_review:"متوقف للمراجعة" })[other.workflowStage] || other.status;
+  openModal(`خد نسخة محجوزة · ${order.id}`, "استثناء من دور الحجز", `<form id="take-reserved-form" data-id="${esc(order.id)}" data-key="take-${esc(order.id)}-${Date.now()}">
+    <div class="finance-callout"><strong>${esc(order.customerName || "")} · ${esc(order.id)}</strong><span>النسخة هتتنقل للطلب ده، والطلب اللي هتتاخد منه هيبقى «حجز مسبق» للكتاب وهياخد أول نسخة توصل.</span></div>
+    <div class="take-reserved-list">${rows.map((row, index) => `<label class="take-reserved-row"><input type="radio" name="pick" value="${index}" ${index === 0 ? "checked" : ""}>
+      <span><strong>${esc(getBook(row.bookId)?.name || row.bookId)}</strong> · حاجز ${row.qty}<small>${esc(row.order.id)} · ${esc(row.order.customerName || "")} · ${esc(stageName(row.order))}${row.order.confirmedAt ? ` · من ${esc(sinceLabel(row.order.confirmedAt) || "")}` : ""}</small></span></label>`).join("")}</div>
+    <div class="form-field"><label class="required">السبب</label><input name="reason" required minlength="3" maxlength="300" placeholder="مثلًا: العميل ده محتاجه ضروري قبل الامتحان"></div>
+    <div class="form-actions"><button class="btn" type="submit">انقل النسخة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+  document.getElementById("take-reserved-form").rows = rows;
+}
+
+async function submitTakeReservedCopy(form) {
+  const rows = form.rows || reservedCopiesFor(getOnlineOrder(form.dataset.id)), values = new FormData(form), row = rows[Number(values.get("pick"))];
+  const reason = String(values.get("reason") || "").trim();
+  if (!row) return toast("اختار الطلب اللي هتاخد منه النسخة.", "error");
+  if (reason.length < 3) return toast("اكتب السبب.", "error");
+  if (!confirm(`هتاخد «${getBook(row.bookId)?.name || row.bookId}» من ${row.order.id} (${row.order.customerName || ""}) وتديها لـ ${form.dataset.id}.\n${row.order.id} هيبقى حجز مسبق للكتاب ده. متأكد؟`)) return;
+  const button = form.querySelector('[type="submit"]'); button.disabled = true;
+  try {
+    const result = await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/take-reserved`, { body: { bookId: row.bookId, sourceOrderId: row.order.id, reason, operationKey: form.dataset.key } });
+    closeModal(); renderOnlineOrders();
+    toast(`اتنقلت ${result.qty || 1} نسخة من ${row.order.id} لـ ${form.dataset.id}. ${form.dataset.id} راح «جاهز للتغليف» و${row.order.id} بقى حجز مسبق.`);
+  } catch (error) { button.disabled = false; toast(error.message, "error"); }
+}
+
 // One «⋯ المزيد» menu on every orders screen and in the order details. «تعديل الطلب» and «إلغاء الطلب» are always listed;
 // when one cannot be used now it is shown disabled with the reason under it. In the details dialog ({details:false}) it
 // leaves out the details link and the plain return to packing.
@@ -4890,6 +4934,7 @@ function onlineOrderMoreActions(order,{details=true}={}) {
   return `<details class="table-actions-menu order-actions-more"><summary class="row-action">⋯ المزيد</summary><div class="table-actions-popover">
     ${details?`<button type="button" class="row-action" data-action="view-online-order" data-id="${id}">تفاصيل الطلب</button>`:""}
     ${item("edit-quick-order",order.saleId||order.preparedAt?"تعديل الطلب (هيرجع للتغليف)":"تعديل الطلب",editReason)}
+    ${onlineOrderWorkflowStage(order)==="backorder"&&canAction("order.quick.edit")&&reservedCopiesFor(order).length?`<button type="button" class="row-action" data-action="take-reserved-copy" data-id="${id}">خد نسخة محجوزة من طلب تاني</button>`:""}
     ${order.saleId?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${id}">عرض الفاتورة</button>`:""}
     ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
     ${onlineOrderWorkflowStage(order)==="cancelled"?"":item("cancel-online-order","إلغاء الطلب",cancelReason,"text-danger")}
@@ -5440,7 +5485,7 @@ function viewOnlineOrder(id) {
   const shipmentButton = order.shipmentId ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>` : "";
   const next = orderNextStep(order);
   const nextButton = next ? `<button class="btn" data-action="order-next-step" data-id="${order.id}">الخطوة الجاية: ${esc(next.label)}</button>` : "";
-  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}${orderWebsiteEditsMarkup(order)}<div class="form-actions">${nextButton}<button class="btn secondary" data-action="print-online-order" data-id="${order.id}">🖨 طباعة ورقة التجهيز</button>${invoiceButton}${shipmentButton}${onlineOrderMoreActions(order,{details:false})}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}${orderWebsiteEditsMarkup(order)}${(order.reservationTransfers||[]).length?`<div class="finance-callout"><strong>نقل نسخ محجوزة</strong>${order.reservationTransfers.map(row=>`<span>${arabicDateTimeLabel(row.at)} · ${esc(row.by||"")} · ${esc(getBook(row.bookId)?.name||row.bookId)} × ${row.qty} ${row.toOrderId===order.id?`اتاخدت من ${esc(row.fromOrderId)}`:`راحت لـ ${esc(row.toOrderId)}`} · «${esc(row.reason||"")}»</span>`).join("")}</div>`:""}<div class="form-actions">${nextButton}<button class="btn secondary" data-action="print-online-order" data-id="${order.id}">🖨 طباعة ورقة التجهيز</button>${invoiceButton}${shipmentButton}${onlineOrderMoreActions(order,{details:false})}</div>`);
 }
 
 function saleTotals() {
@@ -8756,6 +8801,7 @@ root.addEventListener("click", async event => {
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
+  if (action === "take-reserved-copy") openTakeReservedCopy(target.dataset.id);
   if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
   if (action === "backorder-allocate") allocateBackorder(target.dataset.id);
@@ -9463,6 +9509,7 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "order-next-step") { openOrderNextStep(appAction.dataset.id); return; }
   // «⋯ المزيد» in the order details dialog: the edit/cancel flows open their own screen or dialog.
   if (chatwoodAction === "edit-quick-order") { closeModal(); editQuickOrder(appAction.dataset.id); return; }
+  if (chatwoodAction === "take-reserved-copy") { closeModal(); openTakeReservedCopy(appAction.dataset.id); return; }
   if (chatwoodAction === "add-order-payment") { if (requireAction("order.payment.receive")) openAddOrderPayment(appAction.dataset.id); return; }
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }

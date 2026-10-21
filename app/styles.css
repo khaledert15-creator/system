@@ -2147,3 +2147,4 @@ button.shortage-stat.ok b{color:#1f7a45}
 .website-edits{display:grid;gap:4px}
 
 .check-row { display:flex; align-items:center; gap:8px; margin:10px 0; font-weight:600; } .check-row input { width:18px; height:18px; }
+.take-reserved-list { display:grid; gap:6px; margin:10px 0; max-height:320px; overflow:auto; } .take-reserved-row { display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border:1px solid var(--line); border-radius:10px; cursor:pointer; } .take-reserved-row small { display:block; color:var(--muted); } .take-reserved-row input { margin-top:4px; }

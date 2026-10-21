@@ -3492,6 +3492,56 @@ const server = http.createServer(async (req, res) => {
       return send(res,200,{ok:true,order,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
+    // An exception to «pre-orders wait, oldest first»: a copy held for one customer's order goes to a pre-order that
+    // needs it. The target must then be complete (it moves to preparation); the source keeps the book in its lines and
+    // becomes a pre-order waiting for a new copy, first in line (its original confirmation time). Reason required.
+    if (route.startsWith("/api/orders/") && route.endsWith("/take-reserved") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);
+      if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تعديل الطلبات."});
+      const payload=await readJsonBody(req,16*1024),operationKey=String(payload.operationKey||"").trim().slice(0,120);
+      const target=(db.onlineOrders||[]).find(item=>item.id===decodeURIComponent(route.split("/")[3])&&!item.deletedAt);
+      if(!target)return send(res,404,{ok:false,code:"ORDER_NOT_FOUND",message:"الطلب غير موجود."});
+      if(operationKey&&(target.reservationTransfers||[]).some(entry=>entry.operationKey===operationKey))return send(res,200,{ok:true,order:target,existing:true,revision:String(revision)});
+      const reason=String(payload.reason||"").trim().slice(0,300);
+      if(reason.length<3)return send(res,400,{ok:false,code:"REASON_REQUIRED",message:"اكتب سبب أخذ النسخة من العميل التاني."});
+      if(target.workflowStage!=="awaiting_stock")return send(res,409,{ok:false,code:"TARGET_NOT_PREORDER",message:"الطلب ده مش حجز مسبق مستني كتب."});
+      const source=(db.onlineOrders||[]).find(item=>item.id===String(payload.sourceOrderId||"")&&!item.deletedAt);
+      if(!source||source.id===target.id)return send(res,404,{ok:false,code:"SOURCE_NOT_FOUND",message:"اختار الطلب اللي هتاخد منه النسخة."});
+      if(source.saleId||source.preparedAt||!["awaiting_preparation","preparing","needs_review"].includes(source.workflowStage))return send(res,409,{ok:false,code:"SOURCE_NOT_TAKEABLE",message:`الطلب ${source.id} اتغلّف أو مش محجوز له كتب دلوقتي.`});
+      const bookId=String(payload.bookId||""),book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
+      const held=aggregateOrderLines(activeReservation(source)?.lines||[]).get(bookId)||0;
+      const needed=aggregateOrderLines(target.lines||[]).get(bookId)||0;
+      if(!book||!held)return send(res,409,{ok:false,code:"SOURCE_HAS_NO_COPY",message:`الطلب ${source.id} مش حاجز نسخة من الكتاب ده.`});
+      if(!needed)return send(res,409,{ok:false,code:"TARGET_DOES_NOT_NEED_BOOK",message:"الكتاب ده مش في الطلب."});
+      const qty=Math.min(held,Math.max(1,needed-availableStock(book)));
+      const now=new Date().toISOString();
+      // 1. The copies leave the source's reservation (its other books stay reserved for the next step).
+      const sourceReservation=activeReservation(source);
+      let left=qty;
+      sourceReservation.lines=(sourceReservation.lines||[]).map(line=>{if(line.bookId!==bookId||!left)return line;const take=Math.min(left,Number(line.qty||0));left-=take;return {...line,qty:Number(line.qty||0)-take};}).filter(line=>Number(line.qty)>0);
+      book.reservedStock=Math.max(0,reservedStock(book)-qty);
+      // 2. The target must now be complete; otherwise nothing is saved (pre-orders hold no copies).
+      const shortages=reserveOrderInventory(db,target,user,target.lines||[],{allowBackorder:true});
+      if(shortages.length){const names=shortages.map(line=>(db.books||[]).find(item=>item.id===line.bookId)?.name||line.bookId).join("، ");return send(res,409,{ok:false,code:"TARGET_STILL_SHORT",message:`حتى بالنسخة دي الطلب ${target.id} لسه ناقصه: ${names}. ما اتنقلش حاجة.`,shortages});}
+      applyBackorderStage(target,user,now);
+      // 3. The source becomes a pre-order for the book, first in line.
+      reserveOrderInventory(db,source,user,source.lines||[],{allowBackorder:true});
+      const wasPreparing=["preparing","needs_review"].includes(source.workflowStage);
+      source.backorderSince=source.confirmedAt||source.backorderSince||now;
+      applyBackorderStage(source,user,now);
+      if(wasPreparing)Object.assign(source,{preparingBy:null,preparingByUsername:null,preparingAt:null,preparationChecklist:(source.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false}))});
+      const entry={at:now,by:user.name||user.username,username:user.username,operationKey,bookId,qty,fromOrderId:source.id,toOrderId:target.id,reason};
+      for(const order of [target,source])order.reservationTransfers=[...(order.reservationTransfers||[]),entry];
+      appendOrderAudit(db,user,target,"أخذ نسخة محجوزة من طلب تاني",`${book.name} × ${qty} من ${source.id} · ${reason}`);
+      appendOrderAudit(db,user,source,"اتاخدت منه نسخة محجوزة لطلب تاني",`${book.name} × ${qty} لـ ${target.id} · بقى حجز مسبق للكتاب ده · ${reason}`);
+      db.notifications=db.notifications||[];
+      db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`reservation-transfer-${source.id}-${now}`,title:"اتاخدت نسخة محجوزة من طلب",description:`${source.id}: ${book.name} × ${qty} راحت لـ ${target.id}، والطلب بقى حجز مسبق`,source:"الطلبات",entityId:source.id,status:"unread",createdAt:now});
+      try{writeDb(db,{expectedRevision:revision,operationType:"ORDER_RESERVATION_TRANSFERRED",performedBy:user.username});}
+      catch(error){if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت؛ حاول تاني."});throw error;}
+      return send(res,200,{ok:true,order:target,source,qty,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
     if (route.startsWith("/api/orders/") && route.endsWith("/backorder/allocate") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
