@@ -95,6 +95,31 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     assert.equal(r.body.order.total, 2 * 72 - 20 + 35, '10% off each copy, 20 off the order, shipping added');
     pass('book and order discounts follow the discount permission');
 
+    // Required deposit for WhatsApp orders: its own setting (the website's until set), saved on each new order.
+    assert.equal(system.readDb().onlineOrders.find(order => order.id === id).depositRequired, 100, 'starts as the website default');
+    const revision = String(system.readDb().meta.dataRevision);
+    assert.equal((await system.api('/api/settings/whatsapp-deposit', { username: 'cashier', method: 'PUT', body: { depositDefault: 70, expectedRevision: revision } })).status, 403);
+    r = await system.api('/api/settings/whatsapp-deposit', { username: 'owner', method: 'PUT', body: { depositDefault: 70, expectedRevision: revision } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(system.readDb().settings.whatsappOrders.depositDefault, 70); assert.equal(system.readDb().settings.websiteOrders?.depositDefault ?? 100, 100, 'the website default is untouched');
+    assert.equal((await system.api('/api/integration/v1/panel/order-form', { username: 'cashier' })).body.depositRequired, 70);
+    r = await system.api('/api/orders/quick', { username: 'owner', method: 'POST', body: { ...body, chatwoodContext: '', requestId: 'panel-test-3', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false } });
+    assert.equal(r.body.order.depositRequired, 70);
+    pass('WhatsApp orders have their own required deposit, saved on each new order');
+
+    // A further payment: recorded once, never above the total, and the order follows.
+    const pay = extra => system.api(`/api/orders/${id}/payments`, { username: 'cashier', method: 'POST', body: { amount: 50, cashAccountId: 'CA-003', paymentMethod: 'InstaPay', operationKey: 'second-1', ...extra } });
+    assert.equal((await system.api(`/api/orders/${id}/payments`, { username: 'warehouse', method: 'POST', body: { amount: 50, cashAccountId: 'CA-003', operationKey: 'x' } })).status, 403);
+    r = await pay(); assert.equal(r.status, 201, r.text);
+    assert.equal(r.body.order.paidAmount, 150); assert.equal(r.body.order.remainingAmount, 85);
+    r = await pay(); assert.equal(r.status, 200); assert.equal(r.body.existing, true);
+    const after = system.readDb();
+    assert.equal(after.orderPayments.filter(item => item.orderId === id && item.status !== 'reversed').length, 2);
+    assert.equal(after.cash.filter(item => item.orderId === id && item.category === 'دفعة طلب').length, 2, 'one cash row per payment');
+    r = await pay({ amount: 500, operationKey: 'too-much' }); assert.equal(r.status, 409); assert.equal(r.body.code, 'AMOUNT_EXCEEDS_REMAINING');
+    r = await pay({ cashAccountId: '', operationKey: 'no-account' }); assert.equal(r.status, 400);
+    pass('a further payment is recorded once, within the remaining amount, with its cash row');
+
     r = await system.api(`/api/integration/v1/panel/order?id=${id}`, { username: 'warehouse' });
     assert.equal(r.status, 403);
     r = await system.api(`/api/integration/v1/panel/order?id=${id}`, { username: 'cashier' });
@@ -102,7 +127,7 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     assert.equal(r.body.editBlock, '');
     assert.match(r.body.cancelBlock, /دفعة/, 'a paid order is cancelled from the System with the refund');
     assert.deepEqual(r.body.order.lines.map(line => [line.bookId, line.qty, line.reserved]), [['B0001', 2, 2]]);
-    assert.equal(r.body.order.paidAmount, 100); assert.equal(r.body.order.packed, false); assert.equal(r.body.order.website, false);
+    assert.equal(r.body.order.paidAmount, 150); assert.equal(r.body.order.packed, false); assert.equal(r.body.order.website, false);
     assert.equal((await system.api('/api/integration/v1/panel/order?id=ORD-9999', { username: 'cashier' })).status, 404);
     pass('editable order with its reserved copies and the reasons edit/cancel are not offered');
 

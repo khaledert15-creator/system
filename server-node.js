@@ -3343,6 +3343,8 @@ const server = http.createServer(async (req, res) => {
       const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",quickOrderRequestId:requestId,chatwootContactId:identity.chatwootContactId,customerWhatsAppPhone:identity.customerWhatsAppPhone,sourcePlatform:"chatwoot",chatwootConversationId:identity.chatwootConversationId,...(chatwood.identity?{chatwoodLink:quickOrderChatwoodLink(chatwood.identity,user,now)}:{}),paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
+      // The required deposit at the time the order is taken (WhatsApp default); what was paid is kept apart.
+      order.depositRequired=WebsiteOrders.whatsappDepositDefault(db);
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
       writeDb(db,{expectedRevision:revision});
       return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
@@ -3553,6 +3555,25 @@ const server = http.createServer(async (req, res) => {
         return send(res,200,{ok:true,...result,revision:String(saved.revision)},"application/json; charset=utf-8",{"X-DB-Revision":String(saved.revision)});
       }catch(error){
         if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت وانت بتصحّح؛ افتح الدفعة تاني وحاول."});
+        if(!error.status)throw error;
+        return send(res,error.status,{ok:false,code:error.code,message:error.message,...(error.details||{})});
+      }
+    }
+
+    // A further payment on an order (the customer pays again before shipping): same permission as recording a payment.
+    if (route.startsWith("/api/orders/") && route.endsWith("/payments") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const {db,revision:readRevision}=readDbForWrite();ensureTrackingDb(db);
+      if(!canOrderAction(db,user,"order.payment.receive"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تسجيل الدفعات."});
+      try{
+        const payload=await readJsonBody(req,16*1024);
+        const result=PaymentCorrection.addPayment(db,{...payload,orderId:decodeURIComponent(route.split("/")[3])},user,{randomUUID:()=>crypto.randomUUID(),nextId,appendOrderAudit});
+        if(result.existing)return send(res,200,{ok:true,...result,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+        const saved=writeDb(db,{expectedRevision:readRevision,operationType:"ORDER_PAYMENT_ADDED",performedBy:user.username});
+        const order=(db.onlineOrders||[]).find(item=>item.id===result.payment.orderId);
+        return send(res,201,{ok:true,...result,order,revision:String(saved.revision)},"application/json; charset=utf-8",{"X-DB-Revision":String(saved.revision)});
+      }catch(error){
+        if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت؛ حاول تاني."});
         if(!error.status)throw error;
         return send(res,error.status,{ok:false,code:error.code,message:error.message,...(error.details||{})});
       }

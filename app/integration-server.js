@@ -200,8 +200,10 @@ function createIntegrationServer(deps) {
     return send(res, 201, { ok:true, order:result.order, ...(result.child ? { child:result.child } : {}), revision:String(saved.revision), storeNotified }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
 
-  async function websiteDeposit(req, res) {
+  // The default required deposit, for website orders or (kind "whatsapp") orders taken on WhatsApp.
+  async function websiteDeposit(req, res, kind = "website") {
     const user = sessionOrFail(res, req); if (!user) return;
+    const key = kind === "whatsapp" ? "whatsappOrders" : "websiteOrders", label = kind === "whatsapp" ? "طلبات الواتساب" : "طلبات الموقع";
     // Owner and manager always; any other role only when granted order.deposit.default.
     if (!canOrderAction(readDbSafe(), user, "order.deposit.default")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل العربون الافتراضي.");
     const payload = await readJsonBody(req, 16 * 1024);
@@ -211,15 +213,15 @@ function createIntegrationServer(deps) {
     try { amount = WebsiteOrders.parseDepositDefault(payload.depositDefault ?? payload.amount); } catch (error) { return errorResponse(res, error, "DEPOSIT_DEFAULT_INVALID"); }
     const { db, revision } = readDbForWrite();
     if (String(expected) !== String(revision)) return fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات من مكان آخر؛ حدّث الصفحة ثم أعد المحاولة.", { revision:String(revision) });
-    const previous = WebsiteOrders.depositDefault(db);
-    if (previous === amount && db.settings?.websiteOrders?.depositDefault !== undefined) return send(res, 200, { ok:true, unchanged:true, depositDefault:amount, revision:String(revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(revision) });
+    const previous = kind === "whatsapp" ? WebsiteOrders.whatsappDepositDefault(db) : WebsiteOrders.depositDefault(db);
+    if (previous === amount && db.settings?.[key]?.depositDefault !== undefined) return send(res, 200, { ok:true, unchanged:true, depositDefault:amount, revision:String(revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(revision) });
     const now = new Date().toISOString();
     db.settings = db.settings || {};
     const change = { at:now, by:user.name || user.username, username:user.username, before:previous, after:amount };
-    db.settings.websiteOrders = { ...(db.settings.websiteOrders || {}), depositDefault:amount, updatedAt:now, updatedBy:user.username, history:[change, ...((db.settings.websiteOrders || {}).history || [])].slice(0, 50) };
+    db.settings[key] = { ...(db.settings[key] || {}), depositDefault:amount, updatedAt:now, updatedBy:user.username, history:[change, ...((db.settings[key] || {}).history || [])].slice(0, 50) };
     db.audit = Array.isArray(db.audit) ? db.audit : [];
-    AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:"WEBSITE_DEPOSIT_DEFAULT_CHANGED", action:"تعديل العربون الافتراضي لطلبات الموقع", entity:"الإعدادات", entityId:"WEBSITE-DEPOSIT", user:user.name || user.username, username:user.username, role:user.role, before:previous, after:amount, details:`${previous} ← ${amount} (للطلبات الجديدة فقط)` });
-    const saved = writeDb(db, { expectedRevision:revision, operationType:"WEBSITE_DEPOSIT_DEFAULT_CHANGED", performedBy:user.username });
+    AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, operationType:kind === "whatsapp" ? "WHATSAPP_DEPOSIT_DEFAULT_CHANGED" : "WEBSITE_DEPOSIT_DEFAULT_CHANGED", action:`تعديل العربون الافتراضي ل${label}`, entity:"الإعدادات", entityId:kind === "whatsapp" ? "WHATSAPP-DEPOSIT" : "WEBSITE-DEPOSIT", user:user.name || user.username, username:user.username, role:user.role, before:previous, after:amount, details:`${previous} ← ${amount} (للطلبات الجديدة فقط)` });
+    const saved = writeDb(db, { expectedRevision:revision, operationType:kind === "whatsapp" ? "WHATSAPP_DEPOSIT_DEFAULT_CHANGED" : "WEBSITE_DEPOSIT_DEFAULT_CHANGED", performedBy:user.username });
     return send(res, 200, { ok:true, depositDefault:amount, previous, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
 
@@ -267,7 +269,7 @@ function createIntegrationServer(deps) {
       ok:true,
       books:(db.books || []).filter(book => !book.deletedAt).map(book => ({ id:book.id, name:String(book.name || book.id), price:Number(book.price || 0), discount:Math.max(0, Number(book.discount ?? book.saleDiscount ?? 0)), discountType:book.discountType === "amount" ? "amount" : "percent", available:available(book), allowPreorder:book.allowPreorder === true })),
       shippingRules:db.settings?.shippingRules || db.settings?.shippingRates || {},
-      shippingCompanies:carriers,
+      shippingCompanies:carriers, depositRequired:WebsiteOrders.whatsappDepositDefault(db),
       defaultShippingCompany:carriers.find(name => /البريد المصري|egypt\s*post/i.test(name)) || carriers[0] || "",
       cashAccounts:canReceive ? (db.cashAccounts || []).filter(item => !item.deletedAt && item.active !== false).map(item => ({ id:item.id, name:item.name })) : [],
       permissions:{ receive:canReceive, edit:canOrderAction(db, user, "order.quick.edit"), confirm:canOrderAction(db, user, "order.quick.confirm"), discount:canOrderAction(db, user, "order.discount.override"), shipping:canOrderAction(db, user, "order.shipping.override") }
@@ -630,6 +632,7 @@ function createIntegrationServer(deps) {
     }
 
     if (route === "/api/settings/website-deposit" && method === "PUT") { await websiteDeposit(req, res); return true; }
+    if (route === "/api/settings/whatsapp-deposit" && method === "PUT") { await websiteDeposit(req, res, "whatsapp"); return true; }
     if (route === "/api/chatwood-context/resolve" && method === "POST") { await resolveContext(req, res); return true; }
     const chatwoodRoute = route.match(/^\/api\/orders\/([^/]+)\/chatwood-link(?:\/(preview|suggestions|correct))?$/);
     if (chatwoodRoute) { await chatwoodLinkRoute(req, res, url, decodeURIComponent(chatwoodRoute[1]), chatwoodRoute[2] || ""); return true; }

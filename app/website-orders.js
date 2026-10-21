@@ -35,6 +35,12 @@ function depositDefault(db) {
   return Number.isFinite(value) && value >= 0 && value <= DEPOSIT_MAX ? round(value) : DEPOSIT_DEFAULT;
 }
 
+// Required deposit for orders taken on WhatsApp, set apart from the website's; until the owner sets it, the same.
+function whatsappDepositDefault(db) {
+  const value = db?.settings?.whatsappOrders?.depositDefault;
+  return value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= DEPOSIT_MAX ? round(Number(value)) : depositDefault(db);
+}
+
 function parseDepositDefault(value) {
   const amount = OrderFinance.normalizeNumber(value);
   if (value === "" || value == null || !Number.isFinite(amount) || amount < 0 || amount > DEPOSIT_MAX) throw websiteError(400, "DEPOSIT_DEFAULT_INVALID", `العربون الافتراضي يجب أن يكون رقمًا من 0 إلى ${DEPOSIT_MAX} ج.م.`);
@@ -652,8 +658,10 @@ function chatwoodSuggestions(db, verified) {
 
 function preserveServerOwnedFields(current = {}, next = {}) {
   if (next.settings && typeof next.settings === "object") {
-    if (current.settings && Object.prototype.hasOwnProperty.call(current.settings, "websiteOrders")) next.settings.websiteOrders = JSON.parse(JSON.stringify(current.settings.websiteOrders));
-    else delete next.settings.websiteOrders;
+    for (const key of ["websiteOrders", "whatsappOrders"]) {
+      if (current.settings && Object.prototype.hasOwnProperty.call(current.settings, key)) next.settings[key] = JSON.parse(JSON.stringify(current.settings[key]));
+      else delete next.settings[key];
+    }
   }
   const allCurrentIds = new Set((current.onlineOrders || []).map(order => order?.id));
   const currentOrders = new Map((current.onlineOrders || []).filter(order => order?.websiteOrderNumber).map(order => [order.id, order]));
@@ -671,4 +679,4 @@ function preserveServerOwnedFields(current = {}, next = {}) {
   return next;
 }
 
-module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields, preserveChatwoodIdentity, linkOrdersToChatwood, chatwoodOwnerOf, sameChatwoodOwner, applyChatwoodLink, correctChatwoodLink, chatwoodSuggestions };
+module.exports = { WEBSITE_ORDER_NUMBER_PATTERN, DEPOSIT_DEFAULT, DEPOSIT_MAX, websiteError, normalizeTransferReference, depositDefault, whatsappDepositDefault, parseDepositDefault, createWebsiteOrders, preserveServerOwnedFields, preserveChatwoodIdentity, linkOrdersToChatwood, chatwoodOwnerOf, sameChatwoodOwner, applyChatwoodLink, correctChatwoodLink, chatwoodSuggestions };

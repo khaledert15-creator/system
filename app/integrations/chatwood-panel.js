@@ -233,11 +233,12 @@
       el("div", { class: "row" }, el("div", { class: "numbers" }, numbers), el("span", { class: `status ${order.group}`, text: order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.phaseLabel || order.status || "—" })),
       el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ", order.kind !== "website_order" && order.status && order.phaseLabel && order.status !== order.phaseLabel ? ` · ${order.status}` : "", order.matchedBy === "conversation" ? " · مربوط بالمحادثة" : order.matchedBy === "contact" ? " · مربوط بجهة الاتصال" : ""),
       el("ul", { class: "products" }, (order.products || []).slice(0, 8).map(item => el("li", {}, `${item.name} × ${item.qty}`))),
-      el("div", { class: "stats four" },
+      // Total, deposit (everything paid so far) and what is left; the required deposit shows only while it is not reached.
+      el("div", { class: "stats" },
         el("div", {}, el("span", { text: "الإجمالي" }), el("b", { text: money(order.total) })),
-        el("div", {}, el("span", { text: "العربون المطلوب" }), el("b", { text: order.depositRequired == null ? "—" : money(order.depositRequired) })),
-        el("div", {}, el("span", { text: "المدفوع" }), el("b", { text: money(order.paid) })),
-        el("div", {}, el("span", { text: "المتبقي" }), el("b", { class: order.remaining > 0 ? "due" : "", text: money(order.remaining) }))),
+        el("div", {}, el("span", { text: "العربون" }), el("b", { text: money(order.paid) }),
+          order.depositRequired != null && Number(order.paid) < Number(order.depositRequired) && order.group !== "history" ? el("small", { class: "warn", text: `المطلوب ${money(order.depositRequired)}` }) : ""),
+        el("div", {}, el("span", { text: "الباقي" }), el("b", { class: order.remaining > 0 ? "due" : "", text: money(order.remaining) }))),
       el("div", { class: "muted small" }, `الشحن: ${shipment}`, order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : ""),
       order.linkedToConversation ? el("div", { class: "small ok", text: "✓ مربوط بهذه المحادثة" }) : order.chatwootConversationId ? el("div", { class: "small muted", text: `مربوط بمحادثة أخرى #${order.chatwootConversationId}` }) : "",
       el("div", { class: "actions" },
@@ -245,6 +246,7 @@
         order.links?.store && el("a", { class: "btn ghost", href: order.links.store, target: "_blank", rel: "noopener noreferrer", text: "فتح في لوحة المتجر" }),
         canLink && el("button", { type: "button", class: "btn", onclick: () => linkConversation(order), text: "ربط بهذه المحادثة" }),
         order.salesOrderId && order.group !== "history" && el("button", { type: "button", class: "btn ghost", onclick: () => openEditForm(order.salesOrderId), text: "تعديل" }),
+        order.salesOrderId && order.group !== "history" && order.remaining > 0 && el("button", { type: "button", class: "btn ghost", onclick: event => startPayment(order, event.target.closest(".actions")), text: "＋ دفعة" }),
         order.salesOrderId && order.group !== "history" && el("button", { type: "button", class: "btn ghost danger", onclick: event => startCancel(order.salesOrderId, event.target.closest(".actions")), text: "إلغاء" })));
   }
 
@@ -349,7 +351,8 @@
         : el("div", {},
           el("select", { name: "paymentPlan", onchange: event => { draft.paymentPlan = event.target.value; refreshPayment(); refreshTotals(); } },
             Object.entries(PLAN_LABELS).filter(([key]) => receive || key === "cash_on_delivery").map(([key, label]) => el("option", { value: key, selected: draft.paymentPlan === key, text: label }))),
-          el("div", { id: "payment-fields" })));
+          el("div", { id: "payment-fields" }),
+          el("div", { class: "small muted", text: `العربون المطلوب لطلبات الواتساب: ${money(catalog.depositRequired)}` })));
     const lists = el("datalist", { id: "governorate-list" }, ChatwoodSuggest.GOVERNORATES.map(name => el("option", { value: name })));
     $("orders-list").replaceChildren(el("section", { class: "card order-form" },
       el("div", { class: "row" }, el("h2", { text: title }), el("button", { type: "button", class: "link", onclick: closeForm, text: "رجوع" })),
@@ -517,6 +520,8 @@
     if (form.saving) return;
     try { totals(draft); } catch (error) { return formError(error.message); }
     const problem = validate(draft); if (problem) return formError(problem);
+    const required = Number(state.catalog.depositRequired || 0), paidNow = form.mode === "create" && draft.paymentPlan !== "cash_on_delivery" ? Number(draft.paidAmount || 0) : 0;
+    if (form.mode === "create" && required > 0 && paidNow < required && !confirm(paidNow ? `المبلغ اللي هيتسجّل ${money(paidNow)}، والعربون المطلوب ${money(required)}. متأكد؟` : `مفيش عربون، والعربون المطلوب ${money(required)}. تحفظ الطلب من غير عربون؟`)) return;
     form.saving = true; if (button) { button.disabled = true; button.textContent = "جارٍ الحفظ…"; }
     try {
       let order;
@@ -581,6 +586,30 @@
   }
 
   function closeForm() { state.form = null; load(); }
+
+  // A further payment on the order, recorded like the first one (payment and cash row) by the System.
+  async function startPayment(order, actions) {
+    try { await loadCatalog(); } catch (error) { if (error.status !== 401) message(error.message, "error"); return; }
+    if (!state.catalog.permissions.receive) return message("مش عندك صلاحية تسجيل الدفعات.", "warning");
+    const amountInput = el("input", { inputmode: "decimal", placeholder: `المبلغ (الباقي ${amount(order.remaining)})` });
+    const account = el("select", {}, el("option", { value: "", text: "اتحوّل على…" }), state.catalog.cashAccounts.map(item => el("option", { value: item.id, text: item.name })));
+    const method = el("select", {}, ["InstaPay", "محفظة إلكترونية", "تحويل بنكي", "كاش"].map(item => el("option", { text: item })));
+    const sure = el("input", { type: "checkbox" }), key = `panel-payment-${order.salesOrderId}-${Date.now()}`;
+    actions.replaceChildren(el("div", { class: "pay-form" }, el("div", { class: "two" }, amountInput, account), method,
+      el("label", { class: "check" }, sure, "اتأكدت إن المبلغ وصل فعلًا"),
+      el("div", { class: "actions" },
+        el("button", { type: "button", class: "btn", onclick: async event => {
+          const value = Number(String(amountInput.value).replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)).replace(/[٫,]/g, "."));
+          if (!(value > 0)) return message("اكتب المبلغ اللي وصل.", "error");
+          if (!account.value) return message("اختار الخزنة اللي المبلغ اتحوّل عليها.", "error");
+          if (!sure.checked) return message("علّم «اتأكدت إن المبلغ وصل فعلًا».", "error");
+          event.target.disabled = true;
+          try { await api(`/api/orders/${encodeURIComponent(order.salesOrderId)}/payments`, { method: "POST", body: JSON.stringify({ amount: value, cashAccountId: account.value, paymentMethod: method.value, operationKey: key }) }); message(`اتسجلت دفعة ${money(value)} على ${order.salesOrderId}.`, "ok"); load(); }
+          catch (error) { event.target.disabled = false; if (error.status !== 401) message(error.message, "error"); }
+        }, text: "تسجيل الدفعة" }),
+        el("button", { type: "button", class: "btn ghost", onclick: () => load(), text: "تراجع" }))));
+    amountInput.focus();
+  }
 
   async function startCancel(orderId, actions) {
     let result;

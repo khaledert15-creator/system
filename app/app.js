@@ -64,7 +64,7 @@ const ACTION_ROLES = {
   ,"order.quick.create":["مالك","مدير","كاشير"],"order.quick.confirm":["مالك","مدير","كاشير"],"order.quick.edit":["مالك","مدير","كاشير"],
   "order.discount.override":["مالك","مدير"],"order.shipping.override":["مالك","مدير"],"order.payment.receive":["مالك","مدير","كاشير"],
   "order.prepare":["مالك","مدير","مخزن"],"order.pack":["مالك","مدير","مخزن"],"order.shipping":["مالك","مدير","شحن"],
-  "save-website-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"order.chatwood.correct":["مالك","مدير"],"order.deposit.default":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
+  "save-website-deposit":["مالك","مدير"],"save-whatsapp-deposit":["مالك","مدير"],"order.website.view":["مالك","مدير","كاشير"],"order.website.approve":["مالك","مدير","كاشير"],"order.deposit.override":["مالك","مدير"],"order.split.shipment":["مالك","مدير"],"order.chatwood.correct":["مالك","مدير"],"order.deposit.default":["مالك","مدير"],"book.preorder.manage":["مالك","مدير"],
   "panel.view":["مالك","مدير","محاسب","كاشير","مخزن","شحن"],"panel.link":["مالك","مدير","كاشير"]
 };
 
@@ -4447,6 +4447,7 @@ document.addEventListener("input", event => {
   if(form&&event.target.name==="refundAmount")updateCancelCreditHint(form);
 });
 document.addEventListener("submit", event => {
+  if (event.target.id === "order-add-payment-form") { event.preventDefault(); submitAddOrderPayment(event.target); return; }
   if (event.target.id !== "order-cancel-complete-form") return;
   event.preventDefault();
   submitOrderCancelComplete(event.target);
@@ -5354,7 +5355,34 @@ function onlineOrderPaymentMarkup(order, total) {
     ${p.rows.length || p.refunds.length ? `<div class="table-wrap"><table><thead><tr><th>البيان</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الخزنة / الحساب</th><th>بواسطة</th></tr></thead><tbody>
       ${p.rows.map(row => `<tr><td>${esc(row.kind)}${row.paymentId && !p.cancelled && canCorrectPayments() ? ` <button class="btn ghost compact" type="button" data-action="correct-payment" data-payment="${esc(row.paymentId)}">تصحيح</button>` : ""}</td><td>${row.date ? arabicDateTimeLabel(row.date) : "—"}</td><td class="money">${money(row.amount)}</td><td>${esc(row.method)}</td><td>${esc(row.account || "—")}</td><td>${esc(row.by || "—")}</td></tr>`).join("")}
       ${p.refunds.map(item => { const credit = ["customer_credit", "pending_credit"].includes(item.settlementType); return `<tr><td>${credit ? "حُفظ كرصيد دائن للعميل" : "رد مبلغ للعميل"}</td><td>${item.performedAt ? arabicDateTimeLabel(item.performedAt) : "—"}</td><td class="money ${credit ? "" : "text-danger"}">${credit ? "" : "−"}${money(item.amount)}</td><td>${credit ? "رصيد دائن (لم يُصرف نقدًا)" : "رد نقدي"}</td><td>${esc((data.cashAccounts || []).find(account => account.id === item.cashAccountId)?.name || "—")}</td><td>${esc(item.performedBy || "—")}</td></tr>`; }).join("")}
-    </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}${paymentCorrectionsMarkup(order)}`;
+    </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}${!p.cancelled && p.remaining > 0 && canCorrectPayments() ? `<button class="btn ghost compact" type="button" data-action="add-order-payment" data-id="${esc(order.id)}">＋ إضافة دفعة</button>` : ""}${paymentCorrectionsMarkup(order)}`;
+}
+
+// A further payment on an order (the customer paid again before shipping). The server records it like the first one
+// and keeps the order, invoice, customer balance and shipment in line.
+function openAddOrderPayment(id) {
+  const order = getOnlineOrder(id); if (!order) return;
+  const total = Number(order.total || 0), paid = Number(order.paidAmount || 0), remaining = Math.max(0, total - paid);
+  const accounts = (data.cashAccounts || []).filter(item => item.active !== false && !item.deletedAt);
+  openModal(`إضافة دفعة · ${order.id}`, "دفعة إضافية من العميل", `<form id="order-add-payment-form" data-id="${esc(order.id)}" data-key="add-payment-${esc(order.id)}-${Date.now()}">
+    <div class="finance-callout"><strong>${esc(order.customerName || "")}</strong><span>الإجمالي ${money(total)} · المدفوع ${money(paid)} · الباقي ${money(remaining)}</span></div>
+    <div class="form-grid"><div class="form-field"><label class="required">المبلغ اللي وصل</label><input name="amount" inputmode="decimal" required></div>
+    <div class="form-field"><label class="required">اتحوّل على</label><select name="cashAccountId" required><option value="">اختار الخزنة…</option>${accounts.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("")}</select></div>
+    <div class="form-field"><label>الطريقة</label><select name="paymentMethod">${WEBSITE_RECEIPT_METHODS.map(item => `<option>${esc(item)}</option>`).join("")}</select></div>
+    <div class="form-field"><label>ملاحظة (اختياري)</label><input name="note" maxlength="300"></div></div>
+    <label class="check-row"><input type="checkbox" name="confirmed" required> اتأكدت إن المبلغ وصل فعلًا</label>
+    <div class="form-actions"><button class="btn" type="submit">تسجيل الدفعة</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+}
+
+async function submitAddOrderPayment(form) {
+  const button = form.querySelector('[type="submit"]'), values = new FormData(form);
+  const amount = Number(normalizeArabicDigits(String(values.get("amount") || "")).replace(/[٫,]/g, "."));
+  if (!(amount > 0)) return toast("اكتب المبلغ اللي وصل.", "error");
+  button.disabled = true;
+  try {
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(form.dataset.id)}/payments`, { body: { amount, cashAccountId: values.get("cashAccountId"), paymentMethod: values.get("paymentMethod"), note: values.get("note"), operationKey: form.dataset.key } });
+    closeModal(); toast(`اتسجلت دفعة ${money(amount)} على ${form.dataset.id}.`); viewOnlineOrder(form.dataset.id);
+  } catch (error) { button.disabled = false; toast(error.message, "error"); }
 }
 
 // Where an order goes next, as one step: finish and confirm a saved order, pack it, wait for its books, or enter the
@@ -7160,7 +7188,7 @@ function confirmQuickOrderPaymentAmount() {
   const paid = Number(quickOrderDraft.paidAmount || 0);
   const order = quickOrderDraft.savedOrderId ? getOnlineOrder(quickOrderDraft.savedOrderId) : null;
   const stored = order?.depositRequired ?? order?.deposit?.required;
-  const required = stored !== undefined && stored !== null && stored !== "" && Number.isFinite(Number(stored)) ? Number(stored) : websiteDepositDefaultValue();
+  const required = stored !== undefined && stored !== null && stored !== "" && Number.isFinite(Number(stored)) ? Number(stored) : order?.websiteOrderNumber ? websiteDepositDefaultValue() : whatsappDepositDefaultValue();
   if (!(paid > 0 && paid < required)) return true;
   return confirm(`المبلغ اللي هيتسجّل ${money(paid)}، والعربون المطلوب ${money(required)}.\nمتأكد إن ده اللي وصل فعلًا؟`);
 }
@@ -7168,6 +7196,22 @@ function confirmQuickOrderPaymentAmount() {
 function websiteDepositDefaultValue() {
   const value = Number(data.settings?.websiteOrders?.depositDefault);
   return Number.isFinite(value) && value >= 0 ? value : 100;
+}
+
+// Required deposit for WhatsApp orders; until the owner sets it, the same as the website's.
+function whatsappDepositDefaultValue() {
+  const value = data.settings?.whatsappOrders?.depositDefault;
+  return value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : websiteDepositDefaultValue();
+}
+
+async function saveWhatsappDepositDefault(){
+  const input=document.getElementById("whatsapp-deposit-default");
+  const raw=normalizeArabicDigits(String(input?.value??"")).replace(/[٫,]/g,".").trim(),value=Number(raw);
+  if(!raw||!Number.isFinite(value)||value<0||value>10000)return toast("العربون المطلوب يجب أن يكون من 0 إلى 10000 ج.م.","error");
+  if(!confirm(`تغيير العربون المطلوب لطلبات الواتساب الجديدة إلى ${money(value)}؟ الطلبات السابقة لن تتغير.`))return;
+  const button=document.querySelector('[data-action="save-whatsapp-deposit"]');if(button)button.disabled=true;
+  try{await orderWorkflowRequest("/api/settings/whatsapp-deposit",{method:"PUT",body:{depositDefault:value,expectedRevision:dbRevision}});renderSettings();toast("تم حفظ العربون المطلوب لطلبات الواتساب الجديدة.");}
+  catch(error){if(button)button.disabled=false;toast(error.message,"error");}
 }
 
 async function saveWebsiteDepositDefault(){
@@ -7200,6 +7244,7 @@ function renderSettings() {
       <article class="card"><div class="card-header"><div><h3>التكاملات</h3><p>تُفعّل عند تجهيز حسابات الخدمات</p></div></div><div class="card-body alert-list">
         <div class="alert-item"><div class="alert-badge blue">●</div><div><strong>المتجر الإلكتروني</strong><span>طلبات الموقع تُراجع وتُعتمد من «طلبات الأونلاين ← طلبات الموقع». الأسعار والكميات والحجز المسبق تُرسل للمتجر من السيرفر.</span></div>${badge("ربط عبر السيرفر","blue")}</div>
         <div class="form-grid website-deposit-setting"><div class="form-field"><label>العربون الافتراضي لطلبات الموقع (ج.م)</label><input id="website-deposit-default" inputmode="decimal" value="${esc(websiteDepositDefaultValue())}" ${canAction("order.deposit.default")?"":"readonly"}><small>من 0 إلى 10000. يُطبق على طلبات الموقع الجديدة فقط، ويُحفظ مع كل طلب.</small></div><div class="form-field"><label>&nbsp;</label><button class="btn secondary" type="button" data-action="save-website-deposit" ${canAction("order.deposit.default")?"":"disabled"}>حفظ العربون</button></div></div>${websiteDepositHistoryMarkup()}
+        <div class="form-grid website-deposit-setting"><div class="form-field"><label>العربون المطلوب لطلبات الواتساب (ج.م)</label><input id="whatsapp-deposit-default" inputmode="decimal" value="${esc(whatsappDepositDefaultValue())}" ${canAction("order.deposit.default")?"":"readonly"}><small>${data.settings?.whatsappOrders?.depositDefault===undefined?"لسه زي عربون الموقع. ":""}يتحفظ مع كل طلب واتساب جديد، ويظهر في السيستم ولوحة Chatwood.</small></div><div class="form-field"><label>&nbsp;</label><button class="btn secondary" type="button" data-action="save-whatsapp-deposit" ${canAction("order.deposit.default")?"":"disabled"}>حفظ العربون</button></div></div>
         <div class="alert-item"><div class="alert-badge">▣</div><div><strong>شركات الشحن</strong><span>جاهز لتسجيل الأكواد والحالات يدويًا، ويمكن ربط API لاحقًا.</span></div>${badge("جزئي","blue")}</div>
         <div class="alert-item"><div class="alert-badge red">▧</div><div><strong>الفاتورة الإلكترونية المصرية</strong><span>غير مفعلة لأن النشاط غير منضم حاليًا للمنظومة.</span></div>${badge("غير مفعلة","gray")}</div>
         <div class="alert-item"><div class="alert-badge blue">◎</div><div><strong>تقارير WhatsApp</strong><span>يحتاج رقم المستلم وحساب WhatsApp Business API.</span></div>${badge("بانتظار الربط","warning")}</div>
@@ -8912,6 +8957,7 @@ root.addEventListener("click", async event => {
   if (action === "shipping-price-tab") {shippingPriceTab=target.dataset.tab;document.getElementById("customer-shipping-rates").hidden=shippingPriceTab!=="customer";document.getElementById("postal-shipping-rates").hidden=shippingPriceTab!=="postal";document.querySelectorAll(".shipping-price-tabs .tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.tab===shippingPriceTab));}
   if (action === "save-postal-tariff") savePostalTariff();
   if (action === "save-website-deposit") saveWebsiteDepositDefault();
+  if (action === "save-whatsapp-deposit") saveWhatsappDepositDefault();
   if (action === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(target.dataset.payment); }
   if (action === "edit-order-deposit") { const order = getOnlineOrder(target.dataset.id); if (order) openModal(`عربون الطلب ${order.id}`, "تعديل العربون المطلوب", depositEditForm(order.id, "system", order.depositRequired ?? order.deposit?.required ?? null, Number(order.total || 0))); }
   if (action === "backup-db") createBackup();
@@ -9400,6 +9446,7 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "order-next-step") { openOrderNextStep(appAction.dataset.id); return; }
   // «⋯ المزيد» in the order details dialog: the edit/cancel flows open their own screen or dialog.
   if (chatwoodAction === "edit-quick-order") { closeModal(); editQuickOrder(appAction.dataset.id); return; }
+  if (chatwoodAction === "add-order-payment") { if (requireAction("order.payment.receive")) openAddOrderPayment(appAction.dataset.id); return; }
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }
   if (appAction?.dataset.action === "generate-user-password") {

@@ -6,6 +6,7 @@
 // balance and an un-collected shipment are brought in line. Every correction keeps who, when, before, after and why.
 //   preview(db, paymentId)                    → what can be corrected and why not
 //   apply(db, input, user, deps)              → { correction, existing, orderIds, carrierNotice }
+//   addPayment(db, input, user, deps)         → { payment, existing, carrierNotice } (a further payment on an order)
 
 const OrderFinance = require("./order-finance.js");
 
@@ -180,4 +181,42 @@ function apply(db, input, user, { randomUUID, nextId, appendOrderAudit, now = ne
   return { correction, existing:false, orderIds:[...new Set([source.id, target.id])], carrierNotice };
 }
 
-module.exports = { preview, apply, RECEIPT_METHODS };
+// A further payment on the same order (the customer pays again before shipping). Recorded like the first one, as a
+// payment and a cash row, and the order, invoice, customer balance and un-collected shipment follow it as they do for
+// a correction. The same order states block it, and it cannot take the order above its total.
+function addPayment(db, input, user, { randomUUID, nextId, appendOrderAudit, now = new Date().toISOString() }) {
+  const operationKey = String(input.operationKey || "").trim().slice(0, 120);
+  if (!operationKey) throw correctionError(400, "OPERATION_KEY_REQUIRED", "حدّث الصفحة وحاول تاني.");
+  const order = list(db, "onlineOrders").find(item => item.id === String(input.orderId || "") && !item.deletedAt);
+  const sourceKey = `order-payment:${order?.id}:${operationKey}`;
+  const existing = list(db, "orderPayments").find(item => item.sourceKey === sourceKey);
+  if (existing) return { payment:existing, existing:true, carrierNotice:false };
+  const blocker = orderClosedReason(db, order);
+  if (blocker) throw correctionError(blocker.code === "ORDER_NOT_FOUND" ? 404 : 409, blocker.code, blocker.message);
+  const today = now.slice(0, 10);
+  if (dayClosed(db, today)) throw correctionError(409, "DAY_CLOSED", `يومية ${today} متقفلة؛ افتحها الأول من الخزينة.`);
+  const amount = round(OrderFinance.normalizeNumber(input.amount));
+  if (!Number.isFinite(amount) || amount <= 0) throw correctionError(400, "AMOUNT_INVALID", "اكتب المبلغ اللي وصل.");
+  const remaining = round(Math.max(0, round(order.total) - otherPaid(db, order, "")));
+  if (amount > remaining) throw correctionError(409, "AMOUNT_EXCEEDS_REMAINING", `الباقي على الطلب ${remaining} ج.م بس.`, { remaining });
+  const account = list(db, "cashAccounts").find(item => item.id === String(input.cashAccountId || "") && item.active !== false && !item.deletedAt);
+  if (!account) throw correctionError(400, "CASH_ACCOUNT_REQUIRED", "اختار الخزنة أو الحساب اللي استلم الفلوس.");
+  const method = String(input.paymentMethod || "").trim().slice(0, 60) || "كاش";
+  const note = String(input.note || "").trim().slice(0, 300);
+  const actor = user.name || user.username;
+  const payment = { id:`PAY-${randomUUID()}`, sourceKey, idempotencyKey:sourceKey, orderId:order.id, invoiceId:order.saleId || "", customerId:order.customerId || "", amount, paymentMethod:method,
+    cashAccountId:account.id, cashAccountName:account.name, confirmed:true, status:"confirmed", receivedBy:actor, receivedByUsername:user.username, receivedAt:now, source:"additional_payment", note,
+    websiteOrderNumber:order.websiteOrderNumber || "" };
+  list(db, "orderPayments").push(payment);
+  list(db, "cash").push({ id:nextId("TX-", db.cash), date:today, type:"قبض", direction:"in", locked:true, account:account.name, accountId:account.id, party:order.customerName || "", amount, category:"دفعة طلب",
+    orderId:order.id, paymentId:payment.id, sourceKey:`${sourceKey}:cash`, note:`دفعة إضافية للطلب ${order.id}${note ? `: ${note}` : ""}`, createdAt:now, createdBy:actor, createdByUsername:user.username });
+  const effect = shiftOrderPaid(db, order, amount, now);
+  if (!order.paymentReceiptId) order.paymentReceiptId = payment.id;
+  db.audit = Array.isArray(db.audit) ? db.audit : [];
+  const auditStart = db.audit.length;
+  appendOrderAudit(db, user, order, "تسجيل دفعة إضافية", `${amount} ج.م · ${account.name} · ${method}${note ? ` · ${note}` : ""}`);
+  for (const row of db.audit.slice(auditStart)) Object.assign(row, { operationType:"ORDER_PAYMENT_ADDED", paymentId:payment.id, before:effect.before, after:effect.after });
+  return { payment, existing:false, before:effect.before, after:effect.after, carrierNotice:effect.carrierNotice };
+}
+
+module.exports = { preview, apply, addPayment, RECEIPT_METHODS };

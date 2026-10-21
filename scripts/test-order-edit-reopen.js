@@ -76,6 +76,16 @@ const H = require('./integration-test-helpers.js');
     assert.ok(system.readDb().audit.some(row => /إعادة فتح الطلب للتعديل/.test(JSON.stringify(row))), 'audited');
     console.log('PASS edited and packed again with a new invoice; stock is right');
 
+    // A further payment after packing: the invoice and the customer balance follow it.
+    const invoiceBefore = system.readDb().sales.find(sale => sale.id === repacked.saleId), balanceBefore = Number(system.readDb().customers.find(c => c.id === invoiceBefore.customerId).balance || 0);
+    r = await system.api(`/api/orders/${id}/payments`, { username:'cashier', method:'POST', body:{ amount:40, cashAccountId:'CA-003', paymentMethod:'InstaPay', operationKey:'after-pack' } });
+    assert.equal(r.status, 201, r.text);
+    const invoiceAfter = system.readDb().sales.find(sale => sale.id === repacked.saleId);
+    assert.equal(Number(invoiceAfter.paidAmount), Number(invoiceBefore.paidAmount || 0) + 40); assert.equal(Number(invoiceAfter.remainingAmount), Number(invoiceBefore.remainingAmount) - 40);
+    assert.equal(Number(system.readDb().customers.find(c => c.id === invoiceBefore.customerId).balance || 0), balanceBefore - 40);
+    assert.equal(system.readDb().orderPayments.find(item => item.id === r.body.payment.id).invoiceId, repacked.saleId);
+    console.log('PASS a payment after packing updates the invoice and the customer balance');
+
     // ---- A website order (coupon 20, website price 90 for B0002 while the System price is 100).
     const web = H.storeOrder({ items:[{ productId:2, externalBookId:'B0002', nameAr:'فيزياء', quantity:1, unitPrice:90, subtotal:90, availabilityAtOrder:'available', preorderQuantity:0 }], couponDiscount:20, shippingCost:35, depositRequired:0 });
     store.state.orders.set(web.orderNumber, web);

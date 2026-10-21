@@ -79,3 +79,4 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .line-discount { display:flex; align-items:center; gap:6px; margin-top:2px; }
 .line-discount input { width:80px; margin:0; padding:4px 8px; } .line-discount select { width:auto; margin:0; padding:4px 6px; }
 .line-discount.order { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); } .line-discount.order input { width:90px; }
+.stats small { display:block; font-size:11px; } .pay-form { display:grid; gap:6px; width:100%; } .pay-form .two { display:grid; grid-template-columns:1fr 1fr; gap:6px; } .pay-form input, .pay-form select { padding:6px 8px; border:1px solid var(--border); border-radius:8px; font:inherit; width:100%; }
