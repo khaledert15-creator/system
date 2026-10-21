@@ -1,5 +1,6 @@
 :root { --ink:#17324d; --muted:#6b7c8f; --border:#dde6ef; --blue:#1f5fa8; --blue-soft:#e9f3ff; --green:#1e7a4f; --green-soft:#e6f5ec; --red:#b42318; --amber:#9a6700; --bg:#f5f8fb; }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 "Cairo", "Noto Kufi Arabic", Tahoma, Arial, sans-serif; }
 .panel { max-width:520px; margin:0 auto; padding:10px; }
 .panel-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
@@ -36,3 +37,41 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .btn.new-order { display:block; text-align:center; margin:10px 0; }
 .orders-section.recipient h2 { color:var(--muted); }
 .card.order.recipient { opacity:.9; }
+/* Order form beside the conversation (about 400px wide): one column, large tap targets. */
+.order-form h2 { margin:0; font-size:15px; }
+.order-form h3 { margin:0 0 6px; font-size:13px; color:var(--muted); }
+.order-form .block { border-top:1px solid var(--border); padding-top:10px; margin-top:10px; }
+.order-form .grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.order-form .field { margin:0; font-weight:600; font-size:12px; }
+.order-form .field.wide { grid-column:1 / -1; }
+.order-form .field > span { display:block; color:var(--muted); }
+.order-form input, .order-form select, .order-form textarea { display:block; width:100%; margin-top:3px; padding:7px 9px; border:1px solid var(--border); border-radius:9px; font:inherit; background:#fff; }
+.order-form textarea { resize:vertical; }
+.order-form .search { margin:0 0 6px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:10px 0 0; }
+.chip { border:1px dashed var(--blue); background:var(--blue-soft); color:var(--blue); border-radius:999px; padding:4px 10px; font:inherit; font-size:12px; cursor:pointer; max-width:100%; text-align:start; }
+.chip:hover { border-style:solid; }
+.results { display:grid; gap:4px; margin-bottom:6px; }
+.result { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:7px 9px; border:1px solid var(--border); border-radius:9px; background:#fff; font:inherit; text-align:start; cursor:pointer; }
+.result:hover { border-color:var(--blue); }
+.result small { white-space:nowrap; }
+.warn { color:var(--amber); } .error { color:var(--red); }
+.line { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid var(--border); }
+.line.short .line-name strong { color:var(--amber); }
+.line-name { display:grid; min-width:0; } .line-name small { font-size:11px; }
+.qty { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.qty button { width:28px; height:28px; border:1px solid var(--border); border-radius:8px; background:#fff; font:inherit; cursor:pointer; }
+.qty b { min-width:20px; text-align:center; } .qty .remove { color:var(--red); }
+.totals { margin:12px 0 6px; padding:10px; border-radius:10px; background:var(--bg); display:grid; gap:4px; }
+.totals div { display:flex; justify-content:space-between; } .totals .grand { font-size:16px; border-top:1px solid var(--border); padding-top:6px; }
+.notice { display:grid; gap:6px; margin:10px 0 0; padding:10px; border-radius:10px; background:var(--blue-soft); }
+.notice.warn { background:#fff7e6; color:var(--ink); border:1px solid #f1d38a; }
+.notice .two { display:grid; grid-template-columns:120px 1fr; gap:6px; }
+.check { display:flex; align-items:center; gap:8px; margin:6px 0 0; font-weight:700; cursor:pointer; }
+.check input { width:18px; height:18px; margin:0; flex-shrink:0; }
+.btn.wide { display:block; width:100%; padding:10px; font-size:15px; }
+.btn.danger { background:var(--red); border-color:var(--red); color:#fff; } .btn.ghost.danger { background:#fff; color:var(--red); border-color:#f3c1bc; }
+.btn:disabled { opacity:.6; cursor:wait; }
+.summary { width:100%; margin:8px 0; padding:8px; border:1px solid var(--border); border-radius:9px; font:inherit; font-size:12px; background:var(--bg); }
+.copy-area { position:fixed; opacity:0; inset-inline-start:-9999px; }
+@media (max-width:360px) { .order-form .grid { grid-template-columns:1fr; } }

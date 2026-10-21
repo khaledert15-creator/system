@@ -58,7 +58,10 @@ const H = require('./integration-test-helpers.js');
     const body = (await panel({ phone:'+201001234567', conversationId:'900' })).body;
     assert.equal(body.storeAvailable, true);
     // openOrders = orders in «الطلبات الحالية» (awaiting, preparing, shipped, pre-order), ordersCount = every listed order.
-    assert.deepEqual(body.customer, { name:'سارة', phone:'01001234567', known:true, identified:true, customerIds:['C0001'], status:'returning', ordersCount:body.orders.length, purchasesCount:2, purchasesTotal:535, paidTotal:400, outstanding:135, openOrders:body.orders.filter(order => order.group === 'current').length });
+    // The saved address fills the panel's order form for a returning customer.
+    assert.equal(typeof body.customer.address, 'object'); assert.ok('governorate' in body.customer.address && 'address' in body.customer.address);
+    const { address:savedAddress, ...card } = body.customer;
+    assert.deepEqual(card, { name:'سارة', phone:'01001234567', known:true, identified:true, customerIds:['C0001'], status:'returning', ordersCount:body.orders.length, purchasesCount:2, purchasesTotal:535, paidTotal:400, outstanding:135, openOrders:body.orders.filter(order => order.group === 'current').length });
     assert.equal(body.customer.openOrders, 4); assert.equal(body.customer.ordersCount, 6);
     const numbers = body.orders.map(order => order.websiteOrderNumber).filter(Boolean);
     assert.deepEqual(numbers.slice().sort(), ['MK261020-00001', 'MK261020-00002', 'MK261020-00003'], 'each website order once');

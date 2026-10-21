@@ -550,7 +550,9 @@ function createWebsiteOrders(deps) {
     const counts = Object.fromEntries(Object.keys(PANEL_PHASES).map(phase => [phase, entries.filter(entry => entry.phase === phase).length]));
     return {
       customer:{ name, phone:phone || "", known:Boolean(primary), identified:Boolean(primary) || entries.length > 0, customerIds:[...customerIds], status:realSales.length || entries.length > 1 ? "returning" : "new",
-        ordersCount:entries.length, purchasesCount:realSales.length, purchasesTotal, paidTotal, outstanding, openOrders:entries.filter(entry => entry.group === "current").length },
+        ordersCount:entries.length, purchasesCount:realSales.length, purchasesTotal, paidTotal, outstanding, openOrders:entries.filter(entry => entry.group === "current").length,
+        // The saved address, so the panel's order form starts filled for a returning customer.
+        address:{ governorate:primary?.governorate || orders[0]?.governorate || "", city:primary?.city || orders[0]?.city || "", address:primary?.address || orders[0]?.address || "", addressMark:primary?.addressMark || orders[0]?.addressMark || "", alternativePhone:primary?.alternativePhone || "" } },
       counts, totalOrders:entries.length, truncated:entries.length > PANEL_LIMIT,
       orders:entries.slice(0, PANEL_LIMIT), recipientOrders:recipientOrders.slice(0, PANEL_LIMIT)
     };

@@ -160,7 +160,9 @@ function createIntegrationServer(deps) {
     const version = encodeURIComponent(String(deps.appBuildId || "dev"));
     const html = fs.readFileSync(file, "utf8").replace("</head>", `  <meta name="chatwood-origin" content="${origin}">\n</head>`)
       .replace('href="/integrations/chatwood-panel.css"', `href="/integrations/chatwood-panel.css?v=${version}"`)
-      .replace('src="/integrations/chatwood-panel.js"', `src="/integrations/chatwood-panel.js?v=${version}"`);
+      .replace('src="/integrations/chatwood-panel.js"', `src="/integrations/chatwood-panel.js?v=${version}"`)
+      .replace('src="/integrations/chatwood-suggest.js"', `src="/integrations/chatwood-suggest.js?v=${version}"`)
+      .replace('src="/order-finance.js"', `src="/order-finance.js?v=${version}"`);
     return send(res, 200, html, "text/html; charset=utf-8", { ...frameAncestorHeaders([config.chatwoodOrigin]), "Cache-Control":"no-store" });
   }
 
@@ -249,6 +251,53 @@ function createIntegrationServer(deps) {
     else if (verified && !verified.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:false, code:verified.code, message:verified.message };
     const links = verified?.ok ? WebsiteOrders.chatwoodSuggestions(fresh, verified) : { suggestions:[], conflicts:[] };
     return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, contactId:panelContactId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null, conversationVerified:Boolean(verified?.ok), verifiedContactId:verified?.ok ? verified.identity.chatwootContactId : null, orderContext, suggestions:links.suggestions, mentionConflicts:links.conflicts, canLink:canOrderAction(fresh, user, "panel.link") }, JSON_TYPE, NO_STORE);
+  }
+
+  // What the order form inside the Chatwood panel needs: books with what is free to sell now, the shipping rules the
+  // server applies, carriers and (for employees who receive payments) the cash accounts. Prices and totals are still
+  // recalculated by the order endpoints when the order is saved.
+  function panelOrderForm(req, res) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const db = readDbSafe();
+    if (!canOrderAction(db, user, "order.quick.create")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية إنشاء الطلبات.");
+    const available = book => Math.max(0, Number(book.stock || 0) - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0)));
+    const carriers = (db.shippingCompanies || []).filter(item => !item.deletedAt && item.active !== false).map(item => item.name);
+    const canReceive = canOrderAction(db, user, "order.payment.receive");
+    return send(res, 200, {
+      ok:true,
+      books:(db.books || []).filter(book => !book.deletedAt).map(book => ({ id:book.id, name:String(book.name || book.id), price:Number(book.price || 0), discount:Math.max(0, Number(book.discount ?? book.saleDiscount ?? 0)), discountType:book.discountType === "amount" ? "amount" : "percent", available:available(book), allowPreorder:book.allowPreorder === true })),
+      shippingRules:db.settings?.shippingRules || db.settings?.shippingRates || {},
+      shippingCompanies:carriers,
+      defaultShippingCompany:carriers.find(name => /البريد المصري|egypt\s*post/i.test(name)) || carriers[0] || "",
+      cashAccounts:canReceive ? (db.cashAccounts || []).filter(item => !item.deletedAt && item.active !== false).map(item => ({ id:item.id, name:item.name })) : [],
+      permissions:{ receive:canReceive, edit:canOrderAction(db, user, "order.quick.edit"), confirm:canOrderAction(db, user, "order.quick.confirm"), discount:canOrderAction(db, user, "order.discount.override"), shipping:canOrderAction(db, user, "order.shipping.override") }
+    }, JSON_TYPE, NO_STORE);
+  }
+
+  // One order as the panel's form edits it, with why it cannot be edited or cancelled here (same rules as the System).
+  function panelOrder(req, res, url) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const db = readDbSafe();
+    if (!canOrderAction(db, user, "order.quick.edit")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل الطلبات.");
+    const id = String(url.searchParams.get("id") || "").trim();
+    const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+    if (!order) return fail(res, 404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
+    const shipment = (db.shipments || []).find(item => !item.deletedAt && !["cancelled", "ملغاة"].includes(String(item.normalizedStatus || item.status || "")) && (item.id === order.shipmentId || item.onlineOrderId === order.id));
+    const cancelled = Boolean(order.cancelledAt || order.workflowStage === "cancelled" || order.status === "ملغي");
+    const delivered = order.workflowStage === "delivered" || order.status === "تم التسليم";
+    const website = Boolean(order.websiteOrderNumber || order.source === "website");
+    const editBlock = cancelled ? "الطلب ملغي." : delivered ? "الطلب اتسلّم للعميل؛ أي تغيير بيتعمل كمرتجع." : shipment ? "الطرد اتسلّم لشركة الشحن؛ مينفعش يتعدل."
+      : order.source !== "whatsapp" && !website ? "الطلب ده اتسجّل يدويًا؛ عدّله من السيستم." : "";
+    const paid = (db.orderPayments || []).filter(item => item.orderId === order.id && item.status !== "reversed" && item.confirmed !== false).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const cancelBlock = cancelled ? "الطلب ملغي بالفعل." : delivered || shipment ? "الإلغاء بيتعمل كمرتجع." : order.saleId || paid > 0 ? "الطلب فيه فاتورة أو دفعة؛ الإلغاء مع تسوية الفلوس من السيستم." : "";
+    const reserved = new Map(((order.inventoryReservation?.status === "active" && order.inventoryReservation.lines) || []).map(line => [line.bookId, Number(line.qty || 0)]));
+    return send(res, 200, { ok:true, order:{
+      id:order.id, phone:order.phone || "", customerName:order.customerName || "", alternativePhone:order.alternativePhone || "", governorate:order.governorate || "", city:order.city || "", address:order.address || "", addressMark:order.addressMark || "",
+      shippingCompany:order.shippingCompany || "", shippingCost:Number(order.shippingFee ?? order.shippingCost ?? order.shipping ?? 0), orderDiscount:Number(order.orderDiscount || 0), orderDiscountType:order.orderDiscountType || "percent", notes:order.notes || "",
+      paymentPlan:order.paymentPlan || "cash_on_delivery", paidAmount:paid, total:Number(order.total || 0), status:order.status || "", workflowStage:order.workflowStage || "",
+      confirmed:Boolean(order.confirmedAt), packed:Boolean(order.saleId || order.preparedAt), saleId:order.saleId || "", websiteOrderNumber:order.websiteOrderNumber || "", website,
+      lines:(order.lines || []).map(line => ({ bookId:line.bookId, qty:Number(line.qty || 1), price:Number(line.price || 0), discount:Number(line.discount || 0), discountType:line.discountType || "percent", reserved:reserved.get(line.bookId) || 0 }))
+    }, editBlock, cancelBlock }, JSON_TYPE, NO_STORE);
   }
 
   async function panelLink(req, res) {
@@ -543,6 +592,8 @@ function createIntegrationServer(deps) {
     if (route.startsWith("/api/integration/v1/panel/")) {
       if (route === "/api/integration/v1/panel/customer" && method === "GET") await panelCustomer(req, res, url);
       else if (route === "/api/integration/v1/panel/link-conversation" && method === "POST") await panelLink(req, res);
+      else if (route === "/api/integration/v1/panel/order-form" && method === "GET") panelOrderForm(req, res);
+      else if (route === "/api/integration/v1/panel/order" && method === "GET") panelOrder(req, res, url);
       else fail(res, 404, "NOT_FOUND", "API route not found.");
       return true;
     }
