@@ -57,7 +57,7 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .result small { white-space:nowrap; }
 .warn { color:var(--amber); } .error { color:var(--red); }
 .line { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid var(--border); }
-.line.short .line-name strong { color:var(--amber); }
+.line-wrap.short .line-name strong, .line.short .line-name strong { color:var(--amber); }
 .line-name { display:grid; min-width:0; } .line-name small { font-size:11px; }
 .qty { display:flex; align-items:center; gap:4px; flex-shrink:0; }
 .qty button { width:28px; height:28px; border:1px solid var(--border); border-radius:8px; background:#fff; font:inherit; cursor:pointer; }
@@ -75,3 +75,7 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .summary { width:100%; margin:8px 0; padding:8px; border:1px solid var(--border); border-radius:9px; font:inherit; font-size:12px; background:var(--bg); }
 .copy-area { position:fixed; opacity:0; inset-inline-start:-9999px; }
 @media (max-width:360px) { .order-form .grid { grid-template-columns:1fr; } }
+.line-wrap { border-bottom:1px solid var(--border); padding-bottom:6px; } .line-wrap .line { border-bottom:0; }
+.line-discount { display:flex; align-items:center; gap:6px; margin-top:2px; }
+.line-discount input { width:80px; margin:0; padding:4px 8px; } .line-discount select { width:auto; margin:0; padding:4px 6px; }
+.line-discount.order { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); } .line-discount.order input { width:90px; }

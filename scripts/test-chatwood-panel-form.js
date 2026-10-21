@@ -33,6 +33,7 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
   assert.equal(found.name, 'علاء حسن خيرالدين', 'the name stops before «رقم»');
   assert.equal(found.address, 'الجيزة فيصل شارع العشرين عمارة 5', 'only the part after «العنوان»');
   assert.equal(found.governorate, 'الجيزة'); assert.equal(found.city, 'فيصل'); assert.deepEqual(found.phones, ['01515377135']);
+  assert.equal(S.extract([message('العنوان مدينة نصر شارع عباس العقاد')], { books }).address, 'مدينة نصر شارع عباس العقاد', 'the «العنوان» label is dropped without a colon too');
   pass('line-by-line and labelled messages give the right name, phones and address');
 }
 {
@@ -83,6 +84,16 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     assert.equal(saved.total, 235); assert.equal(saved.paidAmount, 100);
     assert.equal(system.readDb().orderPayments.filter(item => item.orderId === id).length, 1);
     pass('an order made from the panel is linked to the conversation and records the deposit once');
+
+    // Discounts as the panel sends them: per copy and on the order, only with «تعديل خصم النظام».
+    const discounted = { ...body, chatwoodContext: '', requestId: 'panel-test-2', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false, lines: [{ bookId: 'B0002', qty: 2, discount: 10, discountType: 'percent', discountScope: 'unit' }], orderDiscount: 20, orderDiscountType: 'amount' };
+    r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: discounted });
+    assert.equal(r.status, 403, 'the cashier cannot add a discount');
+    assert.equal((await system.api('/api/integration/v1/panel/order-form', { username: 'owner' })).body.permissions.discount, true);
+    r = await system.api('/api/orders/quick', { username: 'owner', method: 'POST', body: discounted });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.body.order.total, 2 * 72 - 20 + 35, '10% off each copy, 20 off the order, shipping added');
+    pass('book and order discounts follow the discount permission');
 
     r = await system.api(`/api/integration/v1/panel/order?id=${id}`, { username: 'warehouse' });
     assert.equal(r.status, 403);

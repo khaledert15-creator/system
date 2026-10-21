@@ -182,7 +182,7 @@
         if (!out.governorate && governorate) out.governorate = governorate;
         if (!out.city && city) out.city = text.match(new RegExp(city.split(" ").map(part => part.replace(/[ه]$/, "[هة]")).join("\\s*"), "i"))?.[0] || city;
         const words = plain.split(" ");
-        if (!parts && !out.address && !phonesHere.length && text.length >= 10 && (governorate || city || ADDRESS_WORDS.some(word => words.includes(word)))) out.address = text;
+        if (!parts && !out.address && !phonesHere.length && text.length >= 10 && (governorate || city || ADDRESS_WORDS.some(word => words.includes(word)))) out.address = text.replace(/^\s*(?:العنوان بالتفصيل|العنوان|عنواني)\s*[:：-]?\s*/, "");
         // A line of two to four words right above a phone number is most likely the name («جونير رأفت شحاته»).
         if (!out.name && !parts && /^[\p{L}\s]+$/u.test(line) && line.split(" ").length >= 2 && line.split(" ").length <= 4 && lines[position + 1] && normalizePhone(lines[position + 1]) && !governorate && !scoreBooks(line, index).length) out.name = line;
         if (parts && !parts.address) return;

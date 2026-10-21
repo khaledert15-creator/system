@@ -363,7 +363,7 @@
         el("input", { id: "form-book-search", class: "search", placeholder: "اكتب اسم الكتاب… (Enter يضيف أول نتيجة)", autocomplete: "off",
           oninput: event => { form.search = event.target.value; refreshResults(); },
           onkeydown: event => { if (event.key === "Enter") { event.preventDefault(); const first = ChatwoodSuggest.searchBooks(form.search, catalog.books, 1, catalog.index)[0]; if (first) addBook(first); } } }),
-        el("div", { id: "book-results", class: "results" }), el("div", { id: "form-lines" })),
+        el("div", { id: "book-results", class: "results" }), el("div", { id: "form-lines" }), orderDiscountField()),
       el("section", { class: "block" }, el("h3", { text: "الشحن" }),
         el("div", { class: "grid" },
           el("label", { class: "field" }, el("span", { text: "شركة الشحن" }), el("select", { onchange: event => { draft.shippingCompany = event.target.value; } }, catalog.shippingCompanies.map(name => el("option", { selected: name === draft.shippingCompany, text: name })))),
@@ -403,18 +403,59 @@
   function refreshLines() {
     const box = $("form-lines"); if (!box) return;
     const draft = state.form.draft, locked = state.form.order && ["preparing", "needs_review"].includes(state.form.order.workflowStage);
+    let computed = [];
+    try { computed = totals(draft).lines; } catch {}
     box.replaceChildren(...(draft.lines.length ? draft.lines.map((line, index) => {
-      const book = state.catalog.byId.get(line.bookId), available = availableFor(line), short = line.qty > available;
-      return el("div", { class: `line ${short ? "short" : ""}` },
+      const book = state.catalog.byId.get(line.bookId), available = availableFor(line), short = line.qty > available, priced = computed[index];
+      const discounted = priced && priced.unitFinalPrice < priced.unitOriginalPrice;
+      const priceText = line.fromStore ? "سعر الموقع وقت الحفظ" : discounted ? `${money(priced.unitFinalPrice)} بدل ${money(priced.unitOriginalPrice)}` : money(line.price);
+      return el("div", { class: `line-wrap ${short ? "short" : ""}` }, el("div", { class: "line" },
         el("div", { class: "line-name" }, el("strong", { text: book?.name || line.bookId }),
-          el("small", { class: short ? "warn" : "muted", text: `${line.fromStore ? "سعر الموقع وقت الحفظ" : money(line.price)}${short ? (locked ? ` · مش متاح (المتاح ${available})` : available ? ` · ${available} متاح والباقي حجز مسبق` : " · حجز مسبق") : ""}` })),
+          el("small", { class: short ? "warn" : "muted", text: `${priceText}${short ? (locked ? ` · مش متاح (المتاح ${available})` : available ? ` · ${available} متاح والباقي حجز مسبق` : " · حجز مسبق") : ""}` })),
         el("div", { class: "qty" },
           el("button", { type: "button", "aria-label": "أقل", onclick: () => { if (line.qty > 1) line.qty -= 1; else draft.lines.splice(index, 1); refreshLines(); refreshSuggestions(); } , text: "−" }),
           el("b", { text: String(line.qty) }),
           el("button", { type: "button", "aria-label": "أكتر", onclick: () => { line.qty += 1; refreshLines(); }, text: "+" }),
-          el("button", { type: "button", class: "remove", "aria-label": "حذف", onclick: () => { draft.lines.splice(index, 1); refreshLines(); refreshSuggestions(); }, text: "✕" })));
+          el("button", { type: "button", class: "remove", "aria-label": "حذف", onclick: () => { draft.lines.splice(index, 1); refreshLines(); refreshSuggestions(); }, text: "✕" }))),
+        lineDiscount(line));
     }) : [el("div", { class: "small muted", text: "لسه مفيش كتب. اكتب في البحث أو اضغط اقتراح من الشات." })]));
     refreshTotals();
+  }
+
+  // Discount per copy, as on the System's order screen: changing it needs «تعديل خصم النظام». Books already on a
+  // website order keep the website's price and discount.
+  function lineDiscount(line) {
+    const fixed = state.form.order?.website, can = state.catalog.permissions.discount && !fixed;
+    if (!can) return Number(line.discount) > 0 ? el("div", { class: "line-discount small muted", text: `خصم ${amount(line.discount)}${line.discountType === "amount" ? " ج.م للنسخة" : "%"}` }) : "";
+    const input = el("input", { inputmode: "decimal", value: line.discount ? amount(line.discount) : "", placeholder: "0", "aria-label": "الخصم",
+      oninput: event => { const value = Number(String(event.target.value).replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)) || 0); if (Number.isFinite(value) && value >= 0) { line.discount = value; refreshLinePrices(); } } });
+    return el("div", { class: "line-discount" }, el("span", { class: "small muted", text: "خصم" }), input,
+      el("select", { "aria-label": "نوع الخصم", onchange: event => { line.discountType = event.target.value; refreshLinePrices(); } },
+        el("option", { value: "percent", selected: line.discountType !== "amount", text: "%" }), el("option", { value: "amount", selected: line.discountType === "amount", text: "ج.م للنسخة" })));
+  }
+
+  // Updates prices and totals without rebuilding the inputs being typed in.
+  function refreshLinePrices() {
+    const draft = state.form.draft;
+    let computed; try { computed = totals(draft).lines; } catch (error) { return formError(error.message); }
+    clearError();
+    document.querySelectorAll("#form-lines .line-wrap").forEach((row, index) => {
+      const priced = computed[index], line = draft.lines[index], label = row.querySelector(".line-name small");
+      if (!priced || !label || line.fromStore) return;
+      const discounted = priced.unitFinalPrice < priced.unitOriginalPrice, extra = label.textContent.includes(" · ") ? label.textContent.slice(label.textContent.indexOf(" · ")) : "";
+      label.textContent = `${discounted ? `${money(priced.unitFinalPrice)} بدل ${money(priced.unitOriginalPrice)}` : money(line.price)}${extra}`;
+    });
+    refreshTotals();
+  }
+
+  function orderDiscountField() {
+    const draft = state.form.draft;
+    if (!state.catalog.permissions.discount) return Number(draft.orderDiscount) > 0 ? el("div", { class: "small muted", text: `خصم على الطلب: ${amount(draft.orderDiscount)}${draft.orderDiscountType === "amount" ? " ج.م" : "%"}` }) : "";
+    return el("div", { class: "line-discount order" }, el("span", { class: "small", text: "خصم إضافي على الطلب" }),
+      el("input", { inputmode: "decimal", value: draft.orderDiscount ? amount(draft.orderDiscount) : "", placeholder: "0", "aria-label": "خصم الطلب",
+        oninput: event => { const value = Number(String(event.target.value).replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)) || 0); if (Number.isFinite(value) && value >= 0) { draft.orderDiscount = value; refreshTotals(); } } }),
+      el("select", { "aria-label": "نوع خصم الطلب", onchange: event => { draft.orderDiscountType = event.target.value; refreshTotals(); } },
+        el("option", { value: "percent", selected: draft.orderDiscountType !== "amount", text: "%" }), el("option", { value: "amount", selected: draft.orderDiscountType === "amount", text: "ج.م" })));
   }
 
   function refreshPayment() {
@@ -435,6 +476,7 @@
     const input = $("shipping-input"); if (input && updateShippingInput && !draft.shippingManual) input.value = amount(result.shipping);
     const paid = Math.min(Number(draft.paidAmount || 0), result.total);
     box.replaceChildren(
+      result.productDiscountTotal ? el("div", {}, el("span", { text: "خصم الكتب" }), el("b", { text: `− ${money(result.productDiscountTotal)}` })) : "",
       el("div", {}, el("span", { text: "الكتب" }), el("b", { text: money(result.goods) })),
       el("div", {}, el("span", { text: "الشحن" }), el("b", { text: result.shipping ? money(result.shipping) : "مجاني" })),
       result.orderDiscountAmount ? el("div", {}, el("span", { text: "خصم الطلب" }), el("b", { text: `− ${money(result.orderDiscountAmount)}` })) : "",
