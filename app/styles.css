@@ -2103,3 +2103,10 @@ button.finish-preparation-card{cursor:pointer}.finish-preparation-card.preferred
 .whatsapp-mark{width:26px;height:26px;flex:none;color:#fff}
 .unconfirmed-orders-alert{border:1px solid #f1d7a6;background:#fff9ee;color:#8a5a00;border-radius:10px;padding:8px 12px;font:inherit;font-weight:700;cursor:pointer}
 .unconfirmed-orders-alert:hover{background:#fff1d6}
+/* Shortage summary boxes are filter buttons for the books table */
+button.shortage-stat{font:inherit;text-align:start;justify-items:start;cursor:pointer;transition:border-color .15s,background .15s}
+button.shortage-stat:hover{border-color:#a9c9ed;background:#f7fbff}
+button.shortage-stat.active{border:2px solid var(--primary);background:#eef6ff}
+button.shortage-stat.danger.active{border-color:var(--danger);background:#fff5f4}
+button.shortage-stat.warning.active{border-color:#d99a2b;background:#fff9ee}
+.shortage-filter-note{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:8px 12px;border-radius:10px;background:#f4f8fe;font-size:13px}

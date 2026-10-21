@@ -202,6 +202,7 @@ announceSystemTab();
 let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
+let shortageFilter = "";
 let shippingSessionCompany = "";
 let quickShippingOrderId = "";
 let batchShippingPreviewRows = [];
@@ -3856,26 +3857,31 @@ function renderShortagesScreen() {
   const orderBooks=order=>(order.backorderLines||[]).map(line=>{const book=getBook(line.bookId);const available=bookAvailableStock(book);return `<span class="shortage-line">${esc(book?.name||line.bookId)} × ${line.qty}${available>0?` <em class="preorder-tag ok">متوفر ${available}</em>`:""}</span>`;}).join("");
   const bookCell=row=>`<td class="shortage-book"><strong>${esc(row.book.name||row.bookId)}</strong><span class="muted" dir="ltr">${esc(row.book.barcode||row.book.sku||row.bookId)}</span>${row.countHold?`<em class="shortage-flag" title="نسخ مسجلة في الرصيد لكنها غير موجودة على الرف">⚠ تحتاج جرد · ${row.countHold} غير موجودة</em>`:""}${row.lowStock&&!row.shortfall&&!row.countHold?`<em class="shortage-flag soft">وصل للحد الأدنى</em>`:""}${shortageOrdersMarkup(row)}</td>`;
   const gapCell=row=>row.shortfall?`<span class="shortfall-chip">ناقص ${row.shortfall}</span>`:row.soldOut?`<span class="shortfall-chip soldout">محجوز بالكامل · الرف الحر 0</span>`:row.suggested?`<span class="shortfall-chip suggest">مقترح ${row.suggested}</span>`:`<span class="shortfall-chip ok">يكفي</span>`;
+  // Each summary box is a button that shows only its books in the table below; pressing it again shows them all.
+  const filters={buy:["الكتب اللي لازم تتشرى",row=>row.shortfall],preorder:["الكتب المطلوبة للحجز المسبق",row=>row.preorder],reserved:["الكتب اللي ليها نسخ محجوزة",row=>row.reserved],count:["الكتب اللي محتاجة جرد",row=>row.countHold],soldout:["الكتب اللي خلصت من الرف الحر",row=>row.soldOut&&!row.shortfall]};
+  const filter=filters[shortageFilter]?shortageFilter:"",filterLabel=filter?filters[filter][0]:"",shown=filter?rows.filter(filters[filter][1]):rows;
+  const stat=(key,tone,value,title,hint)=>`<button type="button" class="shortage-stat ${tone} ${filter===key?"active":""}" data-action="shortage-filter" data-filter="${filter===key?"":key}" aria-pressed="${filter===key}"><b>${value}</b><span>${title}</span><small>${hint}</small></button>`;
   const actions=row=>`<div class="shortage-actions">${row.countHold&&canAction("adjust-stock")?`<button class="row-action" data-action="adjust-stock" data-id="${esc(row.bookId)}">جرد</button>`:""}${row.toBuy&&canView("purchases")&&canAction("save-purchase")?`<button class="row-action" data-action="shortage-purchase" data-id="${esc(row.bookId)}" data-qty="${row.toBuy}">أمر شراء ${row.toBuy}</button>`:""}</div>`;
   return `${workflowModeTabs("shortages")}
     <div class="section-title"><div><span class="eyebrow">المخزون والحجز المسبق</span><h2>حجز مسبق · الكتب الناقصة</h2><p>اطلب الكتب الناقصة من الموردين، والطلبات المتوقفة تنتقل للتجهيز تلقائيًا عند توفر كل كتبها.</p></div></div>
-    <div class="shortage-summary">
-      <div class="shortage-stat danger"><b>${sum(toBuy,"shortfall")}</b><span>نسخة ناقصة يجب شراؤها</span><small>${toBuy.length} كتاب</small></div>
-      <div class="shortage-stat"><b>${sum(rows,"preorder")}</b><span>نسخة مطلوبة للحجز المسبق</span><small>${ordersCountLabel(orders.length)} في الانتظار</small></div>
-      <div class="shortage-stat"><b>${sum(rows,"reserved")}</b><span>نسخة محجوزة بالفعل</span><small>لطلبات مؤكدة من هذه الكتب</small></div>
-      <div class="shortage-stat warning"><b>${counting.length}</b><span>كتاب يحتاج جرد</span><small>${sum(counting,"countHold")} نسخة غير موجودة على الرف</small></div>
-      <div class="shortage-stat"><b>${soldOut.length}</b><span>كتاب خلص من الرف الحر</span><small>كل نسخه محجوزة لطلبات؛ أي طلب جديد هيبقى حجز مسبق</small></div>
+    <div class="shortage-summary" role="group" aria-label="فلترة الكتب الناقصة">
+      ${stat("buy","danger",sum(toBuy,"shortfall"),"نسخة ناقصة يجب شراؤها",`${toBuy.length} كتاب`)}
+      ${stat("preorder","",sum(rows,"preorder"),"نسخة مطلوبة للحجز المسبق",`${ordersCountLabel(orders.length)} في الانتظار`)}
+      ${stat("reserved","",sum(rows,"reserved"),"نسخة محجوزة بالفعل","لطلبات مؤكدة من هذه الكتب")}
+      ${stat("count","warning",counting.length,"كتاب يحتاج جرد",`${sum(counting,"countHold")} نسخة غير موجودة على الرف`)}
+      ${stat("soldout","",soldOut.length,"كتاب خلص من الرف الحر","كل نسخه محجوزة لطلبات؛ أي طلب جديد هيبقى حجز مسبق")}
     </div>
+    ${filter?`<div class="shortage-filter-note"><span>بيعرض: <strong>${esc(filterLabel)}</strong> (${shown.length} كتاب)</span><button type="button" class="row-action" data-action="shortage-filter" data-filter="">عرض كل الكتب</button></div>`:""}
     <p class="muted small shortage-live-note">الأرقام دي بتتحدث لحظيًا من المخزون والطلبات: الشراء بيرفع «في المخزن» فورًا، وطلبات الحجز المسبق بتتنقل للتجهيز تلقائيًا خلال ثوانٍ.</p>
     <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>إجمالي المطلوب = المحجوز بالفعل + الحجز المسبق، والناقص هو ما لا يغطيه الموجود على الرف.</p></div><div class="search shortage-search"><input id="shortage-search" type="search" autocomplete="off" placeholder="ابحث عن كتاب أو طلب"></div></div>
       <div class="table-wrap"><table class="shortage-table"><thead><tr><th>الكتاب</th><th class="num">في المخزن</th><th class="num">محجوز بالفعل</th><th class="num">حجز مسبق</th><th class="num">إجمالي المطلوب</th><th class="num">الناقص</th><th></th></tr></thead><tbody>
-      ${rows.length?rows.map(row=>`<tr data-shortage-row data-search="${esc([row.book.name,row.book.barcode,row.book.sku,row.bookId,...row.preorderOrders.map(item=>[item.order.id,item.order.customerName]),...row.reservedOrders.map(item=>[item.order.id,item.order.customerName])].flat().filter(Boolean).join(" "))}">${bookCell(row)}
+      ${shown.length?shown.map(row=>`<tr data-shortage-row data-search="${esc([row.book.name,row.book.barcode,row.book.sku,row.bookId,...row.preorderOrders.map(item=>[item.order.id,item.order.customerName]),...row.reservedOrders.map(item=>[item.order.id,item.order.customerName])].flat().filter(Boolean).join(" "))}">${bookCell(row)}
         <td class="num">${row.stock}</td>
         <td class="num">${row.reserved||"—"}${row.reservedOrders.length?`<small>${ordersCountLabel(row.reservedOrders.length)}</small>`:""}</td>
         <td class="num">${row.preorder?`<strong class="text-danger">${row.preorder}</strong><small>${ordersCountLabel(row.preorderOrders.length)}${row.oldest?` · ${sinceLabel(row.oldest)}`:""}</small>`:"—"}</td>
         <td class="num total">${row.needed||"—"}</td>
         <td class="num">${gapCell(row)}</td>
-        <td>${actions(row)}</td></tr>`).join(""):`<tr><td colspan="7" class="muted">لا توجد كتب ناقصة حاليًا.</td></tr>`}
+        <td>${actions(row)}</td></tr>`).join(""):`<tr><td colspan="7" class="muted">${filter?"مفيش كتب في الفلتر ده دلوقتي.":"لا توجد كتب ناقصة حاليًا."}</td></tr>`}
       </tbody></table></div></article>
     <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
@@ -8462,6 +8468,7 @@ root.addEventListener("click", async event => {
   if (action === "dashboard-stat") showDashboardStatDetails(target.dataset.stat);
   if (action === "sales-stat") showSalesStatDetails(target.dataset.stat);
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
+  if (action === "shortage-filter") { shortageFilter=target.dataset.filter||"";renderOnlineOrders();document.querySelector(".shortage-table")?.scrollIntoView({behavior:"smooth",block:"start"});return; }
   if (action === "open-unconfirmed-orders") { const list=unconfirmedOrders();if(list.length===1&&canAction("order.quick.edit"))editQuickOrder(list[0].id);else{onlineOrdersMode="orders";onlineOrderQuickFilter="new";renderOnlineOrders();}return; }
   if (action === "orders-nav") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
