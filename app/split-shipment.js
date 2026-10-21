@@ -157,6 +157,52 @@ function createSplitShipment(deps) {
     return { order, child };
   }
 
+  // «شحن المتوفر وإلغاء الناقص»: the customer agreed to receive only the books available now. The missing copies are
+  // removed from the order (no second shipment, no extra fee), the total is recalculated, and the order goes to the
+  // preparation queue holding the books it keeps. Website orders keep using the two-shipment split, because the Store
+  // shows the customer its own copy of the items.
+  function dropMissing(db, order, payload = {}, user, nowValue = new Date()) {
+    const now = nowValue.toISOString(), by = user.name || user.username;
+    if (!order || order.deletedAt) throw splitError(404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
+    const operationKey = String(payload.operationKey || "").trim().slice(0, 120);
+    const previous = operationKey && (order.droppedLines || []).find(entry => entry.operationKey === operationKey);
+    if (previous) return { order, dropped:previous, existing:true };
+    if (isCancelled(order)) throw splitError(409, "ORDER_CANCELLED", "الطلب ملغي.");
+    if (order.workflowStage !== "awaiting_stock" || !order.confirmedAt || order.saleId || order.shipmentId) throw splitError(409, "ORDER_NOT_DROPPABLE", "الإجراء ده متاح بس لطلب مؤكد في الحجز المسبق قبل الفاتورة والشحن.");
+    if (order.websiteOrderNumber || order.parentWebsiteOrderNumber) throw splitError(409, "WEBSITE_ORDER_DROP_UNAVAILABLE", "طلب موقع: العميل شايف كتبه على الموقع، فاستخدم «شحنتين» أو عدّل الطلب بالاتفاق معاه.");
+    if (payload.customerConsent !== true) throw splitError(409, "DROP_CONSENT_REQUIRED", "أكّد إن العميل وافق ياخد المتوفر بس ويلغي الناقص.");
+    const consentChannel = String(payload.consentChannel || "").trim().slice(0, 40) || "واتساب";
+    const consentNote = String(payload.consentNote || "").trim().slice(0, 500);
+
+    const allocation = availableNow(db, order);
+    const nowQty = [...allocation.values()].reduce((sum, value) => sum + value.now, 0);
+    const laterQty = [...allocation.values()].reduce((sum, value) => sum + value.needed - value.now, 0);
+    if (nowQty <= 0) throw splitError(409, "NOTHING_AVAILABLE_NOW", "مفيش أي كتاب من الطلب متاح دلوقتي.");
+    if (laterQty <= 0) throw splitError(409, "ORDER_FULLY_AVAILABLE", "كل كتب الطلب متاحة دلوقتي؛ استخدم «نقل للتجهيز الآن».");
+
+    const { now:keepLines, later:droppedLines } = partitionLines(order, allocation);
+    const totals = partTotals(order, keepLines, droppedLines, 0);
+    const paid = round(confirmedPaid(db, order));
+    if (paid > totals.first.total) throw splitError(409, "PAID_EXCEEDS_NEW_TOTAL", `المدفوع (${paid} ج.م) أكبر من الإجمالي الجديد (${totals.first.total} ج.م). صحّح الدفعة أو سجّل رد الفرق الأول.`, { paid, total:totals.first.total });
+
+    const totalBefore = round(Number(order.total || 0));
+    Object.assign(order, { lines:totals.first.lines, subtotal:totals.first.subtotal, discountTotal:totals.first.discountTotal, total:totals.first.total });
+    if (totals.type === "amount") order.orderDiscount = totals.firstDiscount;
+    reserveOrderInventory(db, order, user, order.lines);
+    order.backorderLines = [];
+    if (order.preparationIssue) { order.preparationIssueHistory = [...(order.preparationIssueHistory || []), { ...order.preparationIssue, resolvedAt:now, resolvedBy:by, resolution:"اتلغى الناقص بموافقة العميل" }]; delete order.preparationIssue; }
+    applyBackorderStage(order, user, now);
+    const payment = OrderFinance.calculatePayment(order.total, paid);
+    const entry = { at:now, by, username:user.username, operationKey, lines:droppedLines, totalBefore, totalAfter:order.total, consent:{ confirmed:true, channel:consentChannel, note:consentNote } };
+    Object.assign(order, {
+      paidAmount:payment.paidAmount, remainingAmount:payment.remainingAmount, remaining:payment.remainingAmount, amountDueAtDelivery:payment.amountDueAtDelivery, paymentStatus:payment.paymentStatus,
+      droppedLines:[...(order.droppedLines || []), entry], carriedOverFromBackorder:true, carriedOverAt:now, preparingBy:null, preparingByUsername:null, updatedAt:now
+    });
+    const names = rows => rows.map(line => `${line.bookId}×${line.qty}`).join("، ");
+    appendOrderAudit(db, user, order, "شحن المتوفر وإلغاء الناقص", `اتلغى: ${names(droppedLines)} · الإجمالي ${totalBefore} ← ${order.total} ج.م · موافقة العميل (${consentChannel})${consentNote ? `: ${consentNote}` : ""}`);
+    return { order, dropped:entry, existing:false };
+  }
+
   // The parts of a split order as one list (part 1 first), for the Store link and the Chatwood panel.
   function parts(db, order) {
     if (!order) return [];
@@ -166,7 +212,7 @@ function createSplitShipment(deps) {
     return [parent, ...children];
   }
 
-  return { availableNow, preview, partitionLines, partTotals, parseExtraShippingFee, split, parts };
+  return { availableNow, preview, partitionLines, partTotals, parseExtraShippingFee, split, dropMissing, parts };
 }
 
 // Fields only the split endpoint may set; a browser save of the whole database keeps the server's values.

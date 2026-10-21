@@ -4,7 +4,7 @@
 // server-node.js only dispatches to handle() and injects its own helpers; no business rule lives here.
 //   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links
 //   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...,
-//                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B),
+//                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B), POST /api/orders/:id/drop-missing,
 //                            PATCH /api/orders/:id/deposit-required, PUT /api/website-orders/:number/deposit,
 //                            POST /api/chatwood-context/resolve, GET|POST /api/orders/:id/chatwood-link[/preview|/suggestions|/correct]
 //   Chatwood dashboard app:  GET /integrations/chatwood-panel (frame-ancestors limited to CHATWOOD_ORIGIN)
@@ -415,7 +415,7 @@ function createIntegrationServer(deps) {
       if (!order) return fail(res, 404, "ORDER_NOT_FOUND", "الطلب غير موجود.");
       const preview = splitShipment.preview(db, order);
       return send(res, 200, { ok:true, orderId:order.id, workflowStage:order.workflowStage, ...preview, alreadySplit:Boolean(order.splitShipment?.childOrderIds?.length), splitPart:order.splitPart || null,
-        suggestedFee:suggestedSplitFee(db, order, preview), websitePreference:order.websiteSplitShipmentPreference || "", canSplit:canOrderAction(db, user, "order.split.shipment"), revision:revisionOf(db) }, JSON_TYPE, NO_STORE);
+        suggestedFee:suggestedSplitFee(db, order, preview), websitePreference:order.websiteSplitShipmentPreference || "", canSplit:canOrderAction(db, user, "order.split.shipment") && !order.splitFromOrderId, canDrop:canOrderAction(db, user, "order.quick.edit") && !order.websiteOrderNumber && !order.parentWebsiteOrderNumber, websiteLinked:Boolean(order.websiteOrderNumber || order.parentWebsiteOrderNumber), revision:revisionOf(db) }, JSON_TYPE, NO_STORE);
     }
     const payload = await readJsonBody(req, 16 * 1024);
     const { db, revision } = readDbForWrite();
@@ -438,6 +438,28 @@ function createIntegrationServer(deps) {
     }
     logger({ operationType:"ORDER_SPLIT_SHIPMENT", orderId:result.order.id, childOrderId:result.child.id, websiteOrderNumber:result.order.websiteOrderNumber || "", performedBy:user.username });
     return send(res, 201, { ok:true, order:result.order, child:result.child, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
+  }
+
+  // «شحن المتوفر وإلغاء الناقص» (app/split-shipment.js dropMissing): any employee who may edit quick orders.
+  async function dropMissingRoute(req, res, id) {
+    const user = sessionOrFail(res, req); if (!user) return;
+    const payload = await readJsonBody(req, 16 * 1024);
+    const { db, revision } = readDbForWrite();
+    ensureTrackingDb(db);
+    if (!canOrderAction(db, user, "order.quick.edit")) return fail(res, 403, "PERMISSION_DENIED", "ليس لديك صلاحية تعديل الطلبات.");
+    const order = (db.onlineOrders || []).find(item => item.id === id && !item.deletedAt);
+    let result;
+    try { result = splitShipment.dropMissing(db, order, payload, user, new Date()); }
+    catch (error) { if (error.status) return errorResponse(res, error, "DROP_MISSING_FAILED"); throw error; }
+    if (result.existing) return send(res, 200, { ok:true, existing:true, order:result.order, dropped:result.dropped, revision:String(revision) }, JSON_TYPE, NO_STORE);
+    let saved;
+    try { saved = writeDb(db, { expectedRevision:revision, operationType:"ORDER_DROP_MISSING", performedBy:user.username }); }
+    catch (error) {
+      if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return fail(res, 409, "DB_REVISION_CONFLICT", "البيانات اتغيّرت؛ حاول تاني.", { revision:String(error.currentRevision ?? "") });
+      throw error;
+    }
+    logger({ operationType:"ORDER_DROP_MISSING", orderId:result.order.id, performedBy:user.username });
+    return send(res, 200, { ok:true, order:result.order, dropped:result.dropped, revision:String(saved.revision) }, JSON_TYPE, { ...NO_STORE, "X-DB-Revision":String(saved.revision) });
   }
 
   // Required deposit of one order, apart from the default and from what was paid. Payments, cash and totals never
@@ -566,6 +588,8 @@ function createIntegrationServer(deps) {
     const websiteDepositRoute = route.match(/^\/api\/website-orders\/([^/]+)\/deposit$/);
     if (websiteDepositRoute && method === "PUT") { await websiteOrderDeposit(req, res, websiteDepositRoute[1]); return true; }
 
+    const dropRoute = route.match(/^\/api\/orders\/([^/]+)\/drop-missing$/);
+    if (dropRoute && method === "POST") { await dropMissingRoute(req, res, dropRoute[1]); return true; }
     const splitRoute = route.match(/^\/api\/orders\/([^/]+)\/split-shipment$/);
     if (splitRoute && ["GET", "POST"].includes(method)) { await splitShipmentRoute(req, res, splitRoute[1]); return true; }
 

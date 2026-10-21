@@ -3856,7 +3856,8 @@ function renderShortagesScreen() {
 
 // Partial shipping (Option B): the books on the shelf ship now, the missing ones become a second order.
 function splitShipmentEligible(order) {
-  if(!canAction("order.split.shipment")||order.workflowStage!=="awaiting_stock"||!order.confirmedAt||order.saleId||order.shipmentId||order.splitShipment?.childOrderIds?.length||order.splitFromOrderId)return false;
+  const canSplit=canAction("order.split.shipment")&&!order.splitFromOrderId,canDrop=canAction("order.quick.edit")&&!order.websiteOrderNumber&&!order.parentWebsiteOrderNumber;
+  if(!(canSplit||canDrop)||order.workflowStage!=="awaiting_stock"||!order.confirmedAt||order.saleId||order.shipmentId||order.splitShipment?.childOrderIds?.length)return false;
   const needed=new Map();
   for(const line of order.lines||[])needed.set(line.bookId,(needed.get(line.bookId)||0)+Number(line.qty||0));
   const now=[...needed].map(([bookId,qty])=>Math.min(qty,Math.max(0,bookAvailableStock(getBook(bookId)))));
@@ -3864,6 +3865,7 @@ function splitShipmentEligible(order) {
 }
 
 function splitPartBadge(order) {
+  if(order.droppedLines?.length){const last=order.droppedLines[order.droppedLines.length-1];return `<br><span class="badge" title="${esc(`${arabicDateTimeLabel(last.at)} · ${last.by}: ${money(last.totalBefore)} ← ${money(last.totalAfter)}`)}">اتلغى منه الناقص: ${last.lines.map(line=>`${esc(getBook(line.bookId)?.name||line.bookId)} × ${esc(line.qty)}`).join("، ")}</span>`;}
   if(order.splitFromOrderId)return `<br><span class="badge" title="الشحنة الثانية من طلب مقسم">شحنة 2 · من ${esc(order.splitFromOrderId)}${order.parentWebsiteOrderNumber?` (${esc(order.parentWebsiteOrderNumber)})`:""}</span>`;
   if(order.splitShipment?.childOrderIds?.length)return `<br><span class="badge" title="طلب مقسم على شحنتين">شحنة 1 · الباقي ${order.splitShipment.childOrderIds.map(esc).join("، ")}</span>`;
   return "";
@@ -3882,19 +3884,32 @@ async function openSplitShipment(id) {
     if(modal.hidden)return;
     if(!preview.splittable)return openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`${splitRowsTable(preview.rows)}<div class="finance-callout warning"><strong>${preview.nowQty?"كل الكتب متوفرة الآن؛ استخدم «نقل للتجهيز الآن».":"لا يوجد كتاب متوفر الآن لشحنة أولى."}</strong></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
     const fee=preview.suggestedFee?.amount;
-    openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`<form id="split-shipment-form" data-id="${esc(id)}">
-      <p>الكتب المتوفرة تتشحن الآن على الطلب <strong>${esc(id)}</strong> بنفس رقمه ومدفوعاته، والكتب الناقصة تنتقل لطلب جديد (حجز مسبق) يتشحن لوحده لما توصل، برسوم شحن إضافية.</p>
-      ${preview.websitePreference==="split"?`<div class="finance-callout"><strong>العميل اختار الشحن على دفعتين في الموقع</strong>${preview.suggestedFee?.source==="website"?`<span>الرسوم المعروضة عليه: ${money(fee)}</span>`:""}</div>`:""}
+    if(!preview.canSplit&&!preview.canDrop)return openModal(`شحن المتوفر من الطلب ${id}`,"شحن المتوفر الآن",`${splitRowsTable(preview.rows)}<div class="finance-callout warning"><strong>${preview.websiteLinked?"طلب موقع: التقسيم على شحنتين متاح للمدير بس.":"ليس لديك صلاحية لهذا الإجراء."}</strong></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
+    const choice=(value,title,hint)=>`<label class="choice-card"><input type="radio" name="mode" value="${value}"><span><strong>${title}</strong><small>${hint}</small></span></label>`;
+    openModal(`شحن المتوفر من الطلب ${id}`,"شحن المتوفر الآن",`<form id="split-shipment-form" data-id="${esc(id)}">
       ${splitRowsTable(preview.rows)}
+      <fieldset class="ship-available-modes"><legend>العميل وافق على إيه؟</legend>
+        ${preview.canDrop?choice("drop","شحن المتوفر وإلغاء الناقص","الكتب الناقصة تتشال من الطلب والإجمالي يتحسب من جديد. شحنة واحدة ومفيش رسوم زيادة."):""}
+        ${preview.canSplit?choice("split","شحنتين: الناقص يتبعت لما يوصل","الناقص يتنقل لطلب جديد (حجز مسبق) يتشحن لوحده برسوم شحن إضافية."):""}
+      </fieldset>
+      ${preview.websiteLinked?`<div class="finance-callout"><strong>طلب موقع</strong><span>العميل شايف كتبه على الموقع، فإلغاء الناقص مش متاح هنا؛ المتاح التقسيم على شحنتين.</span></div>`:""}
+      ${preview.websitePreference==="split"?`<div class="finance-callout"><strong>العميل اختار الشحن على دفعتين في الموقع</strong>${preview.suggestedFee?.source==="website"?`<span>الرسوم المعروضة عليه: ${money(fee)}</span>`:""}</div>`:""}
       <div class="form-grid three">
-        <div class="form-field"><label class="required">رسوم شحن الشحنة الثانية</label><input name="extraShippingFee" inputmode="decimal" required value="${fee==null?"":esc(fee)}"><small>${preview.suggestedFee?.source==="website"?"المعروضة على العميل في الموقع":preview.suggestedFee?.source==="governorate"?"سعر شحن المحافظة":"اكتب المبلغ المتفق عليه"}</small></div>
+        <div class="form-field" data-ship-mode="split" hidden><label class="required">رسوم شحن الشحنة الثانية</label><input name="extraShippingFee" inputmode="decimal" value="${fee==null?"":esc(fee)}"><small>${preview.suggestedFee?.source==="website"?"المعروضة على العميل في الموقع":preview.suggestedFee?.source==="governorate"?"سعر شحن المحافظة":"اكتب المبلغ المتفق عليه"}</small></div>
         <div class="form-field"><label>وسيلة موافقة العميل</label><select name="consentChannel">${SPLIT_CONSENT_CHANNELS.map(channel=>`<option ${channel===(preview.websitePreference==="split"?"الموقع":"واتساب")?"selected":""}>${esc(channel)}</option>`).join("")}</select></div>
         <div class="form-field"><label>ملاحظة</label><input name="consentNote" maxlength="500" placeholder="مثال: وافق في محادثة واتساب"></div>
       </div>
-      <label class="check-line"><input type="checkbox" name="customerConsent" value="true"> العميل وافق على الشحن على دفعتين وعلى رسوم الشحنة الثانية</label>
+      <label class="check-line"><input type="checkbox" name="customerConsent" value="true"> <span data-consent-text>العميل وافق على الاختيار ده</span></label>
       <div id="split-shipment-error"></div>
-      <div class="form-actions"><button class="btn" type="submit">تقسيم وشحن المتوفر الآن</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+      <div class="form-actions"><button class="btn" type="submit">تأكيد</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
     </form>`);
+    const form=modalBody.querySelector("#split-shipment-form");
+    form?.addEventListener("change",()=>{
+      const mode=form.querySelector("[name='mode']:checked")?.value||"";
+      for(const box of form.querySelectorAll("[data-ship-mode]"))box.hidden=box.dataset.shipMode!==mode;
+      form.querySelector("[data-consent-text]").textContent=mode==="drop"?"العميل وافق ياخد المتوفر بس ويتلغي الناقص":mode==="split"?"العميل وافق على الشحن على دفعتين وعلى رسوم الشحنة الثانية":"العميل وافق على الاختيار ده";
+      form.querySelector('button[type="submit"]').textContent=mode==="drop"?"شحن المتوفر وإلغاء الناقص":mode==="split"?"تقسيم وشحن المتوفر الآن":"تأكيد";
+    });
   }catch(error){
     if(error.status===401)return;
     openModal(`تقسيم شحن الطلب ${id}`,"شحن المتوفر الآن",`<div class="finance-callout danger"><strong>${esc(error.message)}</strong></div><div class="form-actions"><button class="btn ghost" data-action="close-modal">إغلاق</button></div>`);
@@ -3906,6 +3921,25 @@ async function submitSplitShipment(form) {
   const values=Object.fromEntries(new FormData(form).entries());
   const fee=Number(normalizeArabicDigits(String(values.extraShippingFee||"")).replace(/[٫,]/g,"."));
   const errorBox=form.querySelector("#split-shipment-error");
+  if(!values.mode)return toast("اختار العميل وافق على إيه.","error");
+  if(values.mode==="drop"){
+    if(values.customerConsent!=="true")return toast("أكّد إن العميل وافق ياخد المتوفر بس.","error");
+    const button=form.querySelector('button[type="submit"]');
+    form.dataset.pending="true";if(button)button.disabled=true;errorBox.innerHTML="";
+    form.dataset.operationKey=form.dataset.operationKey||`drop-${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
+    try{
+      const result=await websiteOrdersFetch(`/api/orders/${encodeURIComponent(form.dataset.id)}/drop-missing`,{method:"POST",body:{customerConsent:true,consentChannel:values.consentChannel||"",consentNote:values.consentNote||"",operationKey:form.dataset.operationKey}});
+      closeModal();
+      toast(`${result.order.id} اتنقل للتجهيز بالمتوفر بس · الإجمالي الجديد ${money(result.order.total)}`);
+      await reloadRemoteData().catch(()=>{});
+      if(currentView==="onlineOrders")renderOnlineOrders();
+    }catch(error){
+      delete form.dataset.pending;if(button)button.disabled=false;
+      if(error.status===401)return;
+      errorBox.innerHTML=`<div class="finance-callout danger"><strong>${esc(error.message)}</strong><span>لم يتم تغيير أي بيانات.</span></div>`;
+    }
+    return;
+  }
   if(values.extraShippingFee===""||!Number.isFinite(fee)||fee<0)return toast("اكتب رسوم شحن الشحنة الثانية بشكل صحيح.","error");
   if(values.customerConsent!=="true")return toast("أكد موافقة العميل على التقسيم والرسوم أولًا.","error");
   const button=form.querySelector('button[type="submit"]');
