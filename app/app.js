@@ -5308,17 +5308,38 @@ function onlineOrderPaymentMarkup(order, total) {
     </tbody></table></div>` : `<p class="muted">لم يتم تسجيل أي دفعة بعد.</p>`}${paymentCorrectionsMarkup(order)}`;
 }
 
+// Where an order goes next, as one step: finish and confirm a saved order, pack it, wait for its books, or enter the
+// weight and tracking code. Shipped, delivered and cancelled orders have no next step here.
+function orderNextStep(order={}) {
+  const stage=onlineOrderWorkflowStage(order);
+  if(stage==="new"&&!order.confirmedAt)return canAction("order.quick.edit")&&order.source==="whatsapp"?{label:"كمّل الطلب وأكّده",edit:true}:null;
+  if(stage==="new"||stage==="preparing")return {label:"جاهز للتغليف",mode:canAction("order.prepare")?"preparation":"orders",filter:"prep"};
+  if(stage==="backorder")return {label:"حجز مسبق",mode:"preorders"};
+  if(stage==="ready")return {label:"مغلف ومنتظر كود تتبع",mode:(canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping"))?"ready-shipping":"orders",filter:"ready"};
+  return null;
+}
+
+// Opens the order's next step with the order already searched for on that screen.
+function openOrderNextStep(id) {
+  const order=getOnlineOrder(id),next=order&&orderNextStep(order);
+  if(!next)return;
+  closeModal();
+  if(next.edit)return editQuickOrder(order.id);
+  onlineOrdersMode=next.mode;onlineOrderQuickFilter=next.mode==="orders"?(next.filter||""):onlineOrderQuickFilter;stageSearchTerm=next.mode==="orders"?"":order.id;
+  if(currentView!=="onlineOrders")navigate("onlineOrders");else renderOnlineOrders();
+}
+
 function viewOnlineOrder(id) {
   const order = getOnlineOrder(id);
   if (!order) return toast("الطلب غير موجود.", "error");
   const totals = onlineOrderTotals(order.lines, order.orderDiscount, order.orderDiscountType, orderShippingFee(order));
-  const invoiceButton = order.saleId
-    ? `<button class="btn ghost" data-modal-action="view-sale" data-id="${order.saleId}">عرض الفاتورة</button>`
-    : `<button class="btn" data-action="convert-order-sale" data-id="${order.id}">إنشاء فاتورة من الطلب</button>`;
-  const shipmentButton = order.shipmentId
-    ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>`
-    : `<button class="btn secondary" data-action="create-order-shipment" data-id="${order.id}">${order.saleId ? "إنشاء شحنة" : "إنشاء شحنة بعد الفاتورة"}</button>`;
-  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions"><button class="btn secondary" data-action="print-online-order" data-id="${order.id}">أمر تجهيز</button>${invoiceButton}${shipmentButton}</div>`);
+  // The invoice is issued when packing is completed and the shipment when the tracking code is entered, so the
+  // details dialog only shows them; «الخطوة الجاية» opens the screen where the order's next step is done.
+  const invoiceButton = order.saleId ? `<button class="btn ghost" data-modal-action="view-sale" data-id="${order.saleId}">عرض الفاتورة</button>` : "";
+  const shipmentButton = order.shipmentId ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>` : "";
+  const next = orderNextStep(order);
+  const nextButton = next ? `<button class="btn" data-action="order-next-step" data-id="${order.id}">الخطوة الجاية: ${esc(next.label)}</button>` : "";
+  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}<div class="form-actions">${nextButton}<button class="btn secondary" data-action="print-online-order" data-id="${order.id}">🖨 طباعة ورقة التجهيز</button>${invoiceButton}${shipmentButton}</div>`);
 }
 
 function saleTotals() {
@@ -8617,6 +8638,7 @@ root.addEventListener("click", async event => {
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
+  if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
   if (action === "backorder-allocate") allocateBackorder(target.dataset.id);
   if (action === "split-shipment") openSplitShipment(target.dataset.id);
@@ -9318,6 +9340,7 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "chatwood-link-confirm") { confirmChatwoodLink(); return; }
   if (chatwoodAction === "chatwood-correct-submit") { submitChatwoodCorrection(appAction.dataset.kind); return; }
   // The order details dialog lists payments with a «تصحيح» button (the quick-order screen uses the main view handler).
+  if (chatwoodAction === "order-next-step") { openOrderNextStep(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }
   if (appAction?.dataset.action === "generate-user-password") {
     const input = appAction.closest("form")?.elements.password;
@@ -11724,7 +11747,7 @@ function printOnlineOrder(id, format = "a4") {
     if(!order.confirmedAt||order.inventoryReservation?.status!=="active")return toast("يجب تأكيد الطلب وحجز المخزون أولًا قبل إصدار أمر التجهيز.","error");
   }
   const totals=onlineOrderTotals(order.lines||[],order.orderDiscount||0,order.orderDiscountType||"percent",orderShippingFee(order));
-  printHtml(`أمر تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td>${money(line.finalNet)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
+  printHtml(`ورقة تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td>${money(line.finalNet)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
 }
 
 function printStatement(id, kind) {
@@ -14055,7 +14078,7 @@ async function runSelfTest() {
     const saleCountBeforePrepare = data.sales.length;
     viewOnlineOrder(qaOrder.id);
     modalBody.querySelector(`[data-action="print-online-order"][data-id="${qaOrder.id}"]`)?.click();
-    check("زر أمر تجهيز يغير الحالة دون فاتورة أو شحنة", qaOrder.status === "قيد التجهيز" && data.sales.length === saleCountBeforePrepare && !qaOrder.shipmentId);
+    check("زر طباعة ورقة التجهيز لا يغير الحالة ولا ينشئ فاتورة أو شحنة", qaOrder.status === "قيد التجهيز" && data.sales.length === saleCountBeforePrepare && !qaOrder.shipmentId);
     const beforeOrderSaleStock = getBook(testBook.id).stock;
     convertOnlineOrderToSale(qaOrder.id, { print:false, askShipping:false });
     check("تأكيد طلب أونلاين ثم إنشاء فاتورة", Boolean(qaOrder.saleId && data.sales.find(s=>s.id===qaOrder.saleId) && qaOrder.status === "تم إنشاء الفاتورة"));
