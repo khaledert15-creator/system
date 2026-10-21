@@ -4230,6 +4230,15 @@ async function saveAndConfirmQuickOrder() {
     quickOrderSearch="";
     quickOrderAutofocusPending=true;
     onlineOrdersMode="quick";
+    const confirmedOrder=getOnlineOrder(confirmedId);
+    if(confirmResult?.order?.workflowStage==="awaiting_stock"&&confirmedOrder&&canAction("order.quick.edit")){
+      const held=reservedCopiesFor(confirmedOrder);
+      if(held.length){
+        renderOnlineOrders();
+        const names=[...new Set(held.map(row=>`«${getBook(row.bookId)?.name||row.bookId}» في ${row.order.id}`))].slice(0,3).join("، ");
+        if(confirm(`الطلب ${confirmedId} بقى حجز مسبق.\nفيه نسخ محجوزة لطلبات تانية لسه ما اتغلّفتش: ${names}.\nتاخد نسخة منها للطلب ده؟`)){openTakeReservedCopy(confirmedId);return;}
+      }
+    }
     renderOnlineOrders();toast(confirmResult?.order?.workflowStage==="awaiting_stock"?`تم تأكيد الطلب ${confirmedId} كحجز مسبق؛ هيظهر في «حجز مسبق» لحد ما الكتب توصل.`:`تم تأكيد الطلب ${confirmedId} وانتقل للتجهيز. جاهز لطلب جديد${quickOrderDraft.chatwoodContext?` لنفس المحادثة #${quickOrderDraft.chatwoodContext.conversationId}`:""}.`);
   }catch(error){toast(error.message,"error");}
   finally{quickOrderConfirmPending=false;}
@@ -4423,6 +4432,7 @@ async function cancelOnlineOrder(id) {
     ].filter(Boolean);
     openModal(`إلغاء الطلب ${order.id}`,"إلغاء بخطوة واحدة",`<form id="order-cancel-complete-form" data-id="${esc(order.id)}" data-outstanding="${financial.outstanding}">
       <div class="finance-callout"><strong>${esc(order.customerName||financial.customerName||"")}</strong><span>${esc(order.id)}${sale?` · ${esc(sale.id)}`:""} · الإجمالي ${money(financial.total)} · المدفوع ${money(financial.paid)}</span></div>
+      ${shipment?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>هتشحن الطلب تاني بكود جديد؟ متلغيش الطلب</strong><span>إلغاء الطلب بيرجّع كتبه للرف، والسيستم بيديها على طول لطلبات الحجز المسبق المستنية. استخدم «إلغاء الشحنة وإصدار كود جديد»: الطلب والفاتورة وكتبه بيفضلوا زي ما هم، وتدخل الكود الجديد بس.</span>${reshipShipment(order)?`<button type="button" class="btn secondary compact" data-action="cancel-shipment-flow" data-id="${esc(shipment.id)}">إلغاء الشحنة وإصدار كود جديد</button>`:""}</div></div>`:""}
       <p class="muted">سيتم تنفيذ الآتي معًا، وإذا فشل أي جزء لن يتغير شيء:</p>
       <ol class="cancel-steps">${steps.map(step=>`<li>${step}</li>`).join("")}</ol>
       <div class="form-grid">
@@ -4884,6 +4894,15 @@ function onlineOrderPrimaryAction(order) {
   return `<button class="btn ghost compact" data-action="view-online-order" data-id="${order.id}">عرض الطلب</button>`;
 }
 
+// A shipment that can be cancelled to issue a new tracking code (the courier did not pick the parcel up, the label
+// was wrong): the order keeps its invoice and books and goes back to «مغلف ومنتظر كود تتبع».
+function reshipShipment(order) {
+  if (!(canAction("delete-shipment") || canAction("order.shipping")) || ["delivered", "cancelled"].includes(onlineOrderWorkflowStage(order))) return null;
+  const shipment = activeOrderShipment(order);
+  // Only before the carrier has the parcel; after that it is a return, not a new label.
+  return shipment && PRE_HANDOVER_SHIPMENT_STATUSES.includes(String(shipment.normalizedStatus || "")) ? shipment : null;
+}
+
 // Copies other customers' orders hold of the books this pre-order is missing, that can be taken by exception: only
 // from orders not packed yet (waiting for packing or being prepared).
 function reservedCopiesFor(order) {
@@ -4935,6 +4954,7 @@ function onlineOrderMoreActions(order,{details=true}={}) {
     ${details?`<button type="button" class="row-action" data-action="view-online-order" data-id="${id}">تفاصيل الطلب</button>`:""}
     ${item("edit-quick-order",order.saleId||order.preparedAt?"تعديل الطلب (هيرجع للتغليف)":"تعديل الطلب",editReason)}
     ${onlineOrderWorkflowStage(order)==="backorder"&&canAction("order.quick.edit")&&reservedCopiesFor(order).length?`<button type="button" class="row-action" data-action="take-reserved-copy" data-id="${id}">خد نسخة محجوزة من طلب تاني</button>`:""}
+    ${reshipShipment(order)?`<button type="button" class="row-action" data-action="cancel-shipment-flow" data-id="${esc(reshipShipment(order).id)}" title="الطلب والفاتورة وكتبه بيفضلوا زي ما هم">إلغاء الشحنة وإصدار كود جديد</button>`:""}
     ${order.saleId?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${id}">عرض الفاتورة</button>`:""}
     ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
     ${onlineOrderWorkflowStage(order)==="cancelled"?"":item("cancel-online-order","إلغاء الطلب",cancelReason,"text-danger")}
@@ -9510,6 +9530,7 @@ modalBody.addEventListener("click", event => {
   // «⋯ المزيد» in the order details dialog: the edit/cancel flows open their own screen or dialog.
   if (chatwoodAction === "edit-quick-order") { closeModal(); editQuickOrder(appAction.dataset.id); return; }
   if (chatwoodAction === "take-reserved-copy") { closeModal(); openTakeReservedCopy(appAction.dataset.id); return; }
+  if (chatwoodAction === "cancel-shipment-flow") { closeModal(); cancelShipmentFlowModal(appAction.dataset.id); return; }
   if (chatwoodAction === "add-order-payment") { if (requireAction("order.payment.receive")) openAddOrderPayment(appAction.dataset.id); return; }
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }

@@ -9,10 +9,10 @@ const rowSource = app.match(/function readyShippingRow\(order\) \{[\s\S]*?\n\}/)
 assert(rowSource, "readyShippingRow is missing");
 // The row's repack and cancel now live in the shared «⋯ المزيد» menu, which is rendered with the real functions.
 const fn = name => app.match(new RegExp(`function ${name}\\(order[^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const menuSource = ["orderEditBlockReason", "orderCancelBlockReason", "onlineOrderMoreActions"].map(name => { const found = fn(name); assert(found, `${name} is missing`); return found; }).join("\n");
+const menuSource = ["orderEditBlockReason", "orderCancelBlockReason", "reshipShipment", "reservedCopiesFor", "onlineOrderMoreActions"].map(name => { const found = fn(name); assert(found, `${name} is missing`); return found; }).join("\n");
 
 function renderRow(order, permissions = ["order.prepare", "order.pack", "order.shipping", "convert-order-sale"]) {
-  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", "orderSearchAttr", `const onlineOrderWorkflowStage=()=>"ready",activeOrderShipment=()=>null,isWebsiteOrder=()=>false;${menuSource}\n${rowSource}; return readyShippingRow;`);
+  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", "orderSearchAttr", `const onlineOrderWorkflowStage=()=>"ready",activeOrderShipment=()=>null,isWebsiteOrder=()=>false,PRE_HANDOVER_SHIPMENT_STATUSES=[];${menuSource}\n${rowSource}; return readyShippingRow;`);
   const render = factory(
     { calculatePayment: () => ({ remainingAmount: 100 }) },
     { shipments: [] },
