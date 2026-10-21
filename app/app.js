@@ -3324,13 +3324,13 @@ const SHIPMENT_READY_ORDER_STATUSES = ["تم إنشاء الفاتورة","لم 
 
 function onlineOrderQuickFilterLabel(filter = onlineOrderQuickFilter) {
   return ({
-    new: "مسودة · ما اتأكدتش",
-    prep: "للتجهيز",
+    new: "لسه ما اتأكدش",
+    prep: "جاهز للتغليف",
     backorder: "حجز مسبق",
-    preparing: "للتجهيز",
-    ready: "مغلّف",
-    shipped: "اتشحن",
-    delivered: "اتسلّم",
+    preparing: "جاهز للتغليف",
+    ready: "مغلف ومنتظر كود تتبع",
+    shipped: "تم الشحن",
+    delivered: "تم التسليم",
     cancelled: "ملغي / مرتجع"
   })[filter] || "";
 }
@@ -3352,9 +3352,9 @@ function onlineOrderWorkflowLabel(order={}) {
   if(stage==="cancelled")return order.status==="مرتجع"||order.workflowStage==="returned"?"مرتجع":"ملغي";
   // Each label names the card the order is counted under (the stored order.status can differ, e.g. «قيد التجهيز»
   // on a confirmed order nobody has started packing).
-  if(stage==="new")return order.confirmedAt?"للتجهيز":"مسودة · ما اتأكدتش";
-  if(stage==="preparing")return order.preparingBy?`للتجهيز · بدأه ${order.preparingBy}`:"للتجهيز";
-  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"للتجهيز",ready:"مغلّف · لم يُشحن بعد",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
+  if(stage==="new")return order.confirmedAt?"جاهز للتغليف":"لسه ما اتأكدش";
+  if(stage==="preparing")return order.preparingBy?`جاهز للتغليف · بدأه ${order.preparingBy}`:"جاهز للتغليف";
+  return ({new:"طلب جديد",backorder:"حجز مسبق",preparing:"جاهز للتغليف",ready:"مغلف ومنتظر كود تتبع",shipped:"تم الشحن",delivered:"تم التسليم"})[stage]||"طلب جديد";
 }
 
 // A packed order stays in the store until it gets a tracking code, so its badge says so plainly and names what it waits
@@ -3367,7 +3367,7 @@ function readyOrderWaitingFor(order={}) {
 
 function onlineOrderWorkflowBadge(order={}) {
   const stage=onlineOrderWorkflowStage(order);
-  if(stage==="ready")return `<span class="badge not-shipped" title="الطرد مغلّف وما زال في المكتبة ولم يُسلَّم لشركة الشحن">📦 مغلّف · لم يُشحن بعد</span><small class="not-shipped-note">ما زال في المكتبة · ${esc(readyOrderWaitingFor(order))}</small>`;
+  if(stage==="ready")return `<span class="badge not-shipped" title="الطرد مغلّف وما زال في المكتبة ولم يُسلَّم لشركة الشحن">📦 مغلف ومنتظر كود تتبع</span><small class="not-shipped-note">لم يُشحن بعد · ما زال في المكتبة · ${esc(readyOrderWaitingFor(order))}</small>`;
   if(stage==="shipped")return badge("🚚 تم الشحن","blue");
   return badge(onlineOrderWorkflowLabel(order),stage==="cancelled"||order.workflowStage==="needs_review"?"danger":stage==="new"||stage==="ready"||stage==="backorder"?"warning":stage==="delivered"?"":"gray");
 }
@@ -3753,6 +3753,12 @@ function readyShippingOrders() {
   return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&order.workflowStage==="awaiting_shipping"&&Boolean(order.preparedAt)&&!order.shipmentId);
 }
 
+// Orders saved from the quick-order screen but never confirmed; they sit in no stage, so the navigation points at them.
+function unconfirmedOrders() {
+  return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&!order.confirmedAt&&onlineOrderWorkflowStage(order)==="new")
+    .sort((a,b)=>String(b.updatedAt||b.createdAt||"").localeCompare(String(a.updatedAt||a.createdAt||"")));
+}
+
 // One navigation for every orders screen: the five stages an order goes through, in order, each opening the screen
 // where that stage's work is done, plus the two ways to create an order. «الكل» and «ملغي / مرتجع» sit on a quiet
 // second line. Replaces the former mode tabs plus status cards, which showed the same groups twice.
@@ -3762,20 +3768,22 @@ function workflowModeTabs(active="orders") {
   const prepScreen=canAction("order.prepare"),shipScreen=canAction("order.prepare")||canAction("order.pack")||canAction("order.shipping");
   const current=active==="orders"?onlineOrderQuickFilter:active==="shortages"?"backorder":active==="preparation"?"prep":active==="ready-shipping"?"ready":"";
   const stages=[
-    ["backorder","حجز مسبق","ناقص كتب",backorderOrders().length,{mode:"shortages"}],
-    ["prep","للتجهيز","جاهز يتغلّف",preparationOrders().length,prepScreen?{mode:"preparation"}:{mode:"orders",filter:"prep"}],
-    ["ready","مغلّف","مستني كود التتبع",shipScreen?readyShippingOrders().length:stageCount("ready"),shipScreen?{mode:"ready-shipping"}:{mode:"orders",filter:"ready"}],
-    ["shipped","اتشحن","مع شركة الشحن",stageCount("shipped"),{mode:"orders",filter:"shipped"}],
-    ["delivered","اتسلّم","خلص",stageCount("delivered"),{mode:"orders",filter:"delivered"}]
+    ["backorder","حجز مسبق","",backorderOrders().length,{mode:"shortages"}],
+    ["prep","جاهز للتغليف","",preparationOrders().length,prepScreen?{mode:"preparation"}:{mode:"orders",filter:"prep"}],
+    ["ready","مغلف ومنتظر كود تتبع","",shipScreen?readyShippingOrders().length:stageCount("ready"),shipScreen?{mode:"ready-shipping"}:{mode:"orders",filter:"ready"}],
+    ["shipped","تم الشحن","",stageCount("shipped"),{mode:"orders",filter:"shipped"}],
+    ["delivered","تم التسليم","",stageCount("delivered"),{mode:"orders",filter:"delivered"}]
   ];
   const link=(target,content,cls="")=>`<button type="button" class="${cls}" data-action="orders-nav" data-mode="${target.mode}" data-filter="${target.filter||""}">${content}</button>`;
   const pendingWebsite=websiteOrdersState.loaded?websiteOrdersState.orders.length:0;
+  const unconfirmed=unconfirmedOrders();
   return `<div class="orders-nav">
     <div class="orders-nav-actions">
-      ${canAction("order.website.view")?link({mode:"website"},`طلبات الموقع${pendingWebsite?` <b>${pendingWebsite}</b>`:""}`,`btn ghost compact ${active==="website"?"active":""}`):""}
-      ${canAction("order.quick.create")?link({mode:"quick"},"＋ طلب واتساب جديد",`btn compact ${active==="quick"?"active":""}`):""}
+      ${canAction("order.quick.create")?link({mode:"quick"},`<svg class="whatsapp-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3Zm0 1.8a7.2 7.2 0 1 1-3.7 13.4l-.3-.2-2.6.7.7-2.5-.2-.3A7.2 7.2 0 0 1 12 4.8Zm-3 3.6c-.2 0-.5 0-.7.3-.2.3-.9.9-.9 2.2s.9 2.5 1 2.7c.1.2 1.8 2.9 4.5 3.9 2.2.9 2.7.7 3.1.6.5 0 1.5-.6 1.7-1.2.2-.6.2-1.1.1-1.2l-.4-.3-1.6-.8c-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1-.3-.1-1.1-.4-2.1-1.3-.8-.7-1.3-1.5-1.4-1.8-.2-.3 0-.4.1-.5l.4-.5.3-.5v-.5l-.8-1.8c-.2-.4-.4-.4-.5-.4H9Z"/></svg> طلب جديد من واتساب`,`whatsapp-order-button ${active==="quick"?"active":""}`):""}
+      ${canAction("order.website.view")?link({mode:"website"},`طلبات الموقع${pendingWebsite?` <b>${pendingWebsite}</b>`:""}`,`btn ghost ${active==="website"?"active":""}`):""}
+      ${unconfirmed.length?`<button type="button" class="unconfirmed-orders-alert" data-action="open-unconfirmed-orders">⚠ عندك ${unconfirmed.length===1?"طلب":`${unconfirmed.length} طلبات`} ما اتأكدش</button>`:""}
     </div>
-    <div class="orders-stage-row" role="group" aria-label="مراحل الطلب">${stages.map(([key,label,hint,total,target],index)=>link(target,`<span>${index+1} · ${label}</span><b>${total}</b><small>${hint}</small>`,`orders-stage ${current===key?"active":""}`)).join("")}</div>
+    <div class="orders-stage-row" role="group" aria-label="مراحل الطلب">${stages.map(([key,label,hint,total,target],index)=>link(target,`<span>${index+1} · ${label}</span><b>${total}</b>${hint?`<small>${hint}</small>`:""}`,`orders-stage ${current===key?"active":""}`)).join("")}</div>
     <div class="orders-nav-secondary">${link({mode:"orders"},`الكل <b>${live.length}</b>`,active==="orders"&&!onlineOrderQuickFilter?"active":"")} · ${link({mode:"orders",filter:"cancelled"},`ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,current==="cancelled"?"active":"")}</div>
   </div>`;
 }
@@ -3990,7 +3998,7 @@ function renderPreparationQueue() {
   const rows=preparationOrders();
   const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}"><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
   const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
-  return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>للتجهيز</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
+  return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>جاهز للتغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
 
 // After an order action the whole database used to be reloaded before the screen could respond. With
@@ -4569,7 +4577,7 @@ function readyShippingRow(order) {
 function renderReadyShippingQueue() {
   const rows=readyShippingOrders();
   const selected=rows.filter(order=>shippingExportSelection.has(order.id)&&order.saleId&&order.packedWeightGrams).length,validImported=shippingFileImportRows.filter(row=>row.ok&&!row.ignored).length;
-  return `${workflowModeTabs("ready-shipping")}<div class="section-title fulfillment-title"><div><span class="eyebrow">شركة الشحن</span><h2>مغلّف · مستني كود التتبع</h2><p>صدّر الطلبات ثم استورد ملف Packages. بعد مراجعة الأكواد اضغط تأكيد الشحن لنقل الطلبات الصحيحة.</p></div><div class="fulfillment-counters"><b>${rows.length}<small>بانتظار الكود</small></b><b class="success">${selected}<small>محدد للتصدير</small></b></div></div><article class="card shipping-batch-toolbar"><div class="shipping-step"><b>1</b><span><strong>تصدير الطلبات</strong><small>ملف مطابق لقالب شركة الشحن</small></span><button class="btn secondary" data-action="shipping-select-all">تحديد الجاهز</button><button class="btn" data-action="shipping-export-xlsx" ${selected?"":"disabled"}>تحميل أسماء الشحنات (${selected})</button></div><div class="shipping-step"><b>2</b><span><strong>استيراد الأكواد ومراجعتها</strong><small>اختر ملف Packages لمراجعة الأكواد؛ يُسجَّل الشحن بعد الضغط على التأكيد.</small></span><label class="btn secondary file-button">اختيار Packages.xlsx<input id="shipping-packages-file" type="file" accept=".xlsx" hidden></label><button class="btn" data-action="shipping-import-confirm" ${validImported?"":"disabled"}>${validImported?`تأكيد الشحن ونقل ${validImported} طلب إلى قسم الشحن`:shippingFileImportRows.length?"لا توجد أكواد صحيحة للتأكيد":"ارفع الملف لمراجعة الأكواد"}</button></div>${shippingFileImportRows.length?batchShippingPreviewMarkup(shippingFileImportRows):""}</article><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" data-shipping-export-all aria-label="تحديد الكل"></th><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>المطلوب تحصيله</th><th>حالة التصدير</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="7" class="text-center muted">لا توجد طلبات تنتظر كود تتبع.</td></tr>`}</tbody></table></div></article>`;
+  return `${workflowModeTabs("ready-shipping")}<div class="section-title fulfillment-title"><div><span class="eyebrow">شركة الشحن</span><h2>مغلف ومنتظر كود تتبع</h2><p>صدّر الطلبات ثم استورد ملف Packages. بعد مراجعة الأكواد اضغط تأكيد الشحن لنقل الطلبات الصحيحة.</p></div><div class="fulfillment-counters"><b>${rows.length}<small>بانتظار الكود</small></b><b class="success">${selected}<small>محدد للتصدير</small></b></div></div><article class="card shipping-batch-toolbar"><div class="shipping-step"><b>1</b><span><strong>تصدير الطلبات</strong><small>ملف مطابق لقالب شركة الشحن</small></span><button class="btn secondary" data-action="shipping-select-all">تحديد الجاهز</button><button class="btn" data-action="shipping-export-xlsx" ${selected?"":"disabled"}>تحميل أسماء الشحنات (${selected})</button></div><div class="shipping-step"><b>2</b><span><strong>استيراد الأكواد ومراجعتها</strong><small>اختر ملف Packages لمراجعة الأكواد؛ يُسجَّل الشحن بعد الضغط على التأكيد.</small></span><label class="btn secondary file-button">اختيار Packages.xlsx<input id="shipping-packages-file" type="file" accept=".xlsx" hidden></label><button class="btn" data-action="shipping-import-confirm" ${validImported?"":"disabled"}>${validImported?`تأكيد الشحن ونقل ${validImported} طلب إلى قسم الشحن`:shippingFileImportRows.length?"لا توجد أكواد صحيحة للتأكيد":"ارفع الملف لمراجعة الأكواد"}</button></div>${shippingFileImportRows.length?batchShippingPreviewMarkup(shippingFileImportRows):""}</article><article class="card ready-shipping-table"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" data-shipping-export-all aria-label="تحديد الكل"></th><th>الطلب / الفاتورة</th><th>العميل / المحافظة</th><th>القطع</th><th>المطلوب تحصيله</th><th>حالة التصدير</th><th>الإجراء</th></tr></thead><tbody>${rows.map(readyShippingRow).join("")||`<tr><td colspan="7" class="text-center muted">لا توجد طلبات تنتظر كود تتبع.</td></tr>`}</tbody></table></div></article>`;
 }
 
 function quickShippingOrderCard(order) {
@@ -8454,6 +8462,7 @@ root.addEventListener("click", async event => {
   if (action === "dashboard-stat") showDashboardStatDetails(target.dataset.stat);
   if (action === "sales-stat") showSalesStatDetails(target.dataset.stat);
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
+  if (action === "open-unconfirmed-orders") { const list=unconfirmedOrders();if(list.length===1&&canAction("order.quick.edit"))editQuickOrder(list[0].id);else{onlineOrdersMode="orders";onlineOrderQuickFilter="new";renderOnlineOrders();}return; }
   if (action === "orders-nav") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
   if(action==="shipping-select-all"){

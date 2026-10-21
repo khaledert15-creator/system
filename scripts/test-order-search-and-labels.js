@@ -32,19 +32,20 @@ vm.createContext(sandbox);
 vm.runInContext(["onlineOrderWorkflowStage", "onlineOrderWorkflowLabel", "onlineOrderMatchesQuickFilter", "onlineOrderQuickFilterLabel", "filterOnlineOrders"].map(extract).join("\n"), sandbox);
 const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };
 
-pass("a confirmed order waiting to be packed and one being packed both say «للتجهيز», like their stage", () => {
-  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[1]), "للتجهيز");
-  assert.equal(sandbox.onlineOrderWorkflowLabel({ ...orders[2], preparingBy:"أحمد" }), "للتجهيز · بدأه أحمد");
-  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[2]), "للتجهيز");
-  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[0]), "مسودة · ما اتأكدتش", "an unconfirmed order says it is a draft");
+pass("a confirmed order waiting to be packed and one being packed both say «جاهز للتغليف», like their stage", () => {
+  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[1]), "جاهز للتغليف");
+  assert.equal(sandbox.onlineOrderWorkflowLabel({ ...orders[2], preparingBy:"أحمد" }), "جاهز للتغليف · بدأه أحمد");
+  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[2]), "جاهز للتغليف");
+  assert.equal(sandbox.onlineOrderWorkflowLabel(orders[0]), "لسه ما اتأكدش", "an unconfirmed order says so");
   assert.ok(sandbox.onlineOrderMatchesQuickFilter(orders[1], "prep") && sandbox.onlineOrderMatchesQuickFilter(orders[2], "prep"));
-  assert.ok(!sandbox.onlineOrderMatchesQuickFilter(orders[3], "prep"), "a pre-order is not in «للتجهيز»");
+  assert.ok(!sandbox.onlineOrderMatchesQuickFilter(orders[3], "prep"), "a pre-order is not ready to pack");
 });
 pass("one navigation: five stages in order, the two create buttons, no second row of status cards", () => {
   const nav = extract("workflowModeTabs");
-  const order = ["حجز مسبق", "للتجهيز", "مغلّف", "اتشحن", "اتسلّم"].map(label => nav.indexOf(`"${label}"`));
+  const order = ["حجز مسبق", "جاهز للتغليف", "مغلف ومنتظر كود تتبع", "تم الشحن", "تم التسليم"].map(label => nav.indexOf(`"${label}"`));
   assert.ok(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1])), "stages appear in order");
-  assert.ok(nav.includes("＋ طلب واتساب جديد") && nav.includes("طلبات الموقع"));
+  assert.ok(nav.indexOf("طلب جديد من واتساب") > 0 && nav.indexOf("طلب جديد من واتساب") < nav.indexOf("طلبات الموقع"), "the WhatsApp button comes first");
+  assert.ok(nav.includes("whatsapp-order-button") && nav.includes("open-unconfirmed-orders"));
   assert.ok(!source.includes('class="order-stage-filters"'), "the duplicate status cards are gone");
 });
 pass("search finds an order outside the selected card and says so", () => {
@@ -52,11 +53,17 @@ pass("search finds an order outside the selected card and says so", () => {
   search.value = "ORD-0145";
   vm.runInContext("filterOnlineOrders()", sandbox);
   assert.match(table.innerHTML, /ORD-0145$/);
-  assert.match(table.innerHTML, /نتايج البحث من كل الطلبات، مش من «للتجهيز» بس/);
+  assert.match(table.innerHTML, /نتايج البحث من كل الطلبات، مش من «جاهز للتغليف» بس/);
+});
+pass("orders saved but never confirmed are listed for the alert, newest first", () => {
+  vm.runInContext(extract("unconfirmedOrders"), sandbox);
+  sandbox.data.onlineOrders.push({ id:"ORD-0002", workflowStage:"draft", status:"مسودة", updatedAt:"2026-10-21T01:00:00Z" });
+  assert.deepEqual(sandbox.unconfirmedOrders().map(order => order.id), ["ORD-0002", "ORD-0001"]);
+  sandbox.data.onlineOrders.pop();
 });
 pass("with no search the selected card still filters", () => {
   search.value = "";
   vm.runInContext("filterOnlineOrders()", sandbox);
   assert.equal(table.innerHTML, "ORD-0134");
 });
-console.log("4/4 order navigation, search and label tests passed");
+console.log("5/5 order navigation, search and label tests passed");
