@@ -106,48 +106,92 @@
     return /^01[0125]\d{8}$/.test(digits) ? digits : "";
   }
 
-  function customerTexts(messages) {
+  // The customer's messages, newest first, each as its lines (customers often send name, phones and address on
+  // separate lines of one message).
+  function customerMessages(messages) {
     return (Array.isArray(messages) ? messages : [])
       .filter(message => message && Number(message.message_type) === 0 && !message.private && typeof message.content === "string" && message.content.trim())
-      .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0))
-      .slice(-40)
-      .map(message => message.content.replace(/\s+/g, " ").trim().slice(0, 400));
+      .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))
+      .slice(0, 40)
+      .map(message => message.content.split(/\r?\n+/).map(line => line.replace(/\s+/g, " ").trim().slice(0, 300)).filter(Boolean));
+  }
+
+  // «الاسم: … رقم موبايل: … العنوان: …» written on one line: each labelled part on its own.
+  const LABELS = [
+    ["name", /^(?:الاسم بالكامل|الاسم ثلاثي|الاسم|اسمي|إسمي|اسم المستلم)$/],
+    ["phone", /^(?:رقم الموبايل|رقم موبايل|رقم التليفون|رقم الهاتف|رقم الواتس|رقمي|رقم|الموبايل|موبايل|التليفون|تليفون)$/],
+    ["address", /^(?:العنوان بالتفصيل|العنوان|عنواني|عنوان)$/],
+    ["governorate", /^(?:المحافظه|المحافظة|محافظه|محافظة)$/],
+    ["city", /^(?:المدينه|المدينة|المركز|المنطقه|المنطقة)$/]
+  ];
+  const LABEL_PATTERN = /(الاسم بالكامل|الاسم ثلاثي|اسم المستلم|الاسم|اسمي|إسمي|رقم الموبايل|رقم موبايل|رقم التليفون|رقم الهاتف|رقم الواتس|رقمي|الموبايل|موبايل|التليفون|تليفون|العنوان بالتفصيل|العنوان|عنواني|المحافظة|المحافظه|المدينة|المدينه|المركز|المنطقة|المنطقه)\s*[:：\-]\s*/g;
+  function labelledParts(line) {
+    const marks = [...line.matchAll(LABEL_PATTERN)];
+    if (!marks.length) return null;
+    const parts = {};
+    marks.forEach((mark, index) => {
+      const value = line.slice(mark.index + mark[0].length, index + 1 < marks.length ? marks[index + 1].index : line.length).replace(/[،,]\s*$/, "").trim();
+      const type = LABELS.find(([, pattern]) => pattern.test(mark[1]))?.[0];
+      if (type && value && !parts[type]) parts[type] = value;
+    });
+    return parts;
+  }
+
+  const NAME_STOP = new Set(["رقم", "موبايل", "تليفون", "العنوان", "عنوان", "محافظه", "المحافظه", "واتس", "الموبايل"]);
+  function cleanName(value) {
+    const words = String(value || "").replace(/[\d٠-٩+()\-:،,.]/g, " ").split(/\s+/).filter(Boolean);
+    const out = [];
+    for (const word of words) { if (NAME_STOP.has(normalize(word))) break; out.push(word); }
+    return out.length >= 2 ? out.slice(0, 4).join(" ") : "";
   }
 
   // Newest first, one suggestion of each kind except books.
   function extract(messages, { books = [], knownPhone = "", rows } = {}) {
-    const texts = customerTexts(messages).reverse();
+    const list = customerMessages(messages);
     const out = { phones: [], name: "", governorate: "", city: "", address: "", books: [] };
     const index = rows || bookIndex(books);
     const governorates = GOVERNORATES.map(name => ({ name, key: normalize(name).replace(/^ال/, "") }));
+    const findGovernorate = plain => governorates.find(item => (` ${plain} `).includes(` ${item.key} `) || (` ${plain} `).includes(` ال${item.key} `))?.name || "";
     const seenBooks = new Set();
-    const conversationGrades = [...new Set(texts.flatMap(gradeTokens))];
+    const conversationGrades = [...new Set(list.flat().flatMap(gradeTokens))];
     const contextGrades = conversationGrades.length === 1 ? conversationGrades : [];
-    for (const text of texts) {
-      const plain = normalize(text);
-      for (const match of plain.replace(/\s+/g, "").match(/(?:0020|20|0)?1[0125]\d{8}/g) || []) {
+    const addPhones = text => {
+      const found = [];
+      for (const match of normalize(text).replace(/\s+/g, "").match(/(?:0020|20|0)?1[0125]\d{8}/g) || []) {
         const phone = normalizePhone(match);
+        if (phone) found.push(phone);
         if (phone && phone !== knownPhone && !out.phones.includes(phone)) out.phones.push(phone);
       }
-      if (!out.name) {
-        const named = text.match(/(?:الاسم|اسمي|إسمي|اسم المستلم)\s*[:：-]?\s*([^\d\n،,.]{3,40})/);
-        if (named) out.name = named[1].trim().split(/\s+/).slice(0, 4).join(" ");
-      }
-      let governorate = governorates.find(item => (` ${plain} `).includes(` ${item.key} `) || (` ${plain} `).includes(` ال${item.key} `))?.name || "";
-      let city = "";
-      for (const [alias, owner] of Object.entries(CITY_GOVERNORATE)) {
-        if ((` ${plain} `).includes(` ${alias} `)) { city = alias; governorate = governorate || owner; break; }
-      }
-      const words = plain.split(" ");
-      const looksLikeAddress = text.length >= 10 && (governorate || city || ADDRESS_WORDS.some(word => words.includes(word)));
-      if (!out.governorate && governorate) out.governorate = governorate;
-      if (!out.city && city) out.city = text.match(new RegExp(city.split(" ").map(part => part.replace(/[ه]$/, "[هة]")).join("\\s*"), "i"))?.[0] || city;
-      if (!out.address && looksLikeAddress) out.address = text.replace(/^\s*(?:العنوان|عنواني|العنوان بالتفصيل)\s*[:：-]?\s*/, "");
-      for (const { book } of scoreBooks(text, index, contextGrades).slice(0, 3)) {
-        if (seenBooks.has(book.id)) continue;
-        seenBooks.add(book.id);
-        out.books.push(book);
-      }
+      return found;
+    };
+    for (const lines of list) {
+      lines.forEach((line, position) => {
+        const parts = labelledParts(line);
+        const phonesHere = addPhones(line);
+        if (parts) {
+          if (!out.name && parts.name) out.name = cleanName(parts.name);
+          if (!out.governorate && parts.governorate) out.governorate = findGovernorate(normalize(parts.governorate)) || "";
+          if (!out.city && parts.city) out.city = parts.city.slice(0, 60);
+          if (!out.address && parts.address && parts.address.length >= 6) out.address = parts.address;
+        }
+        const text = parts ? (parts.address || "") : line, plain = normalize(text);
+        let governorate = findGovernorate(plain), city = "";
+        for (const [alias, owner] of Object.entries(CITY_GOVERNORATE)) {
+          if ((` ${plain} `).includes(` ${alias} `)) { city = alias; governorate = governorate || owner; break; }
+        }
+        if (!out.governorate && governorate) out.governorate = governorate;
+        if (!out.city && city) out.city = text.match(new RegExp(city.split(" ").map(part => part.replace(/[ه]$/, "[هة]")).join("\\s*"), "i"))?.[0] || city;
+        const words = plain.split(" ");
+        if (!parts && !out.address && !phonesHere.length && text.length >= 10 && (governorate || city || ADDRESS_WORDS.some(word => words.includes(word)))) out.address = text;
+        // A line of two to four words right above a phone number is most likely the name («جونير رأفت شحاته»).
+        if (!out.name && !parts && /^[\p{L}\s]+$/u.test(line) && line.split(" ").length >= 2 && line.split(" ").length <= 4 && lines[position + 1] && normalizePhone(lines[position + 1]) && !governorate && !scoreBooks(line, index).length) out.name = line;
+        if (parts && !parts.address) return;
+        for (const { book } of scoreBooks(text, index, contextGrades).slice(0, 3)) {
+          if (seenBooks.has(book.id)) continue;
+          seenBooks.add(book.id);
+          out.books.push(book);
+        }
+      });
     }
     out.books = out.books.slice(0, 8);
     return out;

@@ -25,6 +25,17 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
   pass('suggestions from the customer messages only, with the conversation grade');
 }
 {
+  // Real shapes from WhatsApp: one message with a line each, and one line with labels.
+  let found = S.extract([message('عايزه نسخه واحده\nجونير رأفت شحاته\n01200011420\n01204768335\nمحافظة المنيا مركز ابو قرقاص مدينه الفكريه عماره الميري بجانب البنك الزراعي')], { books, knownPhone: '01204768335' });
+  assert.equal(found.name, 'جونير رأفت شحاته'); assert.deepEqual(found.phones, ['01200011420']); assert.equal(found.governorate, 'المنيا');
+  assert.match(found.address, /^محافظة المنيا مركز ابو قرقاص/);
+  found = S.extract([message('الاسم: علاء حسن خيرالدين رقم موبايل: 01501580147 رقم تاني 01515377135 العنوان: الجيزة فيصل شارع العشرين عمارة 5')], { books, knownPhone: '01501580147' });
+  assert.equal(found.name, 'علاء حسن خيرالدين', 'the name stops before «رقم»');
+  assert.equal(found.address, 'الجيزة فيصل شارع العشرين عمارة 5', 'only the part after «العنوان»');
+  assert.equal(found.governorate, 'الجيزة'); assert.equal(found.city, 'فيصل'); assert.deepEqual(found.phones, ['01515377135']);
+  pass('line-by-line and labelled messages give the right name, phones and address');
+}
+{
   const search = query => S.searchBooks(query, books, 3).map(book => book.id);
   assert.deepEqual(search('نيوت').sort(), ['B036', 'B037']);
   assert.deepEqual(search('فيزياء 3 ثانوي'), ['B041']);

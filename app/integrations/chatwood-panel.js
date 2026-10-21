@@ -276,7 +276,8 @@
 
   function emptyDraft() {
     const customer = state.data?.customer || {}, saved = customer.address || {};
-    const contactName = /\d{5,}/.test(state.contactName) ? "" : state.contactName;
+    // A WhatsApp name of dots or digits is not a name.
+    const contactName = /\d{5,}/.test(state.contactName) || !/\p{L}{2,}/u.test(state.contactName) ? "" : state.contactName;
     return { phone: state.phone, customerName: customer.known ? customer.name : (customer.name || contactName), alternativePhone: saved.alternativePhone || "", governorate: saved.governorate || "", city: saved.city || "",
       address: saved.address || "", addressMark: saved.addressMark || "", shippingCompany: state.catalog.defaultShippingCompany, shippingCost: 0, shippingManual: false, lines: [], paymentPlan: "cash_on_delivery",
       paidAmount: 0, paymentConfirmed: false, cashAccountId: "", receiptMethod: "InstaPay", notes: "", orderDiscount: 0, orderDiscountType: "percent", requestId: `panel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
