@@ -9,7 +9,7 @@ const rowSource = app.match(/function readyShippingRow\(order\) \{[\s\S]*?\n\}/)
 assert(rowSource, "readyShippingRow is missing");
 
 function renderRow(order, permissions = ["order.prepare", "order.pack", "order.shipping", "convert-order-sale"]) {
-  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", `${rowSource}; return readyShippingRow;`);
+  const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", "orderSearchAttr", `${rowSource}; return readyShippingRow;`);
   const render = factory(
     { calculatePayment: () => ({ remainingAmount: 100 }) },
     { shipments: [] },
@@ -18,7 +18,8 @@ function renderRow(order, permissions = ["order.prepare", "order.pack", "order.s
     value => String(value ?? ""),
     value => `${value} ج.م`,
     value => String(value),
-    () => permissions.includes("order.quick.edit")
+    () => permissions.includes("order.quick.edit"),
+    order => `data-search-row data-search="${order.id}"`
   );
   return render({ id: "ORD-TEST", customerName: "عميل", phone: "01000000000", governorate: "القاهرة", lines: [{ qty: 1 }], total: 100, paidAmount: 0, saleId: "INV-TEST", ...order });
 }

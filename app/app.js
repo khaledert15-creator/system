@@ -203,6 +203,7 @@ let pendingOnlineOrderDraft = null;
 let onlineOrderQuickFilter = "";
 let onlineOrdersMode = "orders";
 let shortageFilter = "";
+let stageSearchTerm = "";
 let shippingSessionCompany = "";
 let quickShippingOrderId = "";
 let batchShippingPreviewRows = [];
@@ -3754,6 +3755,28 @@ function readyShippingOrders() {
   return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&order.workflowStage==="awaiting_shipping"&&Boolean(order.preparedAt)&&!order.shipmentId);
 }
 
+// What the smart search on the stage screens looks through for one order.
+function orderSearchValues(order={}) {
+  const shipment=(data.shipments||[]).find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
+  return [order.id,order.saleId,order.websiteOrderNumber,order.customerName,order.phone,order.alternativePhone,order.governorate,order.city,order.tracking,order.trackingNumber,shipment?.trackingNumber,(order.lines||[]).map(line=>getBook(line.bookId)?.name||line.name||line.bookId)].flat().filter(Boolean);
+}
+const orderSearchAttr=order=>`data-search-row data-search="${esc(orderSearchValues(order).join(" "))}"`;
+
+// One smart search on each stage screen; it keeps its text when the screen refreshes from live updates.
+function stageSearchBox(placeholder) {
+  return `<div class="stage-search"><div class="search"><input id="stage-search" type="search" autocomplete="off" value="${esc(stageSearchTerm)}" placeholder="${esc(placeholder)}"></div><span id="stage-search-count" class="muted"></span></div>`;
+}
+let stageSearchTypedAt=0;
+function applyStageSearch() {
+  const input=document.getElementById("stage-search");if(!input)return;
+  // A live refresh rebuilds the screen; someone who was just typing keeps typing where they were.
+  if(Date.now()-stageSearchTypedAt<8000&&document.activeElement!==input){input.focus();const end=input.value.length;input.setSelectionRange(end,end);}
+  const rows=root.querySelectorAll("[data-search-row],[data-shortage-row]"),count=document.getElementById("stage-search-count");
+  if(!stageSearchTerm.trim()){rows.forEach(row=>{row.hidden=false;});if(count)count.textContent="";return;}
+  const found=smartFilterRows(rows,stageSearchTerm);
+  if(count)count.textContent=found?`${found} نتيجة`:"مفيش نتايج";
+}
+
 // Orders saved from the quick-order screen but never confirmed; they sit in no stage, so the navigation points at them.
 function unconfirmedOrders() {
   return (data.onlineOrders||[]).filter(order=>!order.deletedAt&&!order.confirmedAt&&onlineOrderWorkflowStage(order)==="new")
@@ -3785,6 +3808,7 @@ function workflowModeTabs(active="orders") {
       ${unconfirmed.length?`<button type="button" class="unconfirmed-orders-alert" data-action="open-unconfirmed-orders">⚠ عندك ${unconfirmed.length===1?"طلب":`${unconfirmed.length} طلبات`} ما اتأكدش</button>`:""}
     </div>
     <div class="orders-stage-row" role="group" aria-label="مراحل الطلب">${stages.map(([key,label,hint,total,target],index)=>link(target,`<span>${index+1} · ${label}</span><b>${total}</b>${hint?`<small>${hint}</small>`:""}`,`orders-stage ${current===key?"active":""}`)).join("")}</div>
+    ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):""}
     <div class="orders-nav-secondary">${link({mode:"orders"},`الكل <b>${live.length}</b>`,active==="orders"&&!onlineOrderQuickFilter?"active":"")} · ${link({mode:"orders",filter:"cancelled"},`ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,current==="cancelled"?"active":"")}</div>
   </div>`;
 }
@@ -3873,7 +3897,7 @@ function renderShortagesScreen() {
     </div>
     ${filter?`<div class="shortage-filter-note"><span>بيعرض: <strong>${esc(filterLabel)}</strong> (${shown.length} كتاب)</span><button type="button" class="row-action" data-action="shortage-filter" data-filter="">عرض كل الكتب</button></div>`:""}
     <p class="muted small shortage-live-note">الأرقام دي بتتحدث لحظيًا من المخزون والطلبات: الشراء بيرفع «في المخزن» فورًا، وطلبات الحجز المسبق بتتنقل للتجهيز تلقائيًا خلال ثوانٍ.</p>
-    <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>إجمالي المطلوب = المحجوز بالفعل + الحجز المسبق، والناقص هو ما لا يغطيه الموجود على الرف.</p></div><div class="search shortage-search"><input id="shortage-search" type="search" autocomplete="off" placeholder="ابحث عن كتاب أو طلب"></div></div>
+    <article class="card"><div class="card-header"><div><h3>الكتب الناقصة</h3><p>إجمالي المطلوب = المحجوز بالفعل + الحجز المسبق، والناقص هو ما لا يغطيه الموجود على الرف.</p></div></div>
       <div class="table-wrap"><table class="shortage-table"><thead><tr><th>الكتاب</th><th class="num">في المخزن</th><th class="num">محجوز بالفعل</th><th class="num">حجز مسبق</th><th class="num">إجمالي المطلوب</th><th class="num">الناقص</th><th></th></tr></thead><tbody>
       ${shown.length?shown.map(row=>`<tr data-shortage-row data-search="${esc([row.book.name,row.book.barcode,row.book.sku,row.bookId,...row.preorderOrders.map(item=>[item.order.id,item.order.customerName]),...row.reservedOrders.map(item=>[item.order.id,item.order.customerName])].flat().filter(Boolean).join(" "))}">${bookCell(row)}
         <td class="num">${row.stock}</td>
@@ -3885,7 +3909,7 @@ function renderShortagesScreen() {
       </tbody></table></div></article>
     <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
-      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}"><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}${splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
+      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}${splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:""}<button class="row-action" data-action="view-online-order" data-id="${order.id}">تفاصيل</button>${canCancelOrderDirectly(order)?`<button class="row-action text-danger" data-action="cancel-online-order" data-id="${order.id}">إلغاء</button>`:""}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
       </tbody></table></div></article>`;
 }
 
@@ -4002,7 +4026,7 @@ async function allocateBackorder(id) {
 
 function renderPreparationQueue() {
   const rows=preparationOrders();
-  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}"><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
+  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button></td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
   const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>جاهز للتغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
@@ -4577,7 +4601,7 @@ function readyShippingRow(order) {
   const hasWeight=Number(order.packedWeightGrams)>0;
   const canWeight=canAction("order.pack")||canAction("order.shipping"),canShip=canWeight,canRepack=canAction("order.prepare");
   const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${canRepack?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${esc(order.id)}">إعادة للتغليف</button>`:""}${canCancelOrderDirectly(order)?`<button type="button" class="row-action text-danger" data-action="cancel-online-order" data-id="${esc(order.id)}">إلغاء الطلب</button>`:""}</div>`;
-  return `<tr><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
+  return `<tr ${orderSearchAttr(order)}><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc(order.governorate||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
 }
 
 function renderReadyShippingQueue() {
@@ -4710,9 +4734,9 @@ async function submitReadyOrderShipment(orderId,payload,{silent=false}={}) {
 function renderOnlineOrders() {
   closeAllDropdowns();
   if(onlineOrdersMode==="quick"&&(canAction("order.quick.create")||(quickOrderDraft.savedOrderId&&canAction("order.quick.edit")))){root.innerHTML=renderQuickOrderScreen();return;}
-  if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();return;}
-  if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();return;}
-  if(onlineOrdersMode==="shortages"){root.innerHTML=renderShortagesScreen();return;}
+  if(onlineOrdersMode==="preparation"&&canAction("order.prepare")){root.innerHTML=renderPreparationQueue();applyStageSearch();return;}
+  if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();applyStageSearch();return;}
+  if(onlineOrdersMode==="shortages"){root.innerHTML=renderShortagesScreen();applyStageSearch();return;}
   if(onlineOrdersMode==="website"&&canAction("order.website.view")){root.innerHTML=renderWebsiteOrdersScreen();return;}
   if(onlineOrdersMode==="quick-shipping"){root.innerHTML=renderQuickShippingScreen();if (!liveRendering) setTimeout(()=>document.getElementById("quick-shipping-order-code")?.focus(),0);return;}
   const active = data.onlineOrders.filter(order => !order.deletedAt);
@@ -5982,7 +6006,7 @@ function filterFinanceExpenseRows() {
 }
 document.addEventListener("input", event => {
   if (event.target.id === "finance-expense-search") filterFinanceExpenseRows();
-  if (event.target.id === "shortage-search") smartFilterRows(document.querySelectorAll("[data-shortage-row]"), event.target.value);
+  if (event.target.id === "stage-search") { stageSearchTerm = event.target.value; stageSearchTypedAt = Date.now(); applyStageSearch(); }
 });
 document.addEventListener("change", event => { if (event.target.id === "finance-expense-status") filterFinanceExpenseRows(); });
 
@@ -8470,7 +8494,7 @@ root.addEventListener("click", async event => {
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
   if (action === "shortage-filter") { shortageFilter=target.dataset.filter||"";renderOnlineOrders();document.querySelector(".shortage-table")?.scrollIntoView({behavior:"smooth",block:"start"});return; }
   if (action === "open-unconfirmed-orders") { const list=unconfirmedOrders();if(list.length===1&&canAction("order.quick.edit"))editQuickOrder(list[0].id);else{onlineOrdersMode="orders";onlineOrderQuickFilter="new";renderOnlineOrders();}return; }
-  if (action === "orders-nav") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
+  if (action === "orders-nav") { stageSearchTerm="";const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
   if(action==="shipping-select-all"){
     for(const order of readyShippingOrders())if(order.saleId&&order.packedWeightGrams)shippingExportSelection.add(order.id);

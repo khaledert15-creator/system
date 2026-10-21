@@ -2110,3 +2110,8 @@ button.shortage-stat.active{border:2px solid var(--primary);background:#eef6ff}
 button.shortage-stat.danger.active{border-color:var(--danger);background:#fff5f4}
 button.shortage-stat.warning.active{border-color:#d99a2b;background:#fff9ee}
 .shortage-filter-note{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:8px 12px;border-radius:10px;background:#f4f8fe;font-size:13px}
+/* One smart search on each stage screen */
+.stage-search{display:flex;align-items:center;gap:10px}
+.stage-search .search{flex:1;max-width:none}
+.stage-search input{width:100%;min-height:44px;font-size:15px}
+#stage-search-count{white-space:nowrap;font-size:13px}

@@ -44,5 +44,5 @@ assert.equal(c.sinceLabel(ago(0)),'اليوم');assert.equal(c.sinceLabel(ago(5)
 console.log('PASS low-stock books keep a reorder suggestion');
 
 const markup=fn('renderShortagesScreen');
-for(const label of ['في المخزن','محجوز بالفعل','حجز مسبق','إجمالي المطلوب','الناقص','نسخة ناقصة يجب شراؤها','نسخة محجوزة بالفعل','id="shortage-search"'])assert(markup.includes(label),label);
+for(const label of ['في المخزن','محجوز بالفعل','حجز مسبق','إجمالي المطلوب','الناقص','نسخة ناقصة يجب شراؤها','نسخة محجوزة بالفعل'])assert(markup.includes(label),label);
 console.log('PASS the list has the summary, the new columns and a search box');
