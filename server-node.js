@@ -3365,6 +3365,23 @@ const server = http.createServer(async (req, res) => {
       if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
       const requested=Array.isArray(payload.lines)?payload.lines:[];
       if(!requested.length)return send(res,400,{ok:false,message:"أضف كتابًا واحدًا على الأقل."});
+      // A website order is edited only on the customer's request and keeps the website's prices: books already on it keep
+      // their unit price and discount, and a book added to it takes its current price from the Store.
+      const websiteOrder=Boolean(order.websiteOrderNumber||order.source==="website");
+      const editRequest=payload.customerRequestedEdit&&typeof payload.customerRequestedEdit==="object"?payload.customerRequestedEdit:null;
+      if(websiteOrder&&order.confirmedAt&&editRequest?.confirmed!==true)return send(res,409,{ok:false,code:"CUSTOMER_REQUEST_REQUIRED",message:"طلب موقع: أكّد إن العميل هو اللي طلب التعديل."});
+      const previousLines=new Map((order.lines||[]).map(line=>[line.bookId,line]));
+      let storePrices=new Map();
+      const addedBookIds=websiteOrder?[...new Set(requested.map(line=>String(line.bookId||"")).filter(id=>id&&!previousLines.has(id)))]:[];
+      if(addedBookIds.length){
+        let result;
+        try{result=await integration.storeRequest("GET",`/api/integration/v1/products/prices?externalBookIds=${encodeURIComponent(addedBookIds.join(","))}`);}
+        catch{return send(res,502,{ok:false,code:"STORE_UNAVAILABLE",message:"تعذر الوصول للمتجر لمعرفة سعر الكتاب الجديد على الموقع؛ ما اتحفظش أي حاجة. حاول تاني."});}
+        if(result.status!==200||!result.body?.ok)return send(res,502,{ok:false,code:"STORE_UNAVAILABLE",message:"تعذر معرفة سعر الكتاب الجديد على الموقع؛ ما اتحفظش أي حاجة."});
+        storePrices=new Map((result.body.prices||[]).filter(row=>row&&row.active!==false&&Number.isFinite(Number(row.price))).map(row=>[String(row.externalBookId),OrderFinance.round(Number(row.price))]));
+        const missing=addedBookIds.filter(id=>!storePrices.has(id));
+        if(missing.length){const names=missing.map(id=>(db.books||[]).find(book=>book.id===id)?.name||id).join("، ");return send(res,409,{ok:false,code:"BOOK_NOT_ON_WEBSITE",message:`الكتاب ده مش معروض على الموقع، فمينفعش يتضاف لطلب موقع: ${names}`});}
+      }
       const lines=[];
       for(const line of requested){
         const book=(db.books||[]).find(item=>item.id===line.bookId&&!item.deletedAt);
@@ -3372,11 +3389,20 @@ const server = http.createServer(async (req, res) => {
         const qty=Math.max(1,Math.trunc(OrderFinance.normalizeNumber(line.qty||1)||1));
         const ownReserved=aggregateOrderLines(activeReservation(order)?.lines||[]).get(book.id)||0;
         if(["preparing","needs_review"].includes(order.workflowStage)&&qty>availableStock(book)+ownReserved)return send(res,409,{ok:false,code:"INSUFFICIENT_AVAILABLE_STOCK",message:`المتاح للبيع من «${book.name}» هو ${availableStock(book)+ownReserved}.`});
+        if(websiteOrder){
+          const previous=previousLines.get(book.id);
+          lines.push(previous?{bookId:book.id,qty,price:Number(previous.price||0),discount:Number(previous.discount||0),discountType:previous.discountType||"percent",discountScope:previous.discountScope||"unit",discountOverridden:false,websitePrice:true}
+            :{bookId:book.id,qty,price:storePrices.get(book.id),discount:0,discountType:"percent",discountScope:"unit",discountOverridden:false,websitePrice:true,addedOnEdit:true});
+          continue;
+        }
         try{lines.push(quickOrderBookLine(db,book,line,user));}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       }
       let totals,normalizedNote;
       try{totals=quickOrderTotals(lines,payload.shippingCost,payload.orderDiscount,payload.orderDiscountType);normalizedNote=OrderFinance.normalizeNote(payload.notes||"");}catch(error){return send(res,400,{ok:false,code:"INVALID_ORDER_TOTALS",message:error.message});}
-      if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
+      // Only adding or changing an order discount needs the permission; an existing one (a website coupon) stays.
+      const orderDiscountUnchanged=OrderFinance.round(Number(payload.orderDiscount||0))===OrderFinance.round(Number(order.orderDiscount||0))&&(payload.orderDiscountType||"percent")===(order.orderDiscountType||"percent");
+      if(Number(totals.orderDiscountAmount)>0&&!orderDiscountUnchanged&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
+      const linesBefore=(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||0),price:Number(line.price||0)})),totalBefore=Number(order.total||0);
       const automaticShipping=automaticShippingFee(db,payload.governorate||customer?.governorate,lines,payload.orderDiscount,payload.orderDiscountType);
       const shippingChanged=Math.abs(totals.shipping-requestedShippingFee(order))>.009;
       if(shippingChanged&&Math.abs(totals.shipping-automaticShipping)>.009&&!canOrderAction(db,user,"order.shipping.override"))return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة."});
@@ -3399,6 +3425,11 @@ const server = http.createServer(async (req, res) => {
         order.preparationChecklist=order.lines.map(line=>({bookId:line.bookId,qty:line.qty,done:false}));
         db.notifications=db.notifications||[];
         db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-updated-${order.id}-${Date.now()}`,title:"تم تعديل طلب بعد بدء التجهيز",description:`${order.id} — راجع قائمة الكتب المحدثة`,source:"خدمة العملاء",entityId:order.id,status:"unread",createdAt:now});
+      }
+      if(websiteOrder&&order.confirmedAt){
+        const edit={at:now,by:user.name||user.username,username:user.username,channel:String(editRequest?.channel||"واتساب").slice(0,40),note:String(editRequest?.note||"").slice(0,500),before:{lines:linesBefore,total:totalBefore},after:{lines:order.lines.map(line=>({bookId:line.bookId,qty:Number(line.qty||0),price:Number(line.price||0)})),total:Number(order.total||0)}};
+        order.websiteEdits=[...(order.websiteEdits||[]),edit];order.websiteEditedAt=now;
+        appendOrderAudit(db,user,order,"تعديل طلب موقع بطلب العميل",`${edit.channel}${edit.note?`: ${edit.note}`:""} · الإجمالي ${totalBefore} ← ${order.total} ج.م`);
       }
       appendOrderAudit(db,user,order,"تعديل طلب واتساب سريع",preparationStarted?"تم تحديث قائمة التجهيز وإعادة ضبط علاماتها":"تحديث المسودة");
       writeDb(db,{expectedRevision:revision});
@@ -3724,6 +3755,40 @@ const server = http.createServer(async (req, res) => {
       Object.assign(order,{...packageWeight,postalCostQuote:packageWeight.postalCostQuote?{...packageWeight.postalCostQuote,tariffSnapshot:postalTariff(db)}:null});
       db.notifications=db.notifications||[];db.notifications.push({id:`NOT-ORD-${crypto.randomUUID()}`,key:`order-shipping-${order.id}`,title:"طلب جاهز للشحن",description:`${order.id} جاهز لإنشاء الشحنة`,source:"الشحن",entityId:order.id,status:"unread",createdAt:now});
       appendOrderAudit(db,user,order,"اكتمال تغليف الطلب",order.saleId);writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"PACKING_WITH_INVOICE",performedBy:user.username});return send(res,200,{ok:true,order,revision:dbRevision()});
+    }
+
+    // Editing an order that was already packed: its invoice (issued when packing was completed) is voided — the books
+    // go back on the shelf and are reserved again for this order — and the order returns to «جاهز للتغليف», so it can be
+    // edited and packed again with a new invoice. Refused once a shipment exists (that is a return, not an edit).
+    if (route.startsWith("/api/orders/") && route.endsWith("/reopen-for-edit") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      const snapshot=readDbForWrite(),revision=snapshot.revision,db=ensureTrackingDb(snapshot.db);
+      if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تعديل الطلبات."});
+      const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
+      if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      const payload=await readJsonBody(req,16*1024),operationKey=String(payload.operationKey||"").trim().slice(0,120);
+      if(operationKey&&(order.reopenedForEdit||[]).some(entry=>entry.operationKey===operationKey))return send(res,200,{ok:true,order,existing:true,revision:String(revision)});
+      if(order.cancelledAt||order.workflowStage==="cancelled"||order.status==="ملغي")return send(res,409,{ok:false,code:"ORDER_CANCELLED",message:"الطلب ملغي."});
+      if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب اتسلّم؛ التعديل بيبقى مرتجع."});
+      if(order.shipmentId||activeOrderShipment(db,order))return send(res,409,{ok:false,code:"ORDER_SHIPPED",message:"الطلب اتعمل له شحنة؛ ألغِ الشحنة الأول أو استخدم المرتجعات."});
+      if(!order.saleId&&!order.preparedAt)return send(res,200,{ok:true,order,existing:true,revision:String(revision)});
+      if(payload.confirm!==true)return send(res,409,{ok:false,code:"CONFIRMATION_REQUIRED",message:"أكّد إن الطلب هيرجع للتجهيز وفاتورته هتتلغي."});
+      const now=new Date().toISOString(),steps=[];
+      const sale=order.saleId&&(db.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
+      if(sale&&sale.status!=="ملغاة"){voidSaleRecord(db,sale,user,`تعديل الطلب ${order.id}`);steps.push(`إبطال الفاتورة ${sale.id}`);}
+      // The voided invoice stays on record but no longer belongs to the order, so lookups by order find only the new one
+      // and packing again issues a new invoice.
+      if(sale)Object.assign(sale,{voidedForEditOfOrderId:order.id,onlineOrderId:"",operationKey:`${sale.operationKey||`order-invoice:${order.id}`}:voided-for-edit:${now}`,updatedAt:now});
+      for(const payment of db.orderPayments||[])if(payment.orderId===order.id&&payment.invoiceId){payment.invoiceId="";payment.updatedAt=now;}
+      const previousSaleId=order.saleId||"";
+      Object.assign(order,{saleId:"",workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      try{reserveOrderInventory(db,order,user,order.lines||[]);steps.push("حجز الكتب تاني للطلب");}
+      catch(error){return send(res,error.status||409,{ok:false,code:error.code||"RESERVATION_FAILED",message:error.message});}
+      order.reopenedForEdit=[...(order.reopenedForEdit||[]),{at:now,by:user.name||user.username,username:user.username,operationKey,previousSaleId}];
+      appendOrderAudit(db,user,order,"إعادة فتح الطلب للتعديل",steps.join(" · ")||"رجوع للتجهيز");
+      try{writeDb(db,{expectedRevision:revision,operationType:"ORDER_REOPENED_FOR_EDIT",performedBy:user.username});}
+      catch(error){if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت؛ حاول تاني."});throw error;}
+      return send(res,200,{ok:true,order,steps,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/reopen") && req.method === "POST") {

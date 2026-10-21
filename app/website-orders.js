@@ -106,6 +106,20 @@ function createWebsiteOrders(deps) {
     return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : round(Number(value));
   }
 
+  // After an employee edited a website order on the customer's request, the link carries its books and totals so the
+  // Store can show them on the customer's order page. Not sent for a split order (its parts carry their own lines).
+  function orderEdit(db, order, parts) {
+    if (!order.websiteEditedAt || parts.length) return null;
+    let totals;
+    try { totals = OrderFinance.calculateOrder(order.lines || [], { shippingCost:Number(order.shippingFee ?? order.shippingCost ?? 0), orderDiscount:order.orderDiscount || 0, orderDiscountType:order.orderDiscountType || "percent" }); }
+    catch { return null; }
+    const books = new Map((db.books || []).map(book => [book.id, book]));
+    return {
+      editedAt:order.websiteEditedAt, subtotal:round(totals.subtotalBeforeDiscount - totals.productDiscountTotal), orderDiscount:round(totals.orderDiscountAmount), shippingFee:round(totals.shipping), total:round(totals.total),
+      lines:totals.lines.map(line => ({ bookId:line.bookId, name:String(books.get(line.bookId)?.name || line.bookId), qty:line.qty, unitPrice:round(line.unitOriginalPrice), discount:round(line.discountAmount), subtotal:round(line.lineFinalAmount) }))
+    };
+  }
+
   function orderLink(db, order) {
     const shipment = orderShipment(db, order);
     const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
@@ -118,6 +132,7 @@ function createWebsiteOrders(deps) {
       paymentStatus:order.paymentStatus || OrderFinance.calculatePayment(total, Math.min(total, paid)).paymentStatus,
       shipment:shipmentSummary(shipment), cancelled:isCancelled(order), chatwootConversationId:order.chatwootConversationId || null,
       ...(parts.length ? { splitShipment:{ extraShippingFee:round(Number(order.splitShipment?.extraShippingFee || 0)), splitAt:order.splitShipment?.splitAt || null, parts } } : {}),
+      ...(order.websiteEditedAt && !parts.length ? { edited:orderEdit(db, order, parts) } : {}),
       updatedAt:latestIso(order.updatedAt, order.createdAt, shipment?.updatedAt, shipment?.lastTrackedAt, ...parts.map(part => part.updatedAt))
     };
   }
@@ -546,7 +561,7 @@ function createWebsiteOrders(deps) {
 
 // PUT /api/db carries the whole database from the browser. The website deposit default (owner/manager endpoint) and
 // the website link fields of existing orders are server-owned, so a client save keeps the server's values.
-const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername"];
+const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername", "websiteEdits", "websiteEditedAt"];
 // The Chatwood identity of an order (who it belongs to) and the quick-order request key are written by the server
 // only; a whole-database save keeps the stored values.
 const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "quickOrderRequestId", "chatwoodLink", "chatwoodLinkHistory"];

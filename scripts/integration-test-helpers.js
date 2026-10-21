@@ -76,7 +76,7 @@ async function startSystem({ db = fixtureDb(), env = {}, name = 'integration-' }
 
 // Mock Store integration API (§3). It verifies the System's signatures with the real verifier.
 async function startMockStore({ secret = SECRET } = {}) {
-  const state = { orders:new Map(), conversations:new Map(), requests:[], down:false, delayMs:0, salesLinkStatus:200, conversationResult:null };
+  const state = { orders:new Map(), conversations:new Map(), prices:new Map(), requests:[], down:false, delayMs:0, salesLinkStatus:200, conversationResult:null };
   const nonces = IntegrationAuth.createNonceCache();
   const server = http.createServer(async (req, res) => {
     let raw = '';
@@ -99,6 +99,11 @@ async function startMockStore({ secret = SECRET } = {}) {
       const orderRef = url.searchParams.get('orderRef');
       const mentions = [...state.conversations.values()].flatMap(conversation => (conversation.mentions || []).filter(row => row.orderRef === orderRef).map(row => ({ conversationId:conversation.conversationId, channel:conversation.channel, contactId:conversation.contactId, contactPhone:conversation.contactPhone, lastMessageAt:conversation.lastMessageAt, mentionedAt:row.mentionedAt, messages:row.messages || 1 })));
       return json(200, { ok:true, orderRef, mentions });
+    }
+    // Current website price of linked books (state.prices: externalBookId → { price, active }).
+    if (url.pathname === '/api/integration/v1/products/prices' && req.method === 'GET') {
+      const ids = String(url.searchParams.get('externalBookIds') || '').split(',').filter(Boolean);
+      return json(200, { ok:true, prices:ids.filter(id => state.prices.has(id)).map(id => ({ externalBookId:id, active:true, ...state.prices.get(id) })) });
     }
     const match = url.pathname.match(/^\/api\/integration\/v1\/orders(?:\/([^/]+))?(?:\/(sales-link|conversation|deposit-required))?$/);
     if (!match) return json(404, { ok:false, code:'NOT_FOUND' });
