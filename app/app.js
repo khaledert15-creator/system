@@ -3808,8 +3808,11 @@ function workflowModeTabs(active="orders") {
       ${unconfirmed.length?`<button type="button" class="unconfirmed-orders-alert" data-action="open-unconfirmed-orders">⚠ عندك ${unconfirmed.length===1?"طلب":`${unconfirmed.length} طلبات`} ما اتأكدش</button>`:""}
     </div>
     <div class="orders-stage-row" role="group" aria-label="مراحل الطلب">${stages.map(([key,label,hint,total,target],index)=>link(target,`<span>${index+1} · ${label}</span><b>${total}</b>${hint?`<small>${hint}</small>`:""}`,`orders-stage ${current===key?"active":""}`)).join("")}</div>
+    <div class="orders-nav-secondary" role="group" aria-label="كل الطلبات والملغي">
+      ${link({mode:"orders"},`<span class="nav-icon" aria-hidden="true">☰</span> كل الطلبات <b>${live.length}</b>`,`orders-all-button ${active==="orders"&&!onlineOrderQuickFilter?"active":""}`)}
+      ${link({mode:"orders",filter:"cancelled"},`<span class="nav-icon" aria-hidden="true">✕</span> ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,`orders-cancelled-button ${current==="cancelled"?"active":""}`)}
+    </div>
     ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):""}
-    <div class="orders-nav-secondary">${link({mode:"orders"},`الكل <b>${live.length}</b>`,active==="orders"&&!onlineOrderQuickFilter?"active":"")} · ${link({mode:"orders",filter:"cancelled"},`ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,current==="cancelled"?"active":"")}</div>
   </div>`;
 }
 

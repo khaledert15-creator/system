@@ -47,6 +47,9 @@ pass("one navigation: five stages in order, the two create buttons, no second ro
   assert.ok(nav.indexOf("طلب جديد من واتساب") > 0 && nav.indexOf("طلب جديد من واتساب") < nav.indexOf("طلبات الموقع"), "the WhatsApp button comes first");
   assert.ok(nav.includes("whatsapp-order-button") && nav.includes("open-unconfirmed-orders"));
   assert.ok(!source.includes('class="order-stage-filters"'), "the duplicate status cards are gone");
+  const row = nav.indexOf("orders-stage-row"), all = nav.indexOf("كل الطلبات <b>"), cancelled = nav.indexOf("ملغي / مرتجع <b>");
+  assert.ok(row > 0 && all > row && cancelled > all, "«كل الطلبات» and «ملغي / مرتجع» are buttons right after the stages");
+  assert.ok(nav.includes("orders-all-button") && nav.includes("orders-cancelled-button"));
 });
 pass("search finds an order outside the selected card and says so", () => {
   sandbox.onlineOrderQuickFilter = "preparing";
