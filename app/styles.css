@@ -1849,7 +1849,7 @@ tbody tr.target-highlight > td {
 @media(max-width:900px){.shipment-finance-preview>div{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-filters{grid-template-columns:1fr}.finance-callout{align-items:flex-start;flex-direction:column}.finance-section-title p{white-space:normal}.context-help::after{position:fixed;inset-inline:20px;top:auto;bottom:20px;width:auto;transform:none}.context-help:hover::after,.context-help:focus-visible::after,.context-help.open::after{transform:none}}
 .collection-mode-tabs{display:flex;gap:8px;margin:0 0 14px}
 .collection-entry-card,.collection-order-card,.collection-batch{margin-bottom:18px}
-.collection-entry-grid{display:grid;grid-template-columns:minmax(190px,1.3fr) minmax(150px,.8fr) minmax(150px,.8fr) minmax(170px,1fr) auto;gap:12px;align-items:end}
+.collection-entry-grid{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(150px,.8fr) minmax(170px,1fr) auto;gap:12px;align-items:end}
 .collection-entry-grid .btn{min-height:44px;margin-bottom:1px}
 .collection-result{display:flex;align-items:center;gap:18px;padding:16px;margin-bottom:18px;border:1px solid #cfe0f4;border-radius:14px;background:#f8fbff}
 .collection-result>div:first-child{display:grid;gap:5px;flex:1}.collection-result span{color:var(--muted);font-size:13px}
