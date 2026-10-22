@@ -1036,15 +1036,21 @@ function shipmentCollectionValues(db,shipment={}) {
 function createOrderCollectionAtomic(db,payload,user) {
   const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
   const trackingNumber=normalizeCollectionTracking(payload.trackingNumber);
-  const amountCents=toCents(payload.amount);
+  // Carriers report the amount they transferred after their commission (and any deducted shipping cost). When the
+  // employee enters that received amount, the collected amount is rebuilt from it with the same commission and cost
+  // that the settlement below deducts, so the cash account ends up exactly at the received amount.
+  const receivedProvided=payload.receivedNetAmount!==undefined&&payload.receivedNetAmount!==null&&String(payload.receivedNetAmount).trim()!=="";
+  const receivedCents=receivedProvided?toCents(payload.receivedNetAmount):null;
   if(!trackingNumber)throw Object.assign(new Error("كود الشحنة مطلوب."),{status:400});
-  if(amountCents<0)throw Object.assign(new Error("قيمة التحصيل لا يمكن أن تكون سالبة."),{status:400});
+  if(receivedProvided&&!(receivedCents>=0))throw Object.assign(new Error("المبلغ اللي نزل في الحساب لا يمكن أن يكون سالبًا."),{status:400});
   const shipment=next.shipments.find(item=>!item.deletedAt&&normalizeCollectionTracking(item.trackingNumber||item.tracking)===trackingNumber);
   if(!shipment)throw Object.assign(new Error("لم يتم العثور على أوردر مرتبط بكود الشحنة."),{status:404});
   const sourceKey=`order-collection:${shipment.id}`;
   const previous=next.orderCollections.find(item=>item.sourceKey===sourceKey&&item.status!=="reversed");
   if(previous)throw Object.assign(new Error("تم تسجيل تحصيل هذه الشحنة سابقًا."),{status:409,previous});
   const values=shipmentCollectionValues(next,shipment);
+  const amountCents=receivedProvided?receivedCents+toCents(values.expectedCommission)+toCents(values.shippingCost):toCents(payload.amount);
+  if(amountCents<0)throw Object.assign(new Error("قيمة التحصيل لا يمكن أن تكون سالبة."),{status:400});
   const differenceCents=amountCents-toCents(values.expectedCollection);
   const differenceReason=String(payload.differenceReason||"").trim();
   if(differenceCents!==0&&!differenceReason)throw Object.assign(new Error("يجب اختيار سبب الفرق قبل تأكيد التحصيل."),{status:400});
@@ -1065,6 +1071,7 @@ function createOrderCollectionAtomic(db,payload,user) {
     expectedCollection:values.expectedCollection,amount:fromCents(amountCents),
     difference:fromCents(differenceCents),differenceReason,notes:String(payload.notes||"").trim(),
     expectedCommission:values.expectedCommission,expectedNetTransfer:fromCents(amountCents-toCents(values.expectedCommission)-toCents(values.shippingCost)),
+    receivedNetAmount:receivedProvided?fromCents(receivedCents):null,
     shippingCost:values.shippingCost,registrationType,status:registrationType,account,
     createdAt:now,createdBy:actor.name,createdByUsername:actor.username,createdByRole:actor.role
   };

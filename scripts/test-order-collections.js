@@ -21,7 +21,7 @@ async function request(path,{token,method="GET",body}={}){
   const initial=await request("/api/db",{token:owner});
   const db=initial.body,stamp=Date.now();
   for(const key of ["customers","sales","shipments","cash","expenses","otherIncome","orderCollections","carrierSettlements","audit"])if(!Array.isArray(db[key]))db[key]=[];
-  const qaTrackings=new Set(["QA-COL-MATCH","QA-COL-LOW","QA-COL-HIGH","QA-COL-SETTLED","QA-COL-ACCOUNTANT","QA-COL-ZERO","QA-COL-CONCURRENT"]);
+  const qaTrackings=new Set(["QA-COL-MATCH","QA-COL-LOW","QA-COL-HIGH","QA-COL-SETTLED","QA-COL-ACCOUNTANT","QA-COL-ZERO","QA-COL-CONCURRENT","QA-COL-NET","QA-COL-NETCOST","QA-COL-NETLOW"]);
   const previousQaCollectionIds=new Set(db.orderCollections.filter(item=>qaTrackings.has(item.trackingNumber)).map(item=>item.id));
   db.orderCollections=db.orderCollections.filter(item=>!qaTrackings.has(item.trackingNumber));
   db.shipments=db.shipments.filter(item=>!qaTrackings.has(item.trackingNumber||item.tracking));
@@ -38,7 +38,10 @@ async function request(path,{token,method="GET",body}={}){
     ["QA-COL-SETTLED","INV-QA-COL-4",2000,50],
     ["QA-COL-ACCOUNTANT","INV-QA-COL-5",600,0],
     ["QA-COL-ZERO","INV-QA-COL-6",0,0],
-    ["QA-COL-CONCURRENT","INV-QA-COL-7",750,0]
+    ["QA-COL-CONCURRENT","INV-QA-COL-7",750,0],
+    ["QA-COL-NET","INV-QA-COL-8",280,0],
+    ["QA-COL-NETCOST","INV-QA-COL-9",1000,50],
+    ["QA-COL-NETLOW","INV-QA-COL-10",280,0]
   ];
   for(const [tracking,invoice,total,cost] of fixtures){
     db.sales.push({id:invoice,total,customerId:`C-QA-${stamp}`,status:"معتمدة",date:"2026-07-28"});
@@ -105,5 +108,22 @@ async function request(path,{token,method="GET",body}={}){
   assert(reversed.status===200&&reversed.body.collection.status==="reversed","manager-level reversal preserves and marks original record");
   const corrected=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-MATCH",amount:1000,registrationType:"collected_by_carrier"}});
   assert(corrected.status===201,"reversed collection can be corrected without deleting history");
+
+  // The carrier's message carries the amount it transferred after its commission; the employee enters that amount.
+  const cashBeforeNet=(await request("/api/db",{token:owner})).body.cash;
+  const net=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-NET",receivedNetAmount:"٢٧٥",registrationType:"settled",account:"الخزينة الرئيسية"}});
+  assert(net.status===201&&net.body.collection.amount===280&&net.body.collection.difference===0&&net.body.collection.receivedNetAmount===275,"received 275 after 5 commission matches a 280 order");
+  const cashAfterNet=(await request("/api/db",{token:owner})).body.cash.filter(item=>item.collectionId===net.body.collection.id);
+  const netCash=cashAfterNet.reduce((sum,item)=>sum+(item.direction==="in"?1:-1)*Number(item.amount),0);
+  assert(netCash===275&&cashAfterNet.length===2,"cash account moves by exactly the received 275 (280 in, 5 commission out)");
+  assert(cashBeforeNet.every(item=>item.collectionId!==net.body.collection.id),"no earlier cash rows touched");
+  const netCost=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-NETCOST",receivedNetAmount:945,registrationType:"settled",account:"الخزينة الرئيسية"}});
+  assert(netCost.status===201&&netCost.body.collection.amount===1000&&netCost.body.collection.difference===0,"deducted shipping cost is added back too (945 + 5 + 50 = 1000)");
+  const netLowMissing=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-NETLOW",receivedNetAmount:270}});
+  assert(netLowMissing.status===400,"received amount below expected needs a difference reason");
+  const netLow=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-NETLOW",receivedNetAmount:270,differenceReason:"خصم من شركة الشحن"}});
+  assert(netLow.status===201&&netLow.body.collection.difference===-5&&netLow.body.collection.amount===275,"received 270 instead of 275 is a -5 difference");
+  const negative=await request("/api/finance/order-collections",{token:owner,method:"POST",body:{trackingNumber:"QA-COL-NETLOW",receivedNetAmount:-1}});
+  assert(negative.status===400||negative.status===409,"negative received amount refused");
   console.log("Order collection integration tests completed.");
 })().catch(error=>{console.error(`FAIL ${error.message}`);process.exitCode=1;});
