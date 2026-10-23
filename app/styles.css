@@ -2148,3 +2148,7 @@ button.shortage-stat.ok b{color:#1f7a45}
 
 .check-row { display:flex; align-items:center; gap:8px; margin:10px 0; font-weight:600; } .check-row input { width:18px; height:18px; }
 .take-reserved-list { display:grid; gap:6px; margin:10px 0; max-height:320px; overflow:auto; } .take-reserved-row { display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border:1px solid var(--line); border-radius:10px; cursor:pointer; } .take-reserved-row small { display:block; color:var(--muted); } .take-reserved-row input { margin-top:4px; }
+.orders-drafts-button.has-drafts{border-color:#f1d7a6;background:#fff9ee;color:#8a5a00}
+.orders-drafts-button.active{border:2px solid var(--primary);background:#eef6ff;color:var(--primary)}
+.draft-note{display:block;margin-top:6px;padding:4px 8px;border-radius:8px;font-style:normal;font-size:12px;font-weight:700}
+.draft-note.paid{background:#e6f6ec;color:#1f7a45}.draft-note.duplicate{background:#fdecea;color:#a3352d}

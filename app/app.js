@@ -3822,15 +3822,16 @@ function workflowModeTabs(active="orders") {
     <div class="orders-nav-actions">
       ${canAction("order.quick.create")?link({mode:"quick"},`<svg class="whatsapp-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3Zm0 1.8a7.2 7.2 0 1 1-3.7 13.4l-.3-.2-2.6.7.7-2.5-.2-.3A7.2 7.2 0 0 1 12 4.8Zm-3 3.6c-.2 0-.5 0-.7.3-.2.3-.9.9-.9 2.2s.9 2.5 1 2.7c.1.2 1.8 2.9 4.5 3.9 2.2.9 2.7.7 3.1.6.5 0 1.5-.6 1.7-1.2.2-.6.2-1.1.1-1.2l-.4-.3-1.6-.8c-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1-.3-.1-1.1-.4-2.1-1.3-.8-.7-1.3-1.5-1.4-1.8-.2-.3 0-.4.1-.5l.4-.5.3-.5v-.5l-.8-1.8c-.2-.4-.4-.4-.5-.4H9Z"/></svg> طلب جديد من واتساب`,`whatsapp-order-button ${active==="quick"?"active":""}`):""}
       ${canAction("order.website.view")?link({mode:"website"},`طلبات الموقع${pendingWebsite?` <b>${pendingWebsite}</b>`:""}`,`btn ghost ${active==="website"?"active":""}`):""}
-      ${unconfirmed.length?`<button type="button" class="unconfirmed-orders-alert" data-action="open-unconfirmed-orders">⚠ عندك ${unconfirmed.length===1?"طلب":`${unconfirmed.length} طلبات`} ما اتأكدش</button>`:""}
+      ${unconfirmed.length&&active!=="drafts"?`<button type="button" class="unconfirmed-orders-alert" data-action="open-unconfirmed-orders">⚠ عندك ${unconfirmed.length===1?"طلب":`${unconfirmed.length} طلبات`} ما اتأكدش</button>`:""}
     </div>
     <div class="orders-stage-row" role="group" aria-label="مراحل الطلب">${stages.map(([key,label,hint,total,target],index)=>link(target,`<span>${index+1} · ${label}</span><b>${total}</b>${hint?`<small>${hint}</small>`:""}`,`orders-stage ${current===key?"active":""}`)).join("")}</div>
     <div class="orders-nav-secondary" role="group" aria-label="كل الطلبات والملغي">
       ${link({mode:"orders"},`<span class="nav-icon" aria-hidden="true">☰</span> كل الطلبات <b>${live.length}</b>`,`orders-all-button ${active==="orders"&&!onlineOrderQuickFilter?"active":""}`)}
       ${link({mode:"orders",filter:"cancelled"},`<span class="nav-icon" aria-hidden="true">✕</span> ملغي / مرتجع <b>${stageCount("cancelled")}</b>`,`orders-cancelled-button ${current==="cancelled"?"active":""}`)}
       ${link({mode:"shortages"},`<span class="nav-icon" aria-hidden="true">📚</span> الكتب المطلوبة`,`orders-books-button ${active==="shortages"?"active":""}`)}
+      ${link({mode:"drafts"},`<span class="nav-icon" aria-hidden="true">📝</span> مسودات <b>${unconfirmed.length}</b>`,`orders-drafts-button ${unconfirmed.length?"has-drafts":""} ${active==="drafts"?"active":""}`)}
     </div>
-    ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):active==="preorders"?stageSearchBox("ابحث في الحجز المسبق: رقم الطلب، العميل، الموبايل، الكتاب"):""}
+    ${active==="preparation"?stageSearchBox("ابحث في الطلبات الجاهزة للتغليف: رقم الطلب، العميل، الموبايل، الكتاب"):active==="ready-shipping"?stageSearchBox("ابحث في الطلبات المغلفة: رقم الطلب، الفاتورة، العميل، الموبايل، المحافظة"):active==="shortages"?stageSearchBox("ابحث عن كتاب أو طلب: اسم الكتاب، الباركود، رقم الطلب، العميل"):active==="preorders"?stageSearchBox("ابحث في الحجز المسبق: رقم الطلب، العميل، الموبايل، الكتاب"):active==="drafts"&&unconfirmed.length>3?stageSearchBox("ابحث في المسودات: رقم الطلب، العميل، الموبايل، الكتاب"):""}
   </div>`;
 }
 
@@ -3942,6 +3943,39 @@ function renderPreordersScreen() {
     </div>
     <article class="card"><div class="table-wrap"><table class="preorders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>سبب الترحيل</th><th>منذ</th><th>الإجراء</th></tr></thead><tbody>
       ${shown.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong>${order.websiteOrderNumber?`<small>🌐 ${esc(order.websiteOrderNumber)}</small>`:""}${splitPartBadge(order)}</td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div></td><td>${reason(order)}</td><td><strong>${esc(sinceLabel(order.backorderSince||order.confirmedAt)||"—")}</strong></td><td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="6" class="muted">${filter?"مفيش طلبات في الفلتر ده دلوقتي.":"مفيش طلبات حجز مسبق دلوقتي."}</td></tr>`}
+    </tbody></table></div></article>`;
+}
+
+// A saved WhatsApp order that was never confirmed holds no copies. For each of its books this says what confirming it
+// now would do: reserve the copies (on the shelf) or turn the order into a pre-order (not enough free copies).
+function draftBookState(line) {
+  const book=getBook(line.bookId)||{},free=bookAvailableStock(book),qty=Number(line.qty||0);
+  if(free>=qty)return {cls:"ok",text:`متاح ${free} · هيتحجز لما تأكّد`};
+  return {cls:"buy",text:free>0?`متاح ${free} بس · الباقي هيبقى حجز مسبق`:"مش متاح · هيبقى حجز مسبق"};
+}
+
+// A confirmed order for the same customer and the same books created after the draft usually means the draft was
+// left behind and the order was entered again.
+function draftDuplicateOf(draft) {
+  const phone=normalizePhone(draft.phone).slice(-10),books=(draft.lines||[]).map(line=>line.bookId).sort().join("|");
+  if(!phone||!books)return null;
+  return (data.onlineOrders||[]).find(order=>order.id!==draft.id&&!order.deletedAt&&order.confirmedAt&&onlineOrderWorkflowStage(order)!=="cancelled"
+    &&normalizePhone(order.phone).slice(-10)===phone&&(order.lines||[]).map(line=>line.bookId).sort().join("|")===books
+    &&String(order.createdAt||"")>=String(draft.createdAt||""))||null;
+}
+
+function renderDraftsScreen() {
+  const drafts=unconfirmedOrders(),canEdit=canAction("order.quick.edit");
+  const books=order=>(order.lines||[]).map(line=>{const state=draftBookState(line);return `<span class="shortage-line">${esc(getBook(line.bookId)?.name||line.bookName||line.bookId)} × ${line.qty} <em class="preorder-state ${state.cls}">${esc(state.text)}</em></span>`;}).join("")||`<span class="muted">مفيش كتب</span>`;
+  const notes=order=>{
+    const duplicate=draftDuplicateOf(order),paid=Number(order.paidAmount||0);
+    return [paid>0?`<em class="draft-note paid">💰 العميل دافع ${money(paid)} والطلب لسه ما اتأكدش</em>`:"",
+      duplicate?`<em class="draft-note duplicate">⚠ غالبًا مكرر: نفس العميل ونفس الكتب في <button type="button" class="inline-link" data-action="view-online-order" data-id="${esc(duplicate.id)}">${esc(duplicate.id)}</button>${duplicate.status?` (${esc(duplicate.status)})`:""}</em>`:""].join("");
+  };
+  return `${workflowModeTabs("drafts")}
+    <div class="section-title"><div><span class="eyebrow">طلبات اتحفظت ومااتأكدتش</span><h2>مسودات</h2><p>المسودة مش حاجزة أي كتاب ومش داخلة في أي مرحلة. افتحها وكمّلها وأكّدها عشان الكتب تتحجز، أو الغيها لو الطلب اتعمل تاني.</p></div></div>
+    <article class="card"><div class="table-wrap"><table class="preorders-table drafts-table"><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب ولو أكّدته دلوقتي</th><th>اتعمل</th><th>الإجراء</th></tr></thead><tbody>
+      ${drafts.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${order.source==="whatsapp"?"واتساب":esc(order.source||"")}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div>${notes(order)}</td><td><strong>${esc(sinceLabel(order.createdAt)||"—")}</strong><small>${esc(order.createdBy||"")}</small><small>${esc(arabicDateTimeLabel(order.createdAt))}</small></td><td><div class="row-actions order-next-actions">${canEdit?`<button class="btn compact" data-action="edit-quick-order" data-id="${esc(order.id)}">فتح وتأكيد</button>`:""}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="5" class="muted">مفيش مسودات. كل الطلبات المحفوظة متأكدة.</td></tr>`}
     </tbody></table></div></article>`;
 }
 
@@ -4867,6 +4901,7 @@ function renderOnlineOrders() {
   if(onlineOrdersMode==="ready-shipping"){root.innerHTML=renderReadyShippingQueue();applyStageSearch();return;}
   if(onlineOrdersMode==="shortages"){root.innerHTML=renderShortagesScreen();applyStageSearch();return;}
   if(onlineOrdersMode==="preorders"){root.innerHTML=renderPreordersScreen();applyStageSearch();return;}
+  if(onlineOrdersMode==="drafts"){root.innerHTML=renderDraftsScreen();applyStageSearch();return;}
   if(onlineOrdersMode==="website"&&canAction("order.website.view")){root.innerHTML=renderWebsiteOrdersScreen();return;}
   if(onlineOrdersMode==="quick-shipping"){root.innerHTML=renderQuickShippingScreen();if (!liveRendering) setTimeout(()=>document.getElementById("quick-shipping-order-code")?.focus(),0);return;}
   const active = data.onlineOrders.filter(order => !order.deletedAt);
@@ -8777,7 +8812,7 @@ root.addEventListener("click", async event => {
   if (action === "online-order-stat") applyOnlineOrderQuickFilter(target.dataset.stat);
   if (action === "preorder-filter") { preorderFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "shortage-filter") { shortageFilter=target.dataset.filter||"";renderOnlineOrders();document.querySelector(".shortage-table")?.scrollIntoView({behavior:"smooth",block:"start"});return; }
-  if (action === "open-unconfirmed-orders") { const list=unconfirmedOrders();if(list.length===1&&canAction("order.quick.edit"))editQuickOrder(list[0].id);else{onlineOrdersMode="orders";onlineOrderQuickFilter="new";renderOnlineOrders();}return; }
+  if (action === "open-unconfirmed-orders") { stageSearchTerm="";onlineOrdersMode="drafts";renderOnlineOrders();return; }
   if (action === "orders-nav") { stageSearchTerm="";const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;if(nextMode==="orders")onlineOrderQuickFilter=target.dataset.filter||"";renderOnlineOrders();return; }
   if (action === "online-orders-mode") { const nextMode=target.dataset.mode;quickOrderAutofocusPending=nextMode==="quick"&&onlineOrdersMode!=="quick";onlineOrdersMode=nextMode;renderOnlineOrders(); }
   if(action==="shipping-select-all"){
