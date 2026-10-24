@@ -1293,8 +1293,10 @@ function shipmentStatusCode(item = {}) {
 }
 
 // The day the parcel left the library is the day its tracking code was entered (shippedAt). An undelivered parcel is
-// late after SHIPMENT_LATE_DAYS (owner's choice: 3; most orders arrive within 2 days).
+// late after SHIPMENT_LATE_DAYS of Egypt Post working days (owner's choice: 3), counted from the day after shipping;
+// Friday and Saturday are the post's days off and do not count. The calendar days shown stay as they are.
 const SHIPMENT_LATE_DAYS = 3;
+const POST_DAYS_OFF = [5, 6];
 function shipmentShippedAt(item = {}) { return item.shippedAt || item.createdAt || ""; }
 function shipmentDaysSinceShipped(item = {}) {
   const at = new Date(shipmentShippedAt(item));
@@ -1302,8 +1304,17 @@ function shipmentDaysSinceShipped(item = {}) {
   const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   return Math.max(0, Math.round((startOfDay(new Date()) - startOfDay(at)) / 86400000));
 }
+function shipmentWorkingDaysSinceShipped(item = {}, now = new Date()) {
+  const at = new Date(shipmentShippedAt(item));
+  if (Number.isNaN(at.getTime())) return null;
+  const day = new Date(at.getFullYear(), at.getMonth(), at.getDate()), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let count = 0;
+  for (day.setDate(day.getDate() + 1); day <= today; day.setDate(day.getDate() + 1)) if (!POST_DAYS_OFF.includes(day.getDay())) count++;
+  return count;
+}
 function shipmentIsOpen(item = {}) { return !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status) && !isTerminalShipment(item); }
-function shipmentIsLate(item = {}) { const days = shipmentDaysSinceShipped(item); return shipmentIsOpen(item) && days !== null && days >= SHIPMENT_LATE_DAYS; }
+function shipmentIsLate(item = {}) { const days = shipmentWorkingDaysSinceShipped(item); return shipmentIsOpen(item) && days !== null && days >= SHIPMENT_LATE_DAYS; }
+function shipmentWorkingDaysLabel(days) { return days === null ? "" : days === 0 ? "لسه ما بداش يوم شغل للبريد" : days === 1 ? "يوم شغل واحد للبريد" : days === 2 ? "يومين شغل للبريد" : `${days} أيام شغل للبريد`; }
 function shipmentDaysLabel(days) { return days === null ? "" : days === 0 ? "النهارده" : days === 1 ? "امبارح" : days === 2 ? "من يومين" : days <= 10 ? `من ${days} أيام` : `من ${days} يوم`; }
 // Open parcels first, the longest on the road at the top; delivered, returned and cancelled ones after, newest first.
 function sortShipmentsForFollowUp(list) {
@@ -6167,7 +6178,7 @@ function renderShipping() {
     </div>
     <div class="stats-grid">
       ${statCard("شحنات نشطة", active.length, "قابلة للمتابعة", "▣", "", "", "shipping:active")}
-      ${statCard("متأخرة", rows.filter(shipmentIsLate).length, `${SHIPMENT_LATE_DAYS} أيام أو أكتر من الشحن`, "!", "red", "", "shipping:delayed")}
+      ${statCard("متأخرة", rows.filter(shipmentIsLate).length, `${SHIPMENT_LATE_DAYS} أيام شغل أو أكتر (من غير الجمعة والسبت)`, "!", "red", "", "shipping:delayed")}
       ${statCard("مرتجعة", rows.filter(s => s.status === "مرتجع").length, "رجعت للمرسل", "↩", "red", "", "shipping:returned")}
       ${statCard("تحتاج متابعة", rows.filter(s => s.trackingError || s.manualInterventionNeeded).length, "تحديث لم يكتمل", "!", "gold", "", "shipping:error")}
     </div>
@@ -6203,7 +6214,7 @@ function shipmentsTable(list) {
     return `<tr data-record-type="shipment" data-record-id="${item.id}" class="${late ? "shipment-late" : ""}">
       <td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><span class="muted">${esc(item.invoiceId || item.id)}</span><span class="shipping-customer">${esc(item.customerName || item.customer || "—")}</span><span class="muted" dir="ltr">${esc(item.customerPhone || item.phone || "")}</span></td>
       <td><button type="button" class="shipping-code" data-action="copy-tracking-code" data-id="${item.id}" title="نسخ كود التتبع"><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong><span aria-hidden="true">⧉</span></button><span class="muted">${esc(item.carrier || item.company || "—")}</span></td>
-      <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
+      <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${days === null || terminal ? "" : `<span class="shipping-workdays" title="من تاني يوم الشحن، من غير الجمعة والسبت">${esc(shipmentWorkingDaysLabel(shipmentWorkingDaysSinceShipped(item)))}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
       <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td>
       <td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error" title="${esc(item.trackingError)}">تعذر آخر تحديث</span>` : item.trackingNotice ? `<span class="shipment-update-hint" title="${esc(item.trackingNotice)}">بانتظار إعادة المحاولة</span>` : ""}${complaintSummary}</td>
       <td><div class="shipping-row-actions">${trackingAction}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>

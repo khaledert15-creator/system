@@ -2174,3 +2174,4 @@ button.shortage-stat.ok b{color:#1f7a45}
 .party-suggestion-main span { margin-top: 2px; color: var(--muted); font-size: 12px; }
 .party-suggestion-balance { white-space: nowrap; font-weight: 700; }
 .party-search-suggestions .customer-no-results, .party-suggestion-more { padding: 10px 14px; color: var(--muted); font-size: 12px; }
+.shipping-workdays { color:var(--muted); font-size:11px; }
