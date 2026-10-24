@@ -2175,3 +2175,47 @@ button.shortage-stat.ok b{color:#1f7a45}
 .party-suggestion-balance { white-space: nowrap; font-weight: 700; }
 .party-search-suggestions .customer-no-results, .party-suggestion-more { padding: 10px 14px; color: var(--muted); font-size: 12px; }
 .shipping-workdays { color:var(--muted); font-size:11px; }
+
+/* Shipment cancellation dialog */
+.ship-cancel{display:grid;gap:14px}
+.ship-cancel-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:0;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--line);overflow:hidden}
+.ship-cancel-summary>div{padding:10px 12px;background:var(--canvas);min-width:0}
+.ship-cancel-summary dt{color:var(--muted);font-size:var(--text-helper);margin-bottom:3px}
+.ship-cancel-summary dd{margin:0;font-weight:700;color:var(--ink);overflow-wrap:anywhere}
+.ship-cancel-summary dd small{display:block;margin-top:2px;color:var(--muted);font-weight:500}
+.ship-cancel-step{display:grid;gap:10px}
+.ship-cancel-step>header{display:flex;align-items:flex-start;gap:10px}
+.ship-cancel-step>header>b{display:grid;place-items:center;flex:none;width:26px;height:26px;border-radius:50%;background:var(--green-50);color:var(--green-800);font-size:13px}
+.ship-cancel-step>header strong{display:block;font-size:var(--text-body)}
+.ship-cancel-step>header small{display:block;margin-top:2px;color:var(--muted);line-height:1.6}
+.ship-cancel input[type=radio],.ship-cancel input[type=checkbox]{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.ship-cancel-confirm{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1.5px solid #efc1c1;border-radius:var(--radius-card);background:#fff8f8;cursor:pointer;font-weight:700;transition:border-color .15s,background .15s}
+.ship-cancel-tick{display:grid;place-items:center;flex:none;width:22px;height:22px;border:2px solid #c9a3a3;border-radius:6px;background:#fff}
+.ship-cancel-confirm:has(input:checked){border-color:var(--success);background:#f0faf5}
+.ship-cancel-confirm:has(input:checked) .ship-cancel-tick{border-color:var(--success);background:var(--success)}
+.ship-cancel-confirm:has(input:checked) .ship-cancel-tick::after{content:"";width:6px;height:11px;border:solid #fff;border-width:0 2.5px 2.5px 0;transform:translateY(-1px) rotate(45deg)}
+.ship-cancel-confirm:has(input:focus-visible),.ship-cancel-option:has(input:focus-visible),.ship-cancel-segment label:has(input:focus-visible){outline:2px solid var(--green-700);outline-offset:2px}
+.ship-cancel-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.ship-cancel-option{position:relative;display:block;padding:12px 14px 12px 14px;padding-inline-start:40px;border:1.5px solid var(--line);border-radius:var(--radius-card);background:var(--surface);cursor:pointer;transition:border-color .15s,background .15s}
+.ship-cancel-option::before{content:"";position:absolute;inset-inline-start:14px;top:15px;width:16px;height:16px;border:2px solid #b9c6d4;border-radius:50%;background:#fff;box-sizing:border-box}
+.ship-cancel-option strong{display:block;font-size:var(--text-body)}
+.ship-cancel-option small{display:block;margin-top:4px;color:var(--muted);line-height:1.6}
+.ship-cancel-option:has(input:checked){border-color:var(--green-700);background:var(--green-50)}
+.ship-cancel-option:has(input:checked)::before{border:5px solid var(--green-700)}
+.ship-cancel-option.danger:has(input:checked){border-color:var(--danger);background:var(--danger-soft)}
+.ship-cancel-option.danger:has(input:checked)::before{border-color:var(--danger)}
+.ship-cancel-postal{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 12px;border-radius:var(--radius-card);background:var(--canvas)}
+.ship-cancel-postal>span{font-weight:600;font-size:13px}
+.ship-cancel-postal>input{flex-basis:100%;height:40px}
+.ship-cancel-segment{display:inline-flex;padding:3px;border:1px solid var(--line);border-radius:999px;background:#fff}
+.ship-cancel-segment label{padding:5px 14px;border-radius:999px;cursor:pointer;font-size:13px;color:var(--muted)}
+.ship-cancel-segment label:has(input:checked){background:var(--green-800);color:#fff;font-weight:700}
+.ship-cancel-chips{display:flex;flex-wrap:wrap;gap:6px}
+.ship-cancel-chips button{padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-size:13px;cursor:pointer}
+.ship-cancel-chips button:hover{border-color:var(--green-700)}
+.ship-cancel-chips button.active{border-color:var(--green-800);background:var(--green-800);color:#fff}
+.ship-cancel textarea{min-height:64px;resize:vertical}
+.ship-cancel-error{flex-basis:100%;margin:0;padding:10px 12px;border-radius:var(--radius-sm);background:var(--danger-soft);color:var(--danger);font-weight:700}
+.ship-cancel-actions{flex-wrap:wrap;position:sticky;bottom:-1px;margin:0 -4px;padding:12px 4px 4px;background:var(--surface);border-top:1px solid var(--line)}
+@media(max-width:700px){.ship-cancel-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ship-cancel-options{grid-template-columns:1fr}}
+.ship-cancel-actions .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}.ship-cancel-actions .btn.danger:disabled{opacity:.65}

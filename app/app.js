@@ -1772,7 +1772,8 @@ function normalizeData(value) {
   });
   normalized.onlineOrders.forEach(order => {
     const linkedSale = normalized.sales.find(sale => sale.id === order.saleId || sale.onlineOrderId === order.id);
-    const linkedShipment = normalized.shipments.find(shipment => shipment.id === order.shipmentId || shipment.onlineOrderId === order.id || shipment.invoiceId === linkedSale?.id);
+    // A cancelled shipment stays in the order's history but must not take the order out of «awaiting tracking code».
+    const linkedShipment = normalized.shipments.find(shipment => !shipment.deletedAt && !shipment.cancelledAt && shipment.normalizedStatus !== "cancelled" && (shipment.id === order.shipmentId || shipment.onlineOrderId === order.id || shipment.invoiceId === linkedSale?.id));
     if (linkedSale) {
       order.saleId = linkedSale.id;
       linkedSale.onlineOrderId = order.id;
@@ -4216,6 +4217,7 @@ function mergeWorkflowResult(result={}) {
   const upsert=(key,row)=>{if(!row?.id)return;data[key]=data[key]||[];const index=data[key].findIndex(item=>item.id===row.id);if(index>=0)data[key][index]={...data[key][index],...row};else data[key].push(row);};
   upsert("onlineOrders",result.order);
   upsert("customers",result.customer);
+  upsert("shipments",result.shipment);
 }
 
 let backgroundReloadTimer=null;
@@ -4224,6 +4226,7 @@ function scheduleBackgroundReload() {
   backgroundReloadTimer=setTimeout(()=>{
     reloadRemoteData().then(()=>{
       if(currentView==="onlineOrders"&&onlineOrdersMode!=="quick"&&modal.hidden)renderOnlineOrders();
+      else if(currentView==="shipping"&&modal.hidden)renderShipping();
     }).catch(()=>{});
   },250);
 }
@@ -10602,13 +10605,8 @@ modalBody.addEventListener("submit", async event => {
     });
     return;
   }
-  if(form.id==="shipment-cancellation-form"){
-    const button=form.querySelector('button[type="submit"]'),payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:formData.resolution,reason:String(formData.reason||"").trim(),postalChargeStatus:formData.postalChargeStatus||"charged",postalChargeReason:String(formData.postalChargeReason||"").trim()};
-    if(!payload.carrierCancelled)return toast("يجب تأكيد إلغاء الشحنة من نظام شركة الشحن أولًا.","error");
-    if(!payload.reason)return toast("اكتب سبب الإلغاء.","error");
-    if(payload.postalChargeStatus==="not_charged"&&!payload.postalChargeReason)return toast("اذكر سبب عدم احتساب البريد تكلفة الإلغاء.","error");
-    button.disabled=true;orderWorkflowRequest(`/api/shipping/shipments/${encodeURIComponent(form.dataset.id)}/cancel`,{body:payload}).then(result=>{closeModal();renderShipping();toast(result.resolution==="revise_shipment"?"أُلغيت الشحنة وعاد الطلب لانتظار كود جديد.":"أُلغيت الشحنة والطلب بالكامل.");}).catch(error=>{button.disabled=false;if(error.code==="PAYMENT_REFUND_REQUIRED")toast("يجب تسوية المبلغ المدفوع قبل إلغاء الطلب بالكامل.","error");else toast(error.message,"error");});return;
-  }
+  if(form.id==="shipment-cancellation-form"){submitShipmentCancellation(form);return;}
+
   if (form.id === "ready-order-shipment-form") {
     const button=form.querySelector('button[type="submit"]');button.disabled=true;
     shippingSessionCompany=formData.company;
@@ -11289,7 +11287,7 @@ function createShipmentFromOrder(id, details = null) {
   const sale = data.sales.find(invoice => invoice.id === order.saleId || invoice.onlineOrderId === order.id);
   if (!sale) return toast("يجب إنشاء فاتورة للطلب أولًا قبل إنشاء الشحنة.", "error");
   order.saleId = sale.id;
-  const existingShipment = data.shipments.find(shipment => !shipment.deletedAt && (shipment.id === order.shipmentId || shipment.onlineOrderId === order.id || shipment.invoiceId === sale.id));
+  const existingShipment = data.shipments.find(shipment => !shipment.deletedAt && !shipment.cancelledAt && shipment.normalizedStatus !== "cancelled" && (shipment.id === order.shipmentId || shipment.onlineOrderId === order.id || shipment.invoiceId === sale.id));
   if (existingShipment) {
     order.shipmentId = existingShipment.id;
     sale.shipmentId = existingShipment.id;
@@ -12461,11 +12459,70 @@ function deleteShipment(id) {
   cancelShipmentFlowModal(id);
 }
 
+const SHIPMENT_CANCEL_REASONS=["تعديل العنوان","العميل طلب الإلغاء","خطأ في البوليصة","تغيير شركة الشحن"];
+
 function cancelShipmentFlowModal(id){
   const shipment=data.shipments.find(item=>item.id===id&&!item.deletedAt);if(!shipment)return;
-  const postal=shipment.postalBillingManaged||/البريد المصري|egypt\s*post/i.test(String(shipment.company||shipment.carrier||""));
-  const postalCharge=postal?`<div class="form-field"><label>هل احتسب البريد تكلفة هذه الشحنة الملغاة؟</label><div class="resolution-options"><label><input type="radio" name="postalChargeStatus" value="charged" checked><span><strong>نعم، احتُسبت</strong><small>الوضع الافتراضي الآمن؛ تظهر ضمن مطابقة كشف البريد.</small></span></label><label><input type="radio" name="postalChargeStatus" value="not_charged"><span><strong>لا، لم تُحتسب</strong><small>يحتاج سببًا واضحًا وتأكيدًا من كشف البريد.</small></span></label></div></div><div class="form-field"><label>سبب عدم احتساب التكلفة (إذا اخترت لا)</label><input name="postalChargeReason" placeholder="مثال: أكد البريد حذف الشحنة من الكشف"></div>`:"";
-  openModal("إلغاء الشحنة","تأكيد الإلغاء لدى شركة الشحن",`<form id="shipment-cancellation-form" data-id="${esc(id)}"><div class="alert-item danger"><div class="alert-badge red">!</div><div><strong>ألغِ الشحنة من نظام شركة الشحن أولًا</strong><span>النظام لا يستطيع تأكيد الإلغاء لدى الشركة دون ربط API. سيبقى كود التتبع محفوظًا في سجل الطلب.</span></div></div><label class="choice-card mandatory-confirm"><input type="checkbox" name="carrierCancelled" required><span><strong>أؤكد أنني ألغيت الشحنة من نظام شركة الشحن</strong><small dir="ltr">${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label><div class="form-field"><label class="required">ماذا تريد بعد الإلغاء؟</label><div class="resolution-options"><label><input type="radio" name="resolution" value="revise_shipment" checked><span><strong>تعديل الشحنة وإعادة إرسالها</strong><small>يعود الطلب إلى انتظار كود جديد، ويمكن تعديل بيانات الشحن.</small></span></label><label><input type="radio" name="resolution" value="cancel_order"><span><strong>إلغاء الطلب بالكامل</strong><small>يتطلب اكتمال أي تسوية مالية، ويلغي الفاتورة وحركة المخزون بأمان.</small></span></label></div></div>${postalCharge}<div class="form-field"><label class="required">سبب الإلغاء</label><textarea name="reason" required placeholder="مثال: تعديل العنوان أو إلغاء العميل للطلب"></textarea></div><div class="form-actions"><button class="btn danger" type="submit">متابعة الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div></form>`);
+  const order=getOnlineOrder(shipment.onlineOrderId),tracking=shipment.trackingNumber||shipment.tracking||"";
+  const company=shipment.company||shipment.carrier||order?.shippingCompany||"";
+  const postal=shipment.postalBillingManaged||/البريد المصري|egypt\s*post/i.test(String(company));
+  const summary=[["كود التتبع",`<bdi dir="ltr">${esc(tracking||"—")}</bdi>`],["الطلب",esc(order?.id||shipment.onlineOrderId||"—")],["العميل",`${esc(order?.customerName||shipment.customerName||shipment.customer||"—")}<small dir="ltr">${esc(phonesText(order||shipment))}</small>`],["شركة الشحن",esc(company||"—")]];
+  const postalCharge=postal?`<div class="ship-cancel-postal"><span>هل احتسب البريد تكلفة الشحنة الملغاة؟</span><div class="ship-cancel-segment"><label><input type="radio" name="postalChargeStatus" value="charged" checked><span>نعم، احتُسبت</span></label><label><input type="radio" name="postalChargeStatus" value="not_charged"><span>لا، لم تُحتسب</span></label></div><input name="postalChargeReason" hidden placeholder="سبب عدم الاحتساب، مثال: أكد البريد حذف الشحنة من الكشف"></div>`:"";
+  openModal("إلغاء الشحنة","شركة الشحن",`<form id="shipment-cancellation-form" class="ship-cancel" data-id="${esc(id)}" novalidate>
+    <dl class="ship-cancel-summary">${summary.map(([label,value])=>`<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>
+    <section class="ship-cancel-step"><header><b>١</b><div><strong>ألغِ البوليصة من نظام شركة الشحن</strong><small>النظام غير مربوط بشركة الشحن، فالإلغاء لازم يتم هناك الأول. كود التتبع هيفضل محفوظ في سجل الطلب.</small></div></header>
+      <label class="ship-cancel-confirm"><input type="checkbox" name="carrierCancelled"><span class="ship-cancel-tick" aria-hidden="true"></span><span>ألغيت البوليصة <bdi dir="ltr">${esc(tracking)}</bdi> من نظام شركة الشحن</span></label>
+    </section>
+    <section class="ship-cancel-step"><header><b>٢</b><div><strong>إيه اللي يحصل للطلب؟</strong></div></header>
+      <div class="ship-cancel-options">
+        <label class="ship-cancel-option"><input type="radio" name="resolution" value="revise_shipment" checked><span><strong>يرجع لانتظار كود تتبع جديد</strong><small>يرجع لـ «مغلف ومنتظر كود تتبع» بنفس الفاتورة والكتب، وتقدر تعدّل بيانات الشحن وتصدّره تاني.</small></span></label>
+        <label class="ship-cancel-option danger"><input type="radio" name="resolution" value="cancel_order"><span><strong>إلغاء الطلب بالكامل</strong><small>تُلغى الفاتورة وترجع الكتب للمخزن. لازم تسوية أي مبلغ مدفوع الأول.</small></span></label>
+      </div>
+      ${postalCharge}
+    </section>
+    <section class="ship-cancel-step"><header><b>٣</b><div><strong>سبب الإلغاء</strong></div></header>
+      <div class="ship-cancel-chips">${SHIPMENT_CANCEL_REASONS.map(reason=>`<button type="button" data-cancel-reason="${esc(reason)}">${esc(reason)}</button>`).join("")}</div>
+      <textarea name="reason" rows="2" placeholder="اختار سبب من فوق أو اكتب السبب"></textarea>
+    </section>
+    <div class="form-actions ship-cancel-actions"><p class="ship-cancel-error" role="alert" hidden></p><button class="btn danger" type="submit">إلغاء الشحنة وإرجاعها لانتظار الكود</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
+  </form>`);
+  const form=document.getElementById("shipment-cancellation-form");
+  form.addEventListener("click",event=>{
+    const chip=event.target.closest("[data-cancel-reason]");if(!chip)return;
+    form.elements.reason.value=chip.dataset.cancelReason;
+    form.querySelectorAll("[data-cancel-reason]").forEach(item=>item.classList.toggle("active",item===chip));
+    showShipmentCancelError(form,"");
+  });
+  form.addEventListener("input",event=>{
+    if(event.target.name==="reason")form.querySelectorAll("[data-cancel-reason]").forEach(item=>item.classList.toggle("active",item.dataset.cancelReason===event.target.value.trim()));
+    if(event.target.name==="postalChargeStatus"&&form.elements.postalChargeReason)form.elements.postalChargeReason.hidden=event.target.value!=="not_charged";
+    if(event.target.name==="resolution")form.querySelector('button[type="submit"]').textContent=event.target.value==="cancel_order"?"إلغاء الشحنة والطلب":"إلغاء الشحنة وإرجاعها لانتظار الكود";
+    showShipmentCancelError(form,"");
+  });
+}
+
+function showShipmentCancelError(form,message) {
+  const box=form.querySelector(".ship-cancel-error");if(!box)return;
+  box.textContent=message;box.hidden=!message;
+}
+
+async function submitShipmentCancellation(form) {
+  const button=form.querySelector('button[type="submit"]');if(button.disabled)return;
+  const values=Object.fromEntries(new FormData(form));
+  const payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:values.resolution||"revise_shipment",reason:String(values.reason||"").trim(),postalChargeStatus:values.postalChargeStatus||"charged",postalChargeReason:String(values.postalChargeReason||"").trim()};
+  if(!payload.carrierCancelled)return showShipmentCancelError(form,"علّم إنك ألغيت البوليصة من نظام شركة الشحن الأول.");
+  if(payload.postalChargeStatus==="not_charged"&&!payload.postalChargeReason){form.elements.postalChargeReason?.focus();return showShipmentCancelError(form,"اكتب سبب عدم احتساب البريد للتكلفة.");}
+  if(!payload.reason){form.elements.reason.focus();return showShipmentCancelError(form,"اختار سبب الإلغاء أو اكتبه.");}
+  const label=button.textContent;button.disabled=true;button.textContent="جارٍ الإلغاء...";showShipmentCancelError(form,"");
+  try{
+    const result=await orderWorkflowRequest(`/api/shipping/shipments/${encodeURIComponent(form.dataset.id)}/cancel`,{body:payload,reload:"background"});
+    closeModal();
+    if(currentView==="onlineOrders")renderOnlineOrders();else if(currentView==="shipping")renderShipping();
+    toast(result.resolution==="revise_shipment"?`أُلغيت الشحنة ورجع الطلب ${result.order?.id||""} لـ «مغلف ومنتظر كود تتبع».`:`أُلغيت الشحنة والطلب ${result.order?.id||""} بالكامل.`);
+  }catch(error){
+    button.disabled=false;button.textContent=label;
+    showShipmentCancelError(form,error.code==="PAYMENT_REFUND_REQUIRED"?"لازم تسوية المبلغ المدفوع قبل إلغاء الطلب بالكامل، أو اختار «يرجع لانتظار كود تتبع جديد».":error.message);
+  }
 }
 
 const COMPLAINT_STATUSES = {
