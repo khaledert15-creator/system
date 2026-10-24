@@ -1696,6 +1696,8 @@ const LOCAL_RPA_BATCH_FALLBACK_CODES = new Set(["BATCH_FAILED", "BATCH_ITEM_MISS
 const TRACKING_SITE_PAUSE_MINUTES = { SITE_RATE_LIMITED: 15, SITE_BLOCKED: 30, HUMAN_VERIFICATION_REQUIRED: 30 };
 let trackingSitePausedUntil = 0;
 const TRACKING_BATCH_AHEAD_MS = 30 * 60000;
+// A tracking save refused because someone else saved during the search is applied again this many times in all.
+const TRACKING_SAVE_ATTEMPTS = 3;
 
 // Agent request ids are per shipment: the agent answers a repeated id with its earlier result, so sharing the
 // cycle's id would hand one shipment's result to the next.
@@ -1729,8 +1731,8 @@ async function prefetchLocalRpaBatch(shipments, requestId, { manual = false } = 
   }
 }
 
-async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false, prefetched = null } = {}) {
-  const useBatch = prefetched && !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode);
+async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false, prefetched = null, answers = null, replay = false } = {}) {
+  const useBatch = prefetched && (replay || !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode));
   let statusCode = 200;
   let data = prefetched;
   if (!useBatch) {
@@ -1739,6 +1741,7 @@ async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, req
     const trackPayload = { shipmentId: shipment.id, trackingNumber, provider: "egypt_post", requestId: agentRequestId, force: Boolean(manual) };
     ({ statusCode, data } = await requestLocalRpaTrack(trackPayload, agentRequestId, shipment.id));
   }
+  answers?.set(trackingNumber, data);
   // An answer for another code is never applied to this shipment.
   if (data.trackingNumber && normalizeTrackingNumber(data.trackingNumber) !== trackingNumber) {
     const error = new Error("وصلت نتيجة تتبع لرقم آخر؛ ستتم إعادة المحاولة.");
@@ -2438,7 +2441,7 @@ async function fetch17TrackTracking(db, shipment, settings, trackingNumber) {
   };
 }
 
-async function fetchTrackingFromProvider(db, shipment, requestId, { manual = false, prefetched = null } = {}) {
+async function fetchTrackingFromProvider(db, shipment, requestId, { manual = false, prefetched = null, answers = null, replay = false } = {}) {
   const settings = defaultTrackingSettings(db.settings || {});
   const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -2448,7 +2451,7 @@ async function fetchTrackingFromProvider(db, shipment, requestId, { manual = fal
     throw error;
   }
   if (TRACKING_RPA_ENABLED) {
-    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual, prefetched });
+    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual, prefetched, answers, replay });
   }
   return fetchEgyptPostBrowserTracking(db, shipment, settings, trackingNumber);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -2628,7 +2631,7 @@ function businessShipmentStatus(normalizedStatus, currentStatus = "") {
   return map[normalizedStatus] || currentStatus;
 }
 
-async function trackShipment(db, shipment, { manual = false, requestId = crypto.randomUUID(), prefetched = null } = {}) {
+async function trackShipment(db, shipment, { manual = false, requestId = crypto.randomUUID(), prefetched = null, answers = null, replay = false } = {}) {
   if (trackingActiveShipmentIds.has(shipment.id)) {
     return { ok: false, changed: false, duplicate: true, failureCode: "TRACKING_JOB_ALREADY_RUNNING", error: "يتم تتبع هذه الشحنة حاليًا." };
   }
@@ -2641,7 +2644,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
   shipment.trackingProvider = settings.providerName;
   trackingLog("backend_received", { requestId, shipmentId:shipment.id });
   try {
-    const result = await fetchTrackingFromProvider(db, shipment, requestId, { manual, prefetched });
+    const result = await fetchTrackingFromProvider(db, shipment, requestId, { manual, prefetched, answers, replay });
     shipment.lastTrackingSource = result.source || settings.providerEndpoint || "";
     shipment.lastTrackingHttpStatus = result.httpStatus || "";
     shipment.lastTrackingResponseAt = started;
@@ -2877,8 +2880,8 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
   const summary = { ok: true, requestId, batchId, checked: 0, successful: 0, failed: 0, manualIntervention: 0, changed: 0, unchanged: 0, startedAt, finishedAt: null, errors: [] };
   try {
     if (!fs.existsSync(DB_PATH)) return { ...summary, ok: false, message: "Database not initialized." };
-    const startingRevision = databasePersistence.revision();
-    const db = ensureTrackingDb(readDb());
+    let startingRevision = databasePersistence.revision();
+    let db = ensureTrackingDb(readDb());
     const settings = defaultTrackingSettings(db.settings || {});
     trackingRuntime.provider = settings.providerName;
     trackingRuntime.providerType = settings.providerType;
@@ -2892,51 +2895,79 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       trackingLog("shipment_not_found", { requestId, ok:false, level:"error", message:"SHIPMENT_NOT_FOUND" });
       return summary;
     }
-    const persistenceExpectations = [];
-    let batch = null;
-    let batchSupported = TRACKING_RPA_ENABLED;
-    for (const [index, shipment] of list.entries()) {
-      if (batchSupported && index % LOCAL_RPA_BATCH_SIZE === 0) {
-        batch = await prefetchLocalRpaBatch(list.slice(index, index + LOCAL_RPA_BATCH_SIZE), requestId, { manual });
-        batchSupported = batch.supported;
+    // Every agent answer is kept by tracking number. When the save is refused because someone saved during the
+    // search, the same answers are applied again to a fresh copy of the data, without searching the site again.
+    const answers = new Map();
+    let processedIds = [];
+    let persistenceExpectations = [];
+    const applyShipments = async (target, replay) => {
+      Object.assign(summary, { checked: 0, successful: 0, failed: 0, manualIntervention: 0, changed: 0, unchanged: 0, errors: [] });
+      delete summary.postponed;
+      delete summary.stoppedEarly;
+      persistenceExpectations = [];
+      const shipments = replay ? processedIds.map(id => target.shipments.find(item => item.id === id && !item.deletedAt)).filter(Boolean) : list;
+      let batch = null;
+      let batchSupported = TRACKING_RPA_ENABLED && !replay;
+      for (const [index, shipment] of shipments.entries()) {
+        const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
+        if (batchSupported && index % LOCAL_RPA_BATCH_SIZE === 0) {
+          batch = await prefetchLocalRpaBatch(shipments.slice(index, index + LOCAL_RPA_BATCH_SIZE), requestId, { manual });
+          batchSupported = batch.supported;
+        }
+        const prefetched = (replay ? answers.get(trackingNumber) : batch?.results.get(trackingNumber)) || null;
+        // A shipment with no answer to apply again (its search failed, or its code changed) waits for the next tick.
+        if (replay && !prefetched) continue;
+        if (!replay) processedIds.push(shipment.id);
+        summary.checked += 1;
+        const shipmentRunStartedAt = new Date().toISOString();
+        const result = await trackShipment(target, shipment, { manual, requestId, prefetched, answers, replay });
+        const runRecord = buildTrackingRunRecord(settings, shipment, shipmentRunStartedAt, result);
+        target.trackingRuns = target.trackingRuns || [];
+        const run = { id: nextId("TRUN-", target.trackingRuns), batchId: summary.batchId, requestId, manual: Boolean(manual), ...runRecord };
+        target.trackingRuns.push(run);
+        persistenceExpectations.push({ shipmentId:shipment.id, runId:run.id, successful:result.ok, fingerprints:result.newHistoryFingerprints || [], lastTrackedAt:shipment.lastTrackedAt || "" });
+        if (result.ok) summary.successful += 1;
+        else if (result.transient) summary.postponed = (summary.postponed || 0) + 1;
+        else {
+          summary.failed += 1;
+          if (result.manualIntervention) summary.manualIntervention += 1;
+          summary.errors.push({ shipmentId: shipment.id, error: result.error });
+        }
+        if (result.changed) summary.changed += 1;
+        else summary.unchanged += 1;
+        const pauseMinutes = TRACKING_SITE_PAUSE_MINUTES[result.failureCode];
+        if (pauseMinutes) {
+          // The rest of the list is left as it is and tracked once the site accepts lookups again.
+          if (!replay) trackingSitePausedUntil = Date.now() + pauseMinutes * 60000;
+          summary.stoppedEarly = { failureCode: result.failureCode, remaining: shipments.length - summary.checked, pausedUntil: new Date(trackingSitePausedUntil).toISOString() };
+          if (!replay) trackingLog("cycle_stopped", { requestId, shipmentId:shipment.id, ok:false, level:"warn", message:result.failureCode });
+          break;
+        }
+        if (replay) continue;
+        // Answers from a batch search need no wait; the agent spaces its own searches.
+        const fromBatch = prefetched && !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode);
+        const delayMs = Math.max(settings.rateLimitMs || 0, settings.minDelaySeconds * 1000);
+        if (!fromBatch && delayMs > 0 && summary.checked < shipments.length) await new Promise(resolve => setTimeout(resolve, delayMs));
       }
-      const prefetched = batch?.results.get(normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking)) || null;
-      summary.checked += 1;
-      const shipmentRunStartedAt = new Date().toISOString();
-      const result = await trackShipment(db, shipment, { manual, requestId, prefetched });
-      const runRecord = buildTrackingRunRecord(settings, shipment, shipmentRunStartedAt, result);
-      db.trackingRuns = db.trackingRuns || [];
-      const run = { id: nextId("TRUN-", db.trackingRuns), batchId: summary.batchId, requestId, manual: Boolean(manual), ...runRecord };
-      db.trackingRuns.push(run);
-      persistenceExpectations.push({ shipmentId:shipment.id, runId:run.id, successful:result.ok, fingerprints:result.newHistoryFingerprints || [], lastTrackedAt:shipment.lastTrackedAt || "" });
-      if (result.ok) summary.successful += 1;
-      else if (result.transient) summary.postponed = (summary.postponed || 0) + 1;
-      else {
-        summary.failed += 1;
-        if (result.manualIntervention) summary.manualIntervention += 1;
-        summary.errors.push({ shipmentId: shipment.id, error: result.error });
-      }
-      if (result.changed) summary.changed += 1;
-      else summary.unchanged += 1;
-      const pauseMinutes = TRACKING_SITE_PAUSE_MINUTES[result.failureCode];
-      if (pauseMinutes) {
-        // The rest of the list is left as it is and tracked once the site accepts lookups again.
-        trackingSitePausedUntil = Date.now() + pauseMinutes * 60000;
-        summary.stoppedEarly = { failureCode: result.failureCode, remaining: list.length - summary.checked, pausedUntil: new Date(trackingSitePausedUntil).toISOString() };
-        trackingLog("cycle_stopped", { requestId, shipmentId:shipment.id, ok:false, level:"warn", message:result.failureCode });
+    };
+    await applyShipments(db, false);
+    for (let attempt = 1; ; attempt += 1) {
+      summary.finishedAt = new Date().toISOString();
+      db.trackingRuns = slimTrackingRuns((db.trackingRuns || []).slice(-500));
+      db.trackingRunBatches = db.trackingRunBatches || [];
+      db.trackingRunBatches.push({ id: summary.batchId, ...summary, manual, provider: settings.providerName });
+      db.trackingRunBatches = db.trackingRunBatches.slice(-100);
+      try {
+        writeDb(db, { expectedRevision:startingRevision, operationType:"TRACKING_CYCLE", performedBy:"tracking-worker" });
         break;
+      } catch (error) {
+        if (error.code !== "DATABASE_WRITE_BLOCKED_STALE_REVISION" || attempt >= TRACKING_SAVE_ATTEMPTS || !answers.size) throw error;
+        trackingLog("save_retry", { requestId, ok:false, level:"warn", message:`stale revision ${error.expectedRevision} -> ${error.currentRevision}, attempt ${attempt + 1}` });
+        startingRevision = databasePersistence.revision();
+        db = ensureTrackingDb(readDb());
+        await applyShipments(db, true);
       }
-      // Answers from a batch search need no wait; the agent spaces its own searches.
-      const fromBatch = prefetched && !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode);
-      const delayMs = Math.max(settings.rateLimitMs || 0, settings.minDelaySeconds * 1000);
-      if (!fromBatch && delayMs > 0 && summary.checked < list.length) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
-    summary.finishedAt = new Date().toISOString();
-    db.trackingRuns = slimTrackingRuns((db.trackingRuns || []).slice(-500));
-    db.trackingRunBatches = db.trackingRunBatches || [];
-    db.trackingRunBatches.push({ id: summary.batchId, ...summary, manual, provider: settings.providerName });
-    db.trackingRunBatches = db.trackingRunBatches.slice(-100);
-    writeDb(db, { expectedRevision:startingRevision, operationType:"TRACKING_CYCLE", performedBy:"tracking-worker" });
     const persisted = ensureTrackingDb(readDb());
     for (const expected of persistenceExpectations) {
       const savedShipment = persisted.shipments.find(item => item.id === expected.shipmentId);

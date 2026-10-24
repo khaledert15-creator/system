@@ -37,7 +37,7 @@ function fakeAgent(state){
       return reply(202,{status:'accepted',requestId:id});
     }
     const m=url.pathname.match(/^\/track\/(.+)$/);
-    if(req.method==='GET'&&m)return jobs.has(m[1])?reply(200,jobs.get(m[1])):reply(404,{});
+    if(req.method==='GET'&&m){if(jobs.has(m[1])&&state.duringSearch){state.duringSearch();state.duringSearch=null;}return jobs.has(m[1])?reply(200,jobs.get(m[1])):reply(404,{});}
     reply(404,{status:'not_found'});
   });});
 }
@@ -47,7 +47,7 @@ async function withSystem(state,codes,run,{env={},patch=()=>{}}={}){
   try{
     const agentPort=await freePort();agent=fakeAgent(state).listen(agentPort,'127.0.0.1');
     fs.cpSync('app',path.join(temp,'app'),{recursive:true});fs.copyFileSync('server-node.js',path.join(temp,'server-node.js'));fs.mkdirSync(path.join(temp,'data'));
-    const salt='s',password='test-password',dbFile=path.join(temp,'data/database.json'),now=new Date().toISOString();
+    const salt='s',password='test-password',dbFile=path.join(temp,'data/database.json'),now=new Date().toISOString();state.dbFile=dbFile;
     const shipment=(id,trackingNumber)=>({id,trackingNumber,tracking:trackingNumber,carrier:'البريد المصري',company:'البريد المصري',carrierCode:'EGYPT_POST',trackingEnabled:true,status:'تم الشحن',shippingStatus:'shipped',normalizedStatus:'shipped',createdAt:now,updatedAt:now});
     fs.writeFileSync(dbFile,JSON.stringify({version:4,meta:{dataRevision:0},
       users:[{id:'U1',username:'owner',name:'Owner',role:'مالك',active:true,salt,passwordHash:crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex')}],
@@ -131,6 +131,34 @@ const ownEventsOnly=(db,shipment)=>{
       for(const id of ['SH-2','SH-3']){const s=db.shipments.find(x=>x.id===id);assert(!s.lastTrackingAt,`${id} untouched`);assert(!s.manualInterventionNeeded,`${id} not flagged`);}
     });
     console.log('PASS a blocking site stops the cycle at once and leaves the other shipments untouched');
+  }
+
+  // 5. Someone saves while the batch search is running: the tracking save is refused once, then applied again to
+  // the fresh data. The staff edit stays, every result is saved, and the site is not searched again.
+  {
+    const codes=['ENO11111111EG','ENO22222222EG','ENO33333333EG'];
+    const state={mode:'batch',calls:[],duringSearch(){
+      const db=JSON.parse(fs.readFileSync(state.dbFile,'utf8'));
+      db.meta.dataRevision+=1;
+      const s=db.shipments.find(x=>x.id==='SH-2');s.notes='edited by staff';s.customerName='عميل معدّل';
+      db.sales.push({id:'S-STAFF'});
+      fs.writeFileSync(state.dbFile,JSON.stringify(db));
+    }};
+    await withSystem(state,codes,async({runAll,read})=>{
+      const summary=await runAll();
+      assert.equal(summary.ok,true,JSON.stringify(summary.errors));
+      assert.equal(summary.successful,3);
+      const db=read();
+      const edited=db.shipments.find(x=>x.id==='SH-2');
+      assert.equal(edited.notes,'edited by staff','the staff edit is kept');
+      assert.equal(edited.customerName,'عميل معدّل');
+      assert(db.sales.some(x=>x.id==='S-STAFF'),'the other save is kept');
+      for(const id of ['SH-1','SH-2','SH-3']){const s=db.shipments.find(x=>x.id===id);assert.equal(s.normalizedStatus,'in_transit',id);assert(s.lastTrackedAt,id);ownEventsOnly(db,s);}
+      assert.equal(db.trackingRuns.filter(r=>r.batchId===summary.batchId).length,3,'one run per shipment, no duplicates');
+      assert.equal(new Set(db.trackingHistory.map(r=>r.eventFingerprint)).size,db.trackingHistory.length,'no duplicate history rows');
+      assert.equal(state.calls.length,1,'the site is searched once');
+    });
+    console.log('PASS a save made during the search does not lose the tracking results; the staff edit stays and the site is searched once');
   }
 
   // 4. Worker tick: one shipment is due; three more fall due within 30 minutes and join its batch; one due in 2 h
