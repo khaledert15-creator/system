@@ -17,7 +17,7 @@ const c={data:{customers,suppliers:[]},partyTab:'customers',partySearchTerm:'',i
  document:{getElementById:id=>nodes[id],activeElement:nodes['party-search']},
  esc:v=>String(v??''),money:v=>`${v} ج.م`,badge:v=>v,partyRow:item=>`<tr>${item.id}</tr>`,scheduleStickyTableScrollbar(){}};
 vm.createContext(c);
-vm.runInContext([source.slice(blockStart,blockEnd),fn('normalizeArabicDigits'),fn('customerSearchFields'),fn('filterParties'),fn('renderPartySearchSuggestions'),fn('closePartySearchSuggestions')].join('\n'),c);
+vm.runInContext([source.slice(blockStart,blockEnd),fn('normalizeArabicDigits'),fn('normalizePhone'),fn('recordPhones'),fn('phonesText'),fn('customerSearchFields'),fn('filterParties'),fn('renderPartySearchSuggestions'),fn('closePartySearchSuggestions')].join('\n'),c);
 const search=q=>{nodes['party-search'].value=q;c.filterParties();return nodes['party-search-suggestions'].innerHTML;};
 
 let html=search('عبير');

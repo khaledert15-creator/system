@@ -969,7 +969,7 @@ function createReadyOrderShipment(db,order,payload,user) {
     tracking:trackingNumber,trackingNumber,trackingEnabled:/البريد المصري|egypt post/i.test(company),
     trackingProvider:/البريد المصري|egypt post/i.test(company)?db.settings?.tracking?.providerName||"":"",
     customerId:sale.customerId||order.customerId||"",customer:snapshot.name||order.customerName||"",customerName:snapshot.name||order.customerName||"",
-    phone:snapshot.phone||order.phone||"",customerPhone:snapshot.phone||order.phone||"",
+    phone:snapshot.phone||order.phone||"",customerPhone:snapshot.phone||order.phone||"",alternativePhone:order.alternativePhone||"",
     governorate:snapshot.governorate||order.governorate||"",city:snapshot.city||order.city||"",address:snapshot.address||order.address||"",
     cost:postalCostQuote?.totalCost||0,carrierShippingCostExpected:postalCostQuote?.totalCost||0,
     packedWeightGrams,postalCostQuote:postalCostQuote?{...postalCostQuote,tariffSnapshot:order.postalCostQuote?.tariffSnapshot||postalTariff(db)}:null,
@@ -3470,7 +3470,7 @@ const server = http.createServer(async (req, res) => {
       const phone=normalizeCustomerPhone(payload.phone);
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
       db.customers=db.customers||[];db.onlineOrders=db.onlineOrders||[];db.books=db.books||[];
-      let customer=db.customers.find(item=>!item.deletedAt&&normalizeCustomerPhone(item.phone)===phone);
+      let customer=db.customers.find(item=>!item.deletedAt&&normalizeCustomerPhone(item.phone)===phone)||db.customers.find(item=>!item.deletedAt&&normalizeCustomerPhone(item.alternativePhone)===phone);
       const now=new Date().toISOString();
       const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
       if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
@@ -4062,7 +4062,7 @@ const server = http.createServer(async (req, res) => {
         const invalid=orders.map((order,index)=>!order?ids[index]:order.workflowStage!=="awaiting_shipping"||!order.preparedAt||order.shipmentId||!order.saleId?order.id:null).filter(Boolean);
         if(invalid.length)return send(res,409,{ok:false,code:"ORDERS_NOT_EXPORTABLE",message:`هذه الطلبات غير جاهزة للتصدير: ${invalid.join("، ")}`});
         const now=new Date().toISOString(),batchId=`SHIP-EXPORT-${now.replace(/\D/g,"").slice(0,14)}-${crypto.randomUUID().slice(0,8)}`;
-        const rows=orders.map(order=>ShippingBatchXlsx.orderToUploadRow(order,{books:db.books||[],merchantName:payload.merchantName||"مكتبة دوت كوم",warehouseName:payload.warehouseName||"المخزن الرئيسي"}));
+        const rows=orders.map(order=>ShippingBatchXlsx.orderToUploadRow({...order,alternativePhone:order.alternativePhone||(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt)?.alternativePhone||""},{books:db.books||[],merchantName:payload.merchantName||"مكتبة دوت كوم",warehouseName:payload.warehouseName||"المخزن الرئيسي"}));
         for(const order of orders){order.shippingExport={batchId,exportedAt:now,exportedBy:user.name||user.username,exportedByUsername:user.username};order.updatedAt=now;appendOrderAudit(db,user,order,"تصدير الطلب لشركة الشحن",batchId);}
         writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SHIPPING_BATCH_EXPORTED",performedBy:user.username});
         return send(res,200,ShippingBatchXlsx.workbookBuffer(rows),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",{"Content-Disposition":`attachment; filename="shipping-batch-${now.slice(0,10)}.xlsx"`,"X-Shipping-Batch-Id":batchId,"X-DB-Revision":dbRevision()});

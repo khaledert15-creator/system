@@ -37,7 +37,7 @@ const sandbox = {
   workflowModeTabs:active => `<nav data-active="${active}"></nav>`, orderSearchAttr:order => `data-search-row data-search="${order.id}"`
 };
 vm.createContext(sandbox);
-vm.runInContext(["draftBookState", "draftDuplicateOf", "renderDraftsScreen"].map(extract).join("\n"), sandbox);
+vm.runInContext(["recordPhones", "phonesText", "draftBookState", "draftDuplicateOf", "renderDraftsScreen"].map(extract).join("\n"), sandbox);
 const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };
 
 pass("each book says whether confirming now reserves it or makes a pre-order", () => {

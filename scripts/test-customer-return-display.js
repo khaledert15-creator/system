@@ -43,7 +43,7 @@ Object.assign(pricingContext, {
   esc: value => String(value ?? ""),
   openModal: (...args) => saleViews.push(args)
 });
-vm.runInContext(app.slice(saleViewStart, saleViewEnd), pricingContext);
+vm.runInContext(app.slice(app.indexOf("function normalizePhone(value) {"), app.indexOf("function normalizeTrackingNumber(")) + app.slice(saleViewStart, saleViewEnd), pricingContext);
 vm.runInContext('viewSale("INV-1")', pricingContext);
 assert.match(saleViews[0][2], /خصم الفاتورة للنسخة/);
 assert.match(saleViews[0][2], /22\.92 ج\.م/);

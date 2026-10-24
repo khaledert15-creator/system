@@ -1240,6 +1240,26 @@ function normalizePhone(value) {
     .replace(/\D/g, "");
 }
 
+// The alternative phone counts as one of the record's numbers wherever the main phone is shown or matched.
+function recordPhones(record) {
+  const seen = new Set();
+  return [record?.phone, record?.alternativePhone].map(value => String(value || "").trim()).filter(value => {
+    const key = normalizePhone(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function phonesText(record, fallback = "") {
+  return recordPhones(record).join(" / ") || fallback;
+}
+
+function customerHasPhone(customer, phone) {
+  const key = normalizePhone(phone);
+  return Boolean(key) && recordPhones(customer).some(value => normalizePhone(value) === key);
+}
+
 function normalizeTrackingNumber(value = "") {
   return String(value || "").replace(/\s+/g, "").toUpperCase();
 }
@@ -2892,7 +2912,7 @@ function showDashboardStatDetails(type) {
         <div class="mini-metric"><span>متجاوزو الحد</span><strong>${debtors.filter(customer => customer.creditLimit && customer.balance > customer.creditLimit).length}</strong></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>العميل</th><th>الموبايل</th><th>الرصيد</th><th>الحد الائتماني</th><th>الحالة</th><th></th></tr></thead><tbody>
-        ${debtors.map(customer => `<tr><td><strong>${esc(customer.name)}</strong></td><td><span dir="ltr">${esc(customer.phone || "—")}</span></td><td class="money">${money(customer.balance)}</td><td class="money">${money(customer.creditLimit)}</td><td>${customer.creditLimit && customer.balance > customer.creditLimit ? badge("متجاوز الحد", "danger") : badge("قائم", "warning")}</td><td><div class="row-actions"><button class="row-action" data-modal-action="dashboard-statement" data-id="${customer.id}">كشف حساب</button><button class="row-action" data-modal-action="dashboard-receipt" data-id="${customer.id}">إيصال استلام</button></div></td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد مديونيات عملاء حاليًا.</td></tr>`}
+        ${debtors.map(customer => `<tr><td><strong>${esc(customer.name)}</strong></td><td><span dir="ltr">${esc(phonesText(customer, "—"))}</span></td><td class="money">${money(customer.balance)}</td><td class="money">${money(customer.creditLimit)}</td><td>${customer.creditLimit && customer.balance > customer.creditLimit ? badge("متجاوز الحد", "danger") : badge("قائم", "warning")}</td><td><div class="row-actions"><button class="row-action" data-modal-action="dashboard-statement" data-id="${customer.id}">كشف حساب</button><button class="row-action" data-modal-action="dashboard-receipt" data-id="${customer.id}">إيصال استلام</button></div></td></tr>`).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد مديونيات عملاء حاليًا.</td></tr>`}
       </tbody></table></div>
       <div class="form-actions"><button class="btn" data-modal-action="dashboard-go-parties">إدارة العملاء</button><button class="btn ghost" data-modal-action="dashboard-go" data-view="accounting">الخزنة والإيصالات</button></div>`);
     return;
@@ -2964,7 +2984,7 @@ function saleCustomerDetailsMarkup(customer) {
   }
   return `<div class="customer-summary">
     <strong>${esc(customer.name)} <small>${esc(customer.id)}</small></strong>
-    <span><b>الهاتف:</b> <span dir="ltr">${esc(customer.phone || "—")}</span></span>
+    <span><b>الهاتف:</b> <span dir="ltr">${esc(phonesText(customer, "—"))}</span></span>
     <span><b>العنوان:</b> ${esc([customer.governorate, customer.city, customer.address].filter(Boolean).join("، ") || "غير مسجل")}</span>
   </div>`;
 }
@@ -2974,7 +2994,7 @@ function saleCustomerChoiceButton(customer) {
   return `<button type="button" class="sale-customer-result${isCurrent ? " is-current" : ""}" data-action="choose-sale-customer" data-id="${esc(customer.id)}" ${isCurrent ? 'aria-current="true"' : ""}>
     <span class="sale-customer-result-copy">
       <strong>${esc(customer.name)}</strong>
-      <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span></span>
+      <span><span dir="ltr">${esc(phonesText(customer, "بدون هاتف"))}</span></span>
       <small>${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || "العنوان غير مسجل")}</small>
     </span>
     ${isCurrent ? '<span class="sale-customer-current-badge">العميل الحالي</span>' : '<span class="sale-customer-select-hint">اختيار</span>'}
@@ -3137,7 +3157,7 @@ function salesMainInvoicesTable(list) {
         <td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong></td>
         <td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td>
         <td>${esc(customer?.name || snapshot.name || "عميل غير محدد")}</td>
-        <td><span dir="ltr">${esc(customer?.phone || snapshot.phone || "—")}</span></td>
+        <td><span dir="ltr">${esc(phonesText(customer || snapshot, "—"))}</span></td>
         <td>${esc(sale.channel || "—")}</td>
         <td>${esc(sale.saleOperationType || sale.operationType || "بيع مباشر")}</td>
         <td>${esc(sale.payment || "—")}</td>
@@ -3508,12 +3528,13 @@ function orderIssueNote(order, { full=false }={}) {
 function quickOrderCustomer() {
   const phone=normalizePhone(quickOrderDraft.phone);
   if(phone.length<11)return null;
-  return (data.customers||[]).find(item=>!item.deletedAt&&normalizePhone(item.phone)===phone)||null;
+  const customers=(data.customers||[]).filter(item=>!item.deletedAt);
+  return customers.find(item=>normalizePhone(item.phone)===phone)||customers.find(item=>normalizePhone(item.alternativePhone)===phone)||null;
 }
 
 function quickOrderCustomerInsight(customer=quickOrderCustomer()) {
   if(!customer)return null;
-  const orders=(data.onlineOrders||[]).filter(order=>!order.deletedAt&&(order.customerId===customer.id||normalizePhone(order.phone)===normalizePhone(customer.phone))).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+  const orders=(data.onlineOrders||[]).filter(order=>!order.deletedAt&&(order.customerId===customer.id||customerHasPhone(customer,order.phone))).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
   return {count:orders.length,last:orders[0]||null};
 }
 
@@ -3993,7 +4014,7 @@ function renderPreordersScreen() {
       ${box("partial",partial.length,"جزء من كتبه متاح","تقدر تشحن الموجود")}
     </div>
     <article class="card"><div class="table-wrap"><table class="preorders-table"><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>سبب الترحيل</th><th>منذ</th><th>الإجراء</th></tr></thead><tbody>
-      ${shown.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong>${order.websiteOrderNumber?`<small>🌐 ${esc(order.websiteOrderNumber)}</small>`:""}${splitPartBadge(order)}</td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div></td><td>${reason(order)}</td><td><strong>${esc(sinceLabel(order.backorderSince||order.confirmedAt)||"—")}</strong></td><td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="6" class="muted">${filter?"مفيش طلبات في الفلتر ده دلوقتي.":"مفيش طلبات حجز مسبق دلوقتي."}</td></tr>`}
+      ${shown.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong>${order.websiteOrderNumber?`<small>🌐 ${esc(order.websiteOrderNumber)}</small>`:""}${splitPartBadge(order)}</td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(phonesText(order))}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div></td><td>${reason(order)}</td><td><strong>${esc(sinceLabel(order.backorderSince||order.confirmedAt)||"—")}</strong></td><td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="6" class="muted">${filter?"مفيش طلبات في الفلتر ده دلوقتي.":"مفيش طلبات حجز مسبق دلوقتي."}</td></tr>`}
     </tbody></table></div></article>`;
 }
 
@@ -4026,7 +4047,7 @@ function renderDraftsScreen() {
   return `${workflowModeTabs("drafts")}
     <div class="section-title"><div><span class="eyebrow">طلبات اتحفظت ومااتأكدتش</span><h2>مسودات</h2><p>المسودة مش حاجزة أي كتاب ومش داخلة في أي مرحلة. افتحها وكمّلها وأكّدها عشان الكتب تتحجز، أو الغيها لو الطلب اتعمل تاني.</p></div></div>
     <article class="card"><div class="table-wrap"><table class="preorders-table drafts-table"><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب ولو أكّدته دلوقتي</th><th>اتعمل</th><th>الإجراء</th></tr></thead><tbody>
-      ${drafts.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${order.source==="whatsapp"?"واتساب":esc(order.source||"")}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div>${notes(order)}</td><td><strong>${esc(sinceLabel(order.createdAt)||"—")}</strong><small>${esc(order.createdBy||"")}</small><small>${esc(arabicDateTimeLabel(order.createdAt))}</small></td><td><div class="row-actions order-next-actions">${canEdit?`<button class="btn compact" data-action="edit-quick-order" data-id="${esc(order.id)}">فتح وتأكيد</button>`:""}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="5" class="muted">مفيش مسودات. كل الطلبات المحفوظة متأكدة.</td></tr>`}
+      ${drafts.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${order.source==="whatsapp"?"واتساب":esc(order.source||"")}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(phonesText(order))}</small><small class="order-payment-mini">${money(order.total||0)} · مدفوع ${money(order.paidAmount||0)}</small></td><td><div class="shortage-lines">${books(order)}</div>${notes(order)}</td><td><strong>${esc(sinceLabel(order.createdAt)||"—")}</strong><small>${esc(order.createdBy||"")}</small><small>${esc(arabicDateTimeLabel(order.createdAt))}</small></td><td><div class="row-actions order-next-actions">${canEdit?`<button class="btn compact" data-action="edit-quick-order" data-id="${esc(order.id)}">فتح وتأكيد</button>`:""}${onlineOrderMoreActions(order)}</div></td></tr>`).join("")||`<tr><td colspan="5" class="muted">مفيش مسودات. كل الطلبات المحفوظة متأكدة.</td></tr>`}
     </tbody></table></div></article>`;
 }
 
@@ -4065,7 +4086,7 @@ function renderShortagesScreen() {
       </tbody></table></div></article>
     <article class="card" style="margin-top:16px"><div class="card-header"><div><h3>طلبات متوقفة على توفير كتب</h3><p>لا تُحجز لها نسخ أثناء الانتظار؛ عند توفر كل كتب الطلب تنتقل للتجهيز تلقائيًا بالأقدم أولًا.</p></div>${badge(`${orders.length} طلب`,orders.length?"warning":"")}</div>
       <div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>الكتب الناقصة</th><th>الإجمالي / المدفوع</th><th>منذ</th><th></th></tr></thead><tbody>
-      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(order.phone||"")}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}${splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:""}${onlineOrderMoreActions(order)}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
+      ${orders.length?orders.map(order=>`<tr data-record-type="online-order" data-record-id="${order.id}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong></td><td>${esc(order.customerName||"")}<br><span dir="ltr" class="muted">${esc(phonesText(order))}</span></td><td><div class="shortage-lines">${orderBooks(order)}</div>${orderIssueNote(order)}</td><td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)}</span></td><td><strong>${sinceLabel(order.backorderSince||order.confirmedAt)||"—"}</strong><small class="muted shortage-date">${arabicDateTimeLabel(order.backorderSince||order.confirmedAt)}</small></td><td><div class="row-actions">${canEdit&&backorderAllocatable(order)?`<button class="btn compact" data-action="backorder-allocate" data-id="${order.id}">نقل للتجهيز الآن</button>`:""}${splitShipmentEligible(order)?`<button class="btn ghost compact" data-action="split-shipment" data-id="${order.id}" title="بموافقة العميل على رسوم شحنة ثانية">شحن المتوفر الآن</button>`:""}${onlineOrderMoreActions(order)}</div></td></tr>`).join(""):`<tr><td colspan="6" class="muted">لا توجد طلبات متوقفة.</td></tr>`}
       </tbody></table></div></article>`;
 }
 
@@ -4182,7 +4203,7 @@ async function allocateBackorder(id) {
 
 function renderPreparationQueue() {
   const rows=preparationOrders();
-  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(order.phone||"")}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button>${onlineOrderMoreActions(order)}</td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
+  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(phonesText(order))}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button>${onlineOrderMoreActions(order)}</td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
   const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>جاهز للتغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
@@ -4629,7 +4650,7 @@ async function openPreparationOrder(id,start=false) {
     openModal(`تجهيز ${order.id}`,"تغليف الطلب",`
       <div class="packing-sheet" data-packing-order="${esc(order.id)}">
         ${carriedOverBadge(order)}
-        <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc([order.phone,order.governorate,order.city].filter(Boolean).join(" · "))}</span><small>${esc(order.address||"")}</small></div>
+        <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc([phonesText(order),order.governorate,order.city].filter(Boolean).join(" · "))}</span><small>${esc(order.address||"")}</small></div>
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
         <div class="packing-progress"><b data-packing-progress>تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف · ${checklist.reduce((sum,item)=>sum+Number(item.qty||0),0)} نسخة</b> <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
@@ -4815,7 +4836,7 @@ function readyShippingRow(order) {
   const hasWeight=Number(order.packedWeightGrams)>0;
   const canWeight=canAction("order.pack")||canAction("order.shipping"),canShip=canWeight;
   const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${onlineOrderMoreActions(order)}</div>`;
-  return `<tr ${orderSearchAttr(order)}><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc([order.governorate,order.city].filter(Boolean).join("، ")||"—")} · <span dir="ltr">${esc(order.phone||"")}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
+  return `<tr ${orderSearchAttr(order)}><td><input type="checkbox" data-shipping-export="${esc(order.id)}" ${shippingExportSelection.has(order.id)?"checked":""} ${order.saleId&&hasWeight?"":"disabled"}></td><td><strong>${esc(order.id)}</strong>${order.saleId?`<small>${esc(order.saleId)}</small>`:`<small class="text-danger">أنشئ الفاتورة أولًا</small>`}</td><td><strong>${esc(order.customerName||"—")}</strong><small>${esc([order.governorate,order.city].filter(Boolean).join("، ")||"—")} · <span dir="ltr">${esc(phonesText(order))}</span></small></td><td>${units}</td><td><strong>${money(payment.remainingAmount)}</strong><small>${payment.remainingAmount?"تحصيل عند التسليم":"مدفوع بالكامل"}</small></td><td>${order.shippingExport?`<span class="status-pill exported">تم تصدير الملف — بانتظار الكود</span><small>${arabicDateTimeLabel(order.shippingExport.exportedAt)}</small>`:"لم يُصدّر بعد"}<small>${hasWeight?`${Number(order.packedWeightGrams).toLocaleString("ar-EG")} جرام${order.postalCostQuote?` · بريد ${money(order.postalCostQuote.totalCost)}`:""}`:"الوزن غير مسجل"}</small></td><td>${actions}</td></tr>`;
 }
 
 function renderReadyShippingQueue() {
@@ -5051,7 +5072,7 @@ function onlineOrdersTable(list) {
   return `<table class="online-orders-master-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المحافظة</th><th>القطع</th><th>الإجمالي / الدفع</th><th>الحالة</th><th>وقت الإنشاء</th><th>الخطوة التالية</th></tr></thead><tbody>
     ${list.slice().reverse().sort((a,b)=>Number(isCarriedOverOrder(b))-Number(isCarriedOverOrder(a))).map(order => `<tr data-record-type="online-order" data-record-id="${order.id}" ${isCarriedOverOrder(order)?'class="carried-row"':""}>
       <td><strong>${order.id}</strong>${order.websiteOrderNumber?`<br><span class="badge website-order-badge" title="طلب من الموقع">🌐 ${esc(order.websiteOrderNumber)}</span>`:""}${splitPartBadge(order)}${order.saleId?`<br><span class="muted">${esc(order.saleId)}</span>`:""}</td>
-      <td>${esc(order.customerName)}<br><span dir="ltr" class="muted">${esc(order.phone)}</span></td>
+      <td>${esc(order.customerName)}<br><span dir="ltr" class="muted">${esc(phonesText(order))}</span></td>
       <td>${esc(order.governorate||"—")}<br><span class="muted">${esc(order.city||"")}</span></td>
       <td><strong>${(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0)}</strong></td>
       <td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)} · متبقي ${money(Math.max(0,Number(order.total||0)-Number(order.paidAmount||0)))}</span></td>
@@ -5591,7 +5612,7 @@ function viewOnlineOrder(id) {
   const shipmentButton = order.shipmentId ? `<button class="btn ghost" data-action="view-shipment" data-id="${order.shipmentId}">عرض الشحنة</button>` : "";
   const next = orderNextStep(order);
   const nextButton = next ? `<button class="btn" data-action="order-next-step" data-id="${order.id}">الخطوة الجاية: ${esc(next.label)}</button>` : "";
-  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}${orderWebsiteEditsMarkup(order)}${(order.reservationTransfers||[]).length?`<div class="finance-callout"><strong>نقل نسخ محجوزة</strong>${order.reservationTransfers.map(row=>`<span>${arabicDateTimeLabel(row.at)} · ${esc(row.by||"")} · ${esc(getBook(row.bookId)?.name||row.bookId)} × ${row.qty} ${row.toOrderId===order.id?`اتاخدت من ${esc(row.fromOrderId)}`:`راحت لـ ${esc(row.toOrderId)}`} · «${esc(row.reason||"")}»</span>`).join("")}</div>`:""}<div class="form-actions">${nextButton}<button class="btn secondary" data-action="print-online-order" data-id="${order.id}">🖨 طباعة ورقة التجهيز</button>${invoiceButton}${shipmentButton}${onlineOrderMoreActions(order,{details:false})}</div>`);
+  openModal(order.id, "تفاصيل طلب الأونلاين", `${orderDepositMarkup(order)}<div class="workflow-strip"><strong>مسار التشغيل:</strong><span>${order.source==="whatsapp"?"واتساب":order.source==="website"?`الموقع <span class="badge website-order-badge">🌐 ${esc(order.websiteOrderNumber||"")}</span>`:"طلب أونلاين"}</span><b>→</b><span>فاتورة</span><b>→</b><span>شحنة</span></div>${orderJourneyMarkup(order)}<div class="metric-strip"><div class="mini-metric"><span>الحالة</span><strong>${onlineOrderWorkflowBadge(order)}</strong></div><div class="mini-metric"><span>الإجمالي</span><strong>${money(order.total)}</strong></div><div class="mini-metric"><span>التتبع</span><strong>${esc(order.tracking || (onlineOrderWorkflowStage(order)==="ready"?"لم يُسجَّل بعد":"—"))}</strong></div></div><p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(phonesText(order))}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p>${orderIssueNote(order,{full:true})}${order.notes?`<div class="finance-callout"><strong>ملحوظة الطلب</strong><span>${esc(order.notes)}</span></div>`:""}<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>السعر بعد الخصم</th><th>إجمالي الصنف</th></tr></thead><tbody>${totals.lines.map(line => `<tr><td>${esc(getBook(line.bookId)?.name || "—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td class="money">${money(line.finalNet)}</td></tr>`).join("")}</tbody></table></div><div class="metric-strip" style="margin-top:12px"><div class="mini-metric"><span>المجموع قبل الخصم</span><strong>${money(totals.subtotal)}</strong></div><div class="mini-metric"><span>إجمالي الخصم</span><strong>${money(totals.discountTotal)}</strong></div><div class="mini-metric"><span>السعر بعد الخصم</span><strong>${money(totals.goods)}</strong></div><div class="mini-metric"><span>الشحن</span><strong>${totals.shipping?money(totals.shipping):"مجاني"}</strong></div><div class="mini-metric"><span>الإجمالي النهائي</span><strong>${money(totals.total)}</strong></div></div>${onlineOrderPaymentMarkup(order, totals.total)}${orderWebsiteEditsMarkup(order)}${(order.reservationTransfers||[]).length?`<div class="finance-callout"><strong>نقل نسخ محجوزة</strong>${order.reservationTransfers.map(row=>`<span>${arabicDateTimeLabel(row.at)} · ${esc(row.by||"")} · ${esc(getBook(row.bookId)?.name||row.bookId)} × ${row.qty} ${row.toOrderId===order.id?`اتاخدت من ${esc(row.fromOrderId)}`:`راحت لـ ${esc(row.toOrderId)}`} · «${esc(row.reason||"")}»</span>`).join("")}</div>`:""}<div class="form-actions">${nextButton}<button class="btn secondary" data-action="print-online-order" data-id="${order.id}">🖨 طباعة ورقة التجهيز</button>${invoiceButton}${shipmentButton}${onlineOrderMoreActions(order,{details:false})}</div>`);
 }
 
 function saleTotals() {
@@ -6036,7 +6057,7 @@ function renderReturns() {
 function partyRow(item, isCustomers, partyKind) {
   return `<tr>
             <td><strong>${esc(item.name)}</strong><br><span class="muted">${item.id}</span></td>
-            <td>${esc(item.phone || "—")}</td>
+            <td><span dir="ltr">${esc(phonesText(item, "—"))}</span></td>
             <td>${isCustomers ? badge(item.type, item.type === "جملة" ? "blue" : "") : `${item.terms || 0} يوم`}</td>
             <td class="money">${money(item.creditLimit)}</td>
             <td class="money ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</td>
@@ -6072,7 +6093,7 @@ function renderPartySearchSuggestions(matches, term, partyKind) {
   if (!list) return;
   const shown = term ? matches.slice(0, 8) : [];
   list.innerHTML = !term ? "" : shown.length ? shown.map(item => `<button type="button" role="option" data-action="party-search-pick" data-id="${esc(item.id)}" data-kind="${partyKind}">
-      <span class="party-suggestion-main"><strong>${esc(item.name)}</strong><span>${esc(item.id)}${item.phone ? ` · <bdi dir="ltr">${esc(item.phone)}</bdi>` : ""}${item.governorate ? ` · ${esc(item.governorate)}` : ""}</span></span>
+      <span class="party-suggestion-main"><strong>${esc(item.name)}</strong><span>${esc(item.id)}${item.phone || item.alternativePhone ? ` · <bdi dir="ltr">${esc(phonesText(item))}</bdi>` : ""}${item.governorate ? ` · ${esc(item.governorate)}` : ""}</span></span>
       <span class="party-suggestion-balance ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</span>
     </button>`).join("") + (matches.length > shown.length ? `<div class="party-suggestion-more">و${(matches.length - shown.length).toLocaleString("ar-EG")} نتيجة أخرى في الجدول</div>` : "")
     : `<div class="customer-no-results">لا يوجد ${partyKind === "customer" ? "عميل" : "مورد"} مطابق.</div>`;
@@ -9473,7 +9494,7 @@ root.addEventListener("input", event => {
     if (suggestions) {
       suggestions.innerHTML = matches.map(customer => `<button type="button" data-action="choose-sale-customer" data-id="${customer.id}">
         <strong>${esc(customer.name)}</strong>
-        <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
+        <span><span dir="ltr">${esc(phonesText(customer, "بدون هاتف"))}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
       </button>`).join("") || (event.target.value.trim() ? `<div class="customer-no-results">لا يوجد عميل مطابق. استخدم «تسجيل عميل جديد».</div>` : "");
     }
   }
@@ -10107,7 +10128,7 @@ modalBody.addEventListener("input", event => {
     if (suggestions) {
       suggestions.innerHTML = matches.map(customer => `<button type="button" data-action="choose-return-customer" data-id="${customer.id}">
         <strong>${esc(customer.name)}</strong>
-        <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${customerReturnableSaleLines(customer.id).length} صنف متاح للمرتجع</span>
+        <span><span dir="ltr">${esc(phonesText(customer, "بدون هاتف"))}</span> · ${customerReturnableSaleLines(customer.id).length} صنف متاح للمرتجع</span>
       </button>`).join("") || (event.target.value.trim() ? `<div class="customer-no-results">لا يوجد عميل لديه أصناف متاحة للمرتجع.</div>` : "");
     }
     return;
@@ -10161,7 +10182,7 @@ modalBody.addEventListener("input", event => {
     if (suggestions) {
       suggestions.innerHTML = matches.map(customer => `<button type="button" data-action="choose-online-order-customer" data-id="${customer.id}">
         <strong>${esc(customer.name)}</strong>
-        <span><span dir="ltr">${esc(customer.phone || "بدون هاتف")}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
+        <span><span dir="ltr">${esc(phonesText(customer, "بدون هاتف"))}</span> · ${esc([customer.governorate, customer.city].filter(Boolean).join("، ") || customer.id)}</span>
       </button>`).join("") || (event.target.value.trim() ? `<div class="customer-no-results">لا يوجد عميل مطابق. استخدم «تسجيل عميل جديد».</div>` : "");
     }
     const selectedInput = document.getElementById("online-order-customer-id");
@@ -11062,7 +11083,7 @@ function filterShipments() {
       (trackingFilter === "site-blocked" && (s.trackingDiagnostics?.failureCode === "SITE_BLOCKED" || s.trackingDebug?.failureCode === "SITE_BLOCKED")) ||
       (trackingFilter === "error" && s.trackingError);
     return !s.deletedAt && (!status || shipmentStatusCode(s) === status) && byFilter && shipmentShippedOnFilter(s, shippedOn);
-  }), term, s => [s.id, s.orderId, s.invoiceId, s.onlineOrderId, s.tracking, s.trackingNumber, s.customer, s.customerName, s.phone, s.customerPhone, s.governorate, s.company, s.carrier,
+  }), term, s => [s.id, s.orderId, s.invoiceId, s.onlineOrderId, s.tracking, s.trackingNumber, s.customer, s.customerName, s.phone, s.customerPhone, s.alternativePhone, s.governorate, s.company, s.carrier,
     shipmentComplaints(s.id).map(item => item.complaintNumber || item.complaintReference)]);
   document.getElementById("shipments-table").innerHTML = shipmentsTable(list);
   scheduleStickyTableScrollbar();
@@ -11691,7 +11712,7 @@ function findSalesInvoices(query = "", status = "") {
   return smartFilter(data.sales.filter(sale => !status || sale.status === status), query, sale => {
       const customer = getCustomer(sale.customerId);
       const shipment = shipmentForSale(sale.id);
-      return [sale.id, sale.customerName, customer?.name, customer?.phone, shipment?.tracking, shipment?.trackingNumber, shipment?.id, shipment?.customer];
+      return [sale.id, sale.customerName, customer?.name, customer?.phone, customer?.alternativePhone, shipment?.tracking, shipment?.trackingNumber, shipment?.id, shipment?.customer];
     })
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
 }
@@ -11707,7 +11728,7 @@ function salesHistoryTable(list) {
       return `<tr data-record-type="invoice" data-record-id="${sale.id}">
         <td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong><br><span class="muted">${fmtDate(sale.date)}</span>${sale.onlineOrderId ? `<br><span class="muted">${esc(documentDisplayName(sale.onlineOrderId, "order"))}</span>` : ""}</td>
         <td>${esc(customer?.name || "عميل غير مسجل")}</td>
-        <td><span dir="ltr">${esc(customer?.phone || "—")}</span></td>
+        <td><span dir="ltr">${esc(phonesText(customer, "—"))}</span></td>
         <td>${shipment ? `<strong>${esc(shipment.tracking)}</strong><br><span class="muted">${esc(shipment.company)} · ${esc(shipment.status)}</span>` : `<span class="muted">بدون شحنة</span>`}</td>
         <td class="money">${money(sale.total)}</td>
         <td class="money">${money(sale.paid ?? (sale.remaining ? sale.total - sale.remaining : sale.total))}</td>
@@ -12031,7 +12052,7 @@ function printSale(id, format = "a4") {
   printHtml(documentDisplayName(sale.id, "sale"), `
     <div class="table-wrap"><table><tbody>
       <tr><th>الفاتورة</th><td>${esc(documentDisplayName(sale.id, "sale"))}</td><th>تاريخ ووقت البيع</th><td>${esc(dateTimeLabel(sale.createdAt || sale.date))}</td></tr>
-      <tr><th>العميل</th><td>${esc(customer?.name || snapshot.name || "عميل نقدي")}</td><th>الهاتف</th><td dir="ltr">${esc(customer?.phone || snapshot.phone || "—")}</td></tr>
+      <tr><th>العميل</th><td>${esc(customer?.name || snapshot.name || "عميل نقدي")}</td><th>الهاتف</th><td dir="ltr">${esc(phonesText(customer || snapshot, "—"))}</td></tr>
       <tr><th>قناة البيع</th><td>${esc(sale.channel || "—")}</td><th>نوع العملية</th><td>${esc(sale.saleOperationType || "بيع مباشر")}</td></tr>
       <tr><th>طريقة الدفع</th><td>${esc(sale.payment || "—")}</td><th>اسم البائع</th><td>${esc(saleCreatedByName(sale))}</td></tr>
     </tbody></table></div>
@@ -12111,7 +12132,7 @@ function printOnlineOrder(id, format = "a4") {
     if(!order.confirmedAt||order.inventoryReservation?.status!=="active")return toast("يجب تأكيد الطلب وحجز المخزون أولًا قبل إصدار أمر التجهيز.","error");
   }
   const totals=onlineOrderTotals(order.lines||[],order.orderDiscount||0,order.orderDiscountType||"percent",orderShippingFee(order));
-  printHtml(`ورقة تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(order.phone)}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td>${money(line.finalNet)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
+  printHtml(`ورقة تجهيز الطلب ${order.id}`, `<p><strong>${esc(order.customerName)}</strong> — <span dir="ltr">${esc(phonesText(order))}</span></p><p>${esc(order.governorate)}، ${esc(order.city)}، ${esc(order.address)}</p><table><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم %</th><th>خصم ج.م</th><th>بعد الخصم</th><th>إجمالي الصنف</th><th>تم</th></tr></thead><tbody>${totals.lines.map(line=>`<tr><td>${esc(getBook(line.bookId)?.name||line.bookId)}</td><td>${esc(getBook(line.bookId)?.shelf||"—")}</td><td>${line.qty}</td><td>${money(line.unitOriginalPrice)}</td><td>${line.discountPercent}%</td><td>${money(line.unitDiscountAmount)}</td><td>${money(line.unitFinalPrice)}</td><td>${money(line.finalNet)}</td><td>—</td></tr>`).join("")}</tbody></table><table><tbody><tr><th>قيمة الكتب</th><td>${money(totals.subtotal)}</td><th>إجمالي الخصم</th><td>${money(totals.discountTotal)}</td></tr><tr><th>رسوم الشحن</th><td>${totals.shipping?money(totals.shipping):"مجاني"}</td><th>الإجمالي النهائي</th><td>${money(totals.total)}</td></tr></tbody></table><p><strong>ملاحظات:</strong> ${esc(order.notes||"—")}</p><div class="sign"><span>المجهز: ............</span><span>المراجع: ............</span></div>`, format);
 }
 
 function printStatement(id, kind) {
@@ -12883,7 +12904,7 @@ function viewSale(id) {
       <tr><th>نوع العملية</th><td>${esc(sale.saleOperationType || "بيع مباشر")}</td><th>طريقة الدفع</th><td>${esc(sale.payment || "—")}</td></tr>
       <tr><th>حالة الدفع</th><td>${esc(paymentStatusLabel(sale))}</td><th>ملاحظات</th><td>${esc(sale.notes || "—")}</td></tr>
     </tbody></table></div>
-    <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge blue">👤</div><div><strong>${esc(customer?.name || "عميل غير مسجل")}</strong><span>${esc(customer?.phone || "لا يوجد رقم موبايل")}${sale.onlineOrderId ? ` · طلب أونلاين ${esc(sale.onlineOrderId)}` : ""}${shipment ? ` · كود التتبع ${esc(shipment.tracking)}` : ""}</span></div>${shipment ? `<button class="btn ghost small" data-action="view-shipment-from-sale" data-id="${shipment.id}">عرض الشحنة</button>` : ""}</div>
+    <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge blue">👤</div><div><strong>${esc(customer?.name || "عميل غير مسجل")}</strong><span>${esc(phonesText(customer, "لا يوجد رقم موبايل"))}${sale.onlineOrderId ? ` · طلب أونلاين ${esc(sale.onlineOrderId)}` : ""}${shipment ? ` · كود التتبع ${esc(shipment.tracking)}` : ""}</span></div>${shipment ? `<button class="btn ghost small" data-action="view-shipment-from-sale" data-id="${shipment.id}">عرض الشحنة</button>` : ""}</div>
     <div class="table-wrap"><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الكتاب</th><th>خصم الكتاب %</th><th>خصم الكتاب ج.م</th><th>خصم الفاتورة للنسخة</th><th>سعر النسخة النهائي</th><th>إجمالي الصنف</th></tr></thead><tbody>
       ${lines.map(line => { const pricing=saleLinePriceBreakdown(line); return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${line.qty}</td><td>${money(pricing.base)}</td><td>${pricing.bookDiscountPercent}%</td><td>${money(pricing.bookDiscountUnit)}</td><td>${money(pricing.invoiceDiscountUnit)}</td><td>${money(pricing.finalUnit)}</td><td>${money(pricing.finalTotal)}</td></tr>`; }).join("") || `<tr><td colspan="8" class="text-center muted">فاتورة تجريبية قديمة بدون بنود تفصيلية.</td></tr>`}
     </tbody></table></div>
@@ -13819,7 +13840,7 @@ function showChartOfAccounts() {
 function topCustomerRows() {
   return data.customers.filter(customer => !customer.deletedAt).map(customer => {
     const sales = activeSalesList().filter(sale => sale.customerId === customer.id);
-    const orders = (data.onlineOrders || []).filter(order => !order.deletedAt && (order.customerId === customer.id || normalizePhone(order.phone) === normalizePhone(customer.phone)));
+    const orders = (data.onlineOrders || []).filter(order => !order.deletedAt && (order.customerId === customer.id || customerHasPhone(customer, order.phone)));
     const returns = (data.returns || []).filter(item => !item.deletedAt && returnKind(item.type) === "sale" && (item.accountId === customer.id || item.partyId === customer.id));
     const receipts = (data.receipts || []).filter(item => item.partyKind === "customer" && item.partyId === customer.id && item.status !== "ملغى");
     const total = sales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);

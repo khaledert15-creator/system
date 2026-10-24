@@ -34,7 +34,7 @@ const sandbox = {
   shortageRows:() => [{ shortfall:3 }, { shortfall:0 }], workflowModeTabs:active => `<nav data-active="${active}"></nav>`, orderSearchAttr:order => `data-search-row data-search="${order.id}"`
 };
 vm.createContext(sandbox);
-vm.runInContext(["preorderReason", "preorderBookState", "renderPreordersScreen"].map(extract).join("\n"), sandbox);
+vm.runInContext(["normalizePhone", "recordPhones", "phonesText", "preorderReason", "preorderBookState", "renderPreordersScreen"].map(extract).join("\n"), sandbox);
 const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };
 const reason = id => sandbox.preorderReason(orders.find(order => order.id === id));
 
