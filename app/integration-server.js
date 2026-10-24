@@ -2,7 +2,7 @@
 
 // HTTP side of the Store ↔ System ↔ Chatwood integration (INTEGRATION_DOCS/INTEGRATION_API_SPEC.md §2, §5).
 // server-node.js only dispatches to handle() and injects its own helpers; no business rule lives here.
-//   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links
+//   HMAC (Store → System):  GET /api/integration/v1/catalog | /events (SSE) | /website-orders/links, POST /api/integration/v1/track
 //   Staff (X-Session-Token): /api/website-orders..., PUT /api/settings/website-deposit, /api/integration/v1/panel/...,
 //                            GET|POST /api/orders/:id/split-shipment (partial shipping, Option B), POST /api/orders/:id/drop-missing,
 //                            PATCH /api/orders/:id/deposit-required, PUT /api/website-orders/:number/deposit,
@@ -14,9 +14,11 @@ const IntegrationAuth = require("./integration-auth.js");
 const WebsiteOrders = require("./website-orders.js");
 const SplitShipment = require("./split-shipment.js");
 const ChatwoodContext = require("./chatwood-context.js");
+const OrderTracking = require("./order-tracking.js");
 
 const BODY_LIMIT_INTEGRATION = 64 * 1024;
 const MAX_EVENT_STREAMS = 8;
+const TRACK_WINDOW_MS = 60 * 1000, TRACK_MAX_PER_WINDOW = 120; // all customers together; the Store also limits per visitor
 const NO_STORE = { "Cache-Control":"no-store" };
 const JSON_TYPE = "application/json; charset=utf-8";
 
@@ -26,6 +28,7 @@ function createIntegrationServer(deps) {
   const splitShipment = SplitShipment.createSplitShipment(deps);
   const websiteOrders = WebsiteOrders.createWebsiteOrders({ ...deps, splitShipment });
   let eventStreams = 0;
+  let trackWindow = { start:0, count:0 };
 
   const fail = (res, status, code, message, extra = {}) => send(res, status, { ok:false, code, message, ...extra }, JSON_TYPE, NO_STORE);
   const disabled = res => fail(res, 503, "INTEGRATION_DISABLED", "التكامل غير مفعّل");
@@ -624,6 +627,17 @@ function createIntegrationServer(deps) {
           catch (error) { if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") { fail(res, 409, "DB_REVISION_CONFLICT", "تغيرت البيانات؛ أعد المحاولة."); return true; } throw error; }
         }
         send(res, 200, { ok:true, dryRun, linked:result.linked.length, skipped:result.skipped }, JSON_TYPE, NO_STORE);
+      } else if (method === "POST" && route === "/api/integration/v1/track") {
+        // The Store's /track page: reference + phone, both must match (POST so neither lands in a URL or access log).
+        const now = Date.now();
+        if (now - trackWindow.start >= TRACK_WINDOW_MS) trackWindow = { start:now, count:0 };
+        if (++trackWindow.count > TRACK_MAX_PER_WINDOW) { fail(res, 429, "RATE_LIMITED", "طلبات تتبع كثيرة؛ حاول بعد دقيقة."); return true; }
+        let payload;
+        try { payload = JSON.parse(req.integrationBody || "{}"); } catch { fail(res, 400, "INVALID_REQUEST", "طلب غير صالح"); return true; }
+        let db;
+        try { db = readDb(); } catch { fail(res, 503, "DB_UNAVAILABLE", "تعذر قراءة البيانات الآن."); return true; }
+        const orders = OrderTracking.trackOrders(db, { reference:payload.reference, phone:payload.phone }, { normalizePhone:websiteOrders.normalizeEgyptPhone });
+        send(res, 200, { ok:true, generatedAt:new Date().toISOString(), orders }, JSON_TYPE, NO_STORE);
       } else if (method === "GET" && route === "/api/integration/v1/website-orders/links") {
         const { db, revision } = readDbForWrite();
         try { send(res, 200, websiteOrders.orderLinks(db, revision, url.searchParams.get("updatedSince") || ""), JSON_TYPE, NO_STORE); }
