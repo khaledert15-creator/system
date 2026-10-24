@@ -77,7 +77,9 @@ function openEvents(base, { now } = {}) {
     assert.equal(catalog.books.find(book => book.id === 'B0003').allowPreorder, true);
     assert.equal(catalog.books.find(book => book.id === 'B0099').deleted, true, 'deleted books are listed as deleted');
     assert.equal(r.headers.get('cache-control'), 'no-store');
-    console.log('PASS catalog has no cost/supplier fields and available = stock − reserved − countHold');
+    assert.deepEqual(Object.keys(catalog.settings.shipping).sort(), ['activeByGovernorate', 'byGovernorate', 'defaultCost', 'freeShippingAbove']);
+    assert.ok(!/postal|tariff|extraKg/i.test(JSON.stringify(catalog.settings.shipping)), 'only customer prices, never the carrier tariff');
+    console.log('PASS catalog has no cost/supplier fields and available = stock − reserved − countHold, and carries the customer shipping prices');
 
     r = await H.signedFetch(on.base, '/api/integration/v1/website-orders/links');
     let links = await r.json();

@@ -84,7 +84,14 @@ function createWebsiteOrders(deps) {
       price:round(Number(book.price || 0)), stock:Number(book.stock || 0), reservedStock:Math.max(0, Number(book.reservedStock || 0)), countHoldQty:Math.max(0, Number(book.countHoldQty || 0)),
       available:availableStock(book), allowPreorder:book.allowPreorder === true, deleted:Boolean(book.deletedAt), updatedAt:book.updatedAt || null
     }));
-    return { ok:true, revision:String(revision), generatedAt:now.toISOString(), settings:{ websiteDepositDefault:depositDefault(db) }, books };
+    return { ok:true, revision:String(revision), generatedAt:now.toISOString(), settings:{ websiteDepositDefault:depositDefault(db), shipping:customerShippingRules(db) }, books };
+  }
+
+  // Customer shipping prices (Settings → «أسعار الشحن للمحافظات» → خدمة العملاء). The System is their only editor;
+  // the Store copies them to the website on every catalog sync. Invalid rules are left out so the Store keeps its last copy.
+  function customerShippingRules(db) {
+    try { return OrderFinance.normalizeShippingRules(db.settings?.shippingRules || db.settings?.shippingRates || {}); }
+    catch { return null; }
   }
 
   function remainingOf(order) {
