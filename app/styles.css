@@ -1155,13 +1155,12 @@ tbody tr.target-highlight > td {
 .shipping-reset-filters { height:42px; min-width:112px; display:inline-flex; align-items:center; justify-content:center; gap:6px; white-space:nowrap; }
 .shipping-table { min-width: 1010px; table-layout:fixed; }
 .shipping-table th,.shipping-table td { padding:14px 12px; vertical-align:top; line-height:1.55; }
-.shipping-table th:nth-child(1) { width:105px; }
-.shipping-table th:nth-child(2) { width:125px; }
-.shipping-table th:nth-child(3) { width:125px; }
-.shipping-table th:nth-child(4) { width:105px; }
-.shipping-table th:nth-child(5) { width:165px; }
-.shipping-table th:nth-child(6) { width:190px; }
-.shipping-table th:nth-child(7) { width:290px; }
+.shipping-table th:nth-child(1) { width:170px; }
+.shipping-table th:nth-child(2) { width:150px; }
+.shipping-table th:nth-child(3) { width:150px; }
+.shipping-table th:nth-child(4) { width:170px; }
+.shipping-table th:nth-child(5) { width:170px; }
+.shipping-table th:nth-child(6) { width:230px; }
 .shipping-table tbody tr { transition:background .15s ease; }
 .shipping-table tbody tr:hover { background:#f9fbfe; }
 .shipment-status-select {
@@ -2152,3 +2151,18 @@ button.shortage-stat.ok b{color:#1f7a45}
 .orders-drafts-button.active{border:2px solid var(--primary);background:#eef6ff;color:var(--primary)}
 .draft-note{display:block;margin-top:6px;padding:4px 8px;border-radius:8px;font-style:normal;font-size:12px;font-weight:700}
 .draft-note.paid{background:#e6f6ec;color:#1f7a45}.draft-note.duplicate{background:#fdecea;color:#a3352d}
+
+/* Shipping table: order and customer in one cell, the tracking code copies on click, the shipping day with how long
+   the parcel has been on the road (red when late), and manual tracking in the row. */
+.shipping-table td > span { display:block; }
+.shipping-customer { margin-top:4px; font-weight:700; color:var(--ink); }
+.shipping-code { display:inline-flex; align-items:center; gap:6px; padding:3px 6px; margin:-3px -6px 2px; border:0; border-radius:8px; background:none; font:inherit; color:var(--ink); cursor:pointer; }
+.shipping-code:hover { background:var(--canvas); } .shipping-code span { color:var(--muted); font-size:12px; }
+.shipping-shipped-cell { display:grid; gap:4px; align-content:start; }
+.shipping-days { display:inline-block; width:max-content; padding:2px 9px; border-radius:999px; background:#eef4fb; color:var(--blue); font-size:12px; font-weight:700; }
+.shipping-days.late { background:#fdecea; color:#a3352d; } .shipping-days.done { background:#eef1f4; color:var(--muted); }
+.shipping-table tbody tr.shipment-late { box-shadow:inset -4px 0 0 #e0645a; }
+.shipping-row-actions .shipping-manual { grid-column:auto; }
+.shipping-row-actions .shipping-more:not(.shipping-manual) { grid-column:auto; }
+.shipping-manual > summary { color:var(--blue); border:1px solid #cfe0f5; background:#f5f9ff; font-weight:700; }
+.shipping-menu-label { padding:4px 6px 0; color:var(--muted); font-size:11px; }
