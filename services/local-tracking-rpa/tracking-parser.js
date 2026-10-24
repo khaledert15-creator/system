@@ -53,4 +53,13 @@ function parseEgyptPostSteps(steps, trackingNumber) {
   }).filter(Boolean);
 }
 
-module.exports = { parseEgyptPostSteps, eventDate, normalizeStatus };
+// The site's GetShipmentDetails JSON as the same rows its result page shows: stage, status, office, city, date, time.
+function stepsFromShipmentDetails(body) {
+  const rows = body?.data?.data;
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(row => row && row.itemStatus && row.date).map(row => ({
+    fields: ["", row.itemStatus, row.location, row.city, row.date, row.time].map(value => String(value || "").trim())
+  }));
+}
+
+module.exports = { parseEgyptPostSteps, stepsFromShipmentDetails, eventDate, normalizeStatus };

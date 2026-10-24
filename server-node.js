@@ -1658,7 +1658,7 @@ const LOCAL_RPA_POLL_MS = 4000;
 // The tunnel to the local agent drops requests that stay open without data for more than a few seconds, while a
 // search takes 30-60 seconds. So the job is started with a short request and its result is fetched by polling.
 // Agents without async support answer the start request with the full result, which is used directly.
-async function requestLocalRpaTrack(payload, requestId, shipmentId) {
+async function requestLocalRpaTrack(payload, requestId, shipmentId, pathname = "/track", timeoutMs = TRACKING_RPA_TIMEOUT_MS) {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const withRetry = async (pathname, body, timeoutMs) => {
     for (let attempt = 0; ; attempt += 1) {
@@ -1670,9 +1670,9 @@ async function requestLocalRpaTrack(payload, requestId, shipmentId) {
       }
     }
   };
-  const started = await withRetry("/track?async=1", payload, 20000);
+  const started = await withRetry(`${pathname}?async=1`, payload, 20000);
   if (started.statusCode !== 202) return started;
-  const deadline = Date.now() + TRACKING_RPA_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(LOCAL_RPA_POLL_MS);
     const polled = await withRetry(`/track/${encodeURIComponent(requestId)}`, null, 15000);
@@ -1688,10 +1688,63 @@ async function requestLocalRpaTrack(payload, requestId, shipmentId) {
 const TRANSIENT_TRACKING_CODES = new Set(["BUSY", "RATE_LIMITED"]);
 const TRANSIENT_RETRY_MINUTES = 15;
 
-async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false } = {}) {
-  trackingLog("agent_request", { requestId, shipmentId:shipment.id });
-  const trackPayload = { shipmentId: shipment.id, trackingNumber, provider: "egypt_post", requestId, force: Boolean(manual) };
-  const { statusCode, data } = await requestLocalRpaTrack(trackPayload, requestId, shipment.id);
+// The agent searches up to 10 codes at once (agent 1.1.0+). A code it answers with one of these was not looked up
+// in the batch, so it is searched alone as before.
+const LOCAL_RPA_BATCH_SIZE = 10;
+const LOCAL_RPA_BATCH_FALLBACK_CODES = new Set(["BATCH_FAILED", "BATCH_ITEM_MISSING", "BUSY"]);
+// The site is refusing automated lookups: the cycle stops and the worker waits before trying the site again.
+const TRACKING_SITE_PAUSE_MINUTES = { SITE_RATE_LIMITED: 15, SITE_BLOCKED: 30, HUMAN_VERIFICATION_REQUIRED: 30 };
+let trackingSitePausedUntil = 0;
+
+// Agent request ids are per shipment: the agent answers a repeated id with its earlier result, so sharing the
+// cycle's id would hand one shipment's result to the next.
+function localRpaRequestId(requestId, key) {
+  return `${requestId}-${key}`.replace(/[^A-Za-z0-9-]/g, "").slice(0, 128);
+}
+
+// Looks up a group of shipments in one agent search. Returns their answers by tracking number, or `supported:false`
+// when the agent predates /track-batch; a failed request returns no answers, so every shipment is searched alone.
+async function prefetchLocalRpaBatch(shipments, requestId, { manual = false } = {}) {
+  const items = shipments
+    .map(shipment => ({ shipmentId: shipment.id, trackingNumber: normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking) }))
+    .filter(item => isValidTrackingNumber(item.trackingNumber));
+  if (items.length < 2) return { supported: true, results: new Map() };
+  const batchRequestId = localRpaRequestId(requestId, `batch-${crypto.randomUUID().slice(0, 8)}`);
+  try {
+    trackingLog("agent_batch_request", { requestId: batchRequestId, eventCount: items.length });
+    const { statusCode, data } = await requestLocalRpaTrack({ items, provider: "egypt_post", force: Boolean(manual) }, batchRequestId, "", "/track-batch", TRACKING_RPA_TIMEOUT_MS * 2);
+    if (statusCode === 404 || !Array.isArray(data.results)) return { supported: statusCode !== 404, results: new Map() };
+    const requested = new Set(items.map(item => item.trackingNumber));
+    const results = new Map();
+    for (const result of data.results) {
+      const trackingNumber = normalizeTrackingNumber(result?.trackingNumber);
+      if (requested.has(trackingNumber)) results.set(trackingNumber, result);
+    }
+    trackingLog("agent_batch_result", { requestId: batchRequestId, ok: true, eventCount: results.size, message: data.failureCode || "" });
+    return { supported: true, results };
+  } catch (error) {
+    trackingLog("agent_batch_failed", { requestId: batchRequestId, ok: false, level: "error", message: error.code || error.message || "BATCH_FAILED" });
+    return { supported: true, results: new Map() };
+  }
+}
+
+async function fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual = false, prefetched = null } = {}) {
+  const useBatch = prefetched && !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode);
+  let statusCode = 200;
+  let data = prefetched;
+  if (!useBatch) {
+    const agentRequestId = localRpaRequestId(requestId, shipment.id);
+    trackingLog("agent_request", { requestId: agentRequestId, shipmentId:shipment.id });
+    const trackPayload = { shipmentId: shipment.id, trackingNumber, provider: "egypt_post", requestId: agentRequestId, force: Boolean(manual) };
+    ({ statusCode, data } = await requestLocalRpaTrack(trackPayload, agentRequestId, shipment.id));
+  }
+  // An answer for another code is never applied to this shipment.
+  if (data.trackingNumber && normalizeTrackingNumber(data.trackingNumber) !== trackingNumber) {
+    const error = new Error("وصلت نتيجة تتبع لرقم آخر؛ ستتم إعادة المحاولة.");
+    error.code = "TRACKING_NUMBER_MISMATCH";
+    error.payload = data;
+    throw error;
+  }
   if (!data.success) {
     const error = new Error(data.failureMessage || "تعذر تحديث التتبع عبر خدمة RPA المحلية");
     error.code = data.failureCode || "LOCAL_RPA_FAILED";
@@ -2384,7 +2437,7 @@ async function fetch17TrackTracking(db, shipment, settings, trackingNumber) {
   };
 }
 
-async function fetchTrackingFromProvider(db, shipment, requestId, { manual = false } = {}) {
+async function fetchTrackingFromProvider(db, shipment, requestId, { manual = false, prefetched = null } = {}) {
   const settings = defaultTrackingSettings(db.settings || {});
   const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -2394,7 +2447,7 @@ async function fetchTrackingFromProvider(db, shipment, requestId, { manual = fal
     throw error;
   }
   if (TRACKING_RPA_ENABLED) {
-    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual });
+    return fetchLocalRpaTracking(db, shipment, settings, trackingNumber, requestId, { manual, prefetched });
   }
   return fetchEgyptPostBrowserTracking(db, shipment, settings, trackingNumber);
   if (!isValidTrackingNumber(trackingNumber)) throw new Error("رقم التتبع غير صالح.");
@@ -2574,7 +2627,7 @@ function businessShipmentStatus(normalizedStatus, currentStatus = "") {
   return map[normalizedStatus] || currentStatus;
 }
 
-async function trackShipment(db, shipment, { manual = false, requestId = crypto.randomUUID() } = {}) {
+async function trackShipment(db, shipment, { manual = false, requestId = crypto.randomUUID(), prefetched = null } = {}) {
   if (trackingActiveShipmentIds.has(shipment.id)) {
     return { ok: false, changed: false, duplicate: true, failureCode: "TRACKING_JOB_ALREADY_RUNNING", error: "يتم تتبع هذه الشحنة حاليًا." };
   }
@@ -2587,7 +2640,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
   shipment.trackingProvider = settings.providerName;
   trackingLog("backend_received", { requestId, shipmentId:shipment.id });
   try {
-    const result = await fetchTrackingFromProvider(db, shipment, requestId, { manual });
+    const result = await fetchTrackingFromProvider(db, shipment, requestId, { manual, prefetched });
     shipment.lastTrackingSource = result.source || settings.providerEndpoint || "";
     shipment.lastTrackingHttpStatus = result.httpStatus || "";
     shipment.lastTrackingResponseAt = started;
@@ -2838,10 +2891,17 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       return summary;
     }
     const persistenceExpectations = [];
-    for (const shipment of list) {
+    let batch = null;
+    let batchSupported = TRACKING_RPA_ENABLED;
+    for (const [index, shipment] of list.entries()) {
+      if (batchSupported && index % LOCAL_RPA_BATCH_SIZE === 0) {
+        batch = await prefetchLocalRpaBatch(list.slice(index, index + LOCAL_RPA_BATCH_SIZE), requestId, { manual });
+        batchSupported = batch.supported;
+      }
+      const prefetched = batch?.results.get(normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking)) || null;
       summary.checked += 1;
       const shipmentRunStartedAt = new Date().toISOString();
-      const result = await trackShipment(db, shipment, { manual, requestId });
+      const result = await trackShipment(db, shipment, { manual, requestId, prefetched });
       const runRecord = buildTrackingRunRecord(settings, shipment, shipmentRunStartedAt, result);
       db.trackingRuns = db.trackingRuns || [];
       const run = { id: nextId("TRUN-", db.trackingRuns), batchId: summary.batchId, requestId, manual: Boolean(manual), ...runRecord };
@@ -2856,8 +2916,18 @@ async function runTrackingCycle({ manual = false, shipmentId = "", shipmentIds =
       }
       if (result.changed) summary.changed += 1;
       else summary.unchanged += 1;
+      const pauseMinutes = TRACKING_SITE_PAUSE_MINUTES[result.failureCode];
+      if (pauseMinutes) {
+        // The rest of the list is left as it is and tracked once the site accepts lookups again.
+        trackingSitePausedUntil = Date.now() + pauseMinutes * 60000;
+        summary.stoppedEarly = { failureCode: result.failureCode, remaining: list.length - summary.checked, pausedUntil: new Date(trackingSitePausedUntil).toISOString() };
+        trackingLog("cycle_stopped", { requestId, shipmentId:shipment.id, ok:false, level:"warn", message:result.failureCode });
+        break;
+      }
+      // Answers from a batch search need no wait; the agent spaces its own searches.
+      const fromBatch = prefetched && !LOCAL_RPA_BATCH_FALLBACK_CODES.has(prefetched.failureCode);
       const delayMs = Math.max(settings.rateLimitMs || 0, settings.minDelaySeconds * 1000);
-      if (delayMs > 0 && summary.checked < list.length) await new Promise(resolve => setTimeout(resolve, delayMs));
+      if (!fromBatch && delayMs > 0 && summary.checked < list.length) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     summary.finishedAt = new Date().toISOString();
     db.trackingRuns = slimTrackingRuns((db.trackingRuns || []).slice(-500));
@@ -2916,6 +2986,9 @@ function scheduleTrackingWorker() {
           return;
         }
         if (trackingRunning) return;
+        if (Date.now() < trackingSitePausedUntil) return;
+        // Agents that search several codes at once (1.1.0+) report maxBatchSize; older ones get one shipment a tick.
+        const perTick = Math.min(LOCAL_RPA_BATCH_SIZE, Math.max(1, Number(agent.maxBatchSize) || 1));
         const db = ensureTrackingDb(readDb());
         const recovering = trackingAgentWasOffline;
         trackingAgentWasOffline = false;
@@ -2925,15 +2998,16 @@ function scheduleTrackingWorker() {
         if (recovering) trackingRecoveryQueue = new Set(pendingShipments.map(shipment => shipment.id));
         const pendingIds = pendingShipments
           .filter(shipment => trackingRecoveryQueue.has(shipment.id) || !shipment.nextTrackingAt || new Date(shipment.nextTrackingAt).getTime() <= now)
-          .map(shipment => shipment.id);
+          .map(shipment => shipment.id)
+          .slice(0, perTick);
         if (pendingIds.length) {
-          trackingRecoveryQueue.delete(pendingIds[0]);
-          await runTrackingCycle({ manual: true, shipmentId: pendingIds[0] });
+          for (const id of pendingIds) trackingRecoveryQueue.delete(id);
+          await runTrackingCycle({ manual: true, shipmentIds: pendingIds });
           return;
         }
         const due = activeTrackableShipments(db);
         if (!due.length) return;
-        await runTrackingCycle({ manual: false, shipmentId: due[0].id });
+        await runTrackingCycle({ manual: false, shipmentIds: due.slice(0, perTick).map(shipment => shipment.id) });
         return;
       }
       await runTrackingCycle({ manual: false });

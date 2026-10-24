@@ -2,9 +2,9 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { parseEgyptPostSteps } = require("./tracking-parser");
+const { parseEgyptPostSteps, stepsFromShipmentDetails } = require("./tracking-parser");
 
-const PORT = 8788;
+const PORT = Number(process.env.LOCAL_TRACKING_RPA_PORT || 8788);
 const HOST = "127.0.0.1";
 const AGENT_VERSION = require("./package.json").version;
 const SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
@@ -15,7 +15,11 @@ const DOTCOM_ROOT = path.resolve(SERVICE_ROOT, "..", "..");
 const PROFILE_ROOT = path.join(SERVICE_ROOT, ".rpa-profile", "egypt-post");
 const DEBUG_ROOT = path.join(DOTCOM_ROOT, "debug", "tracking");
 const MAX_CONCURRENT = 1;
-const MIN_REPEAT_INTERVAL_MS = Number(process.env.LOCAL_TRACKING_RPA_REPEAT_MS || 6 * 60 * 60 * 1000);
+// The System decides how often each shipment is checked (every 2 hours when out for delivery); this only stops
+// the same code being searched twice in a row.
+const MIN_REPEAT_INTERVAL_MS = Number(process.env.LOCAL_TRACKING_RPA_REPEAT_MS || 60 * 60 * 1000);
+// The site's track page takes up to 10 barcodes per search.
+const MAX_BATCH_SIZE = 10;
 const MIN_DELAY_MS = Number(process.env.LOCAL_TRACKING_RPA_MIN_DELAY_MS || 30 * 1000);
 const MAX_DELAY_MS = Number(process.env.LOCAL_TRACKING_RPA_MAX_DELAY_MS || 90 * 1000);
 const DEFAULT_TIMEOUT_MS = Number(process.env.LOCAL_TRACKING_RPA_TIMEOUT || 120000);
@@ -35,15 +39,15 @@ let windowMinimized = false;
 const recentRequests = new Map();
 const RECENT_REQUEST_TTL_MS = 15 * 60 * 1000;
 
-function trackOnce(requestId, payload) {
+function trackOnce(requestId, payload, run = track) {
   const now = Date.now();
   for (const [id, entry] of recentRequests) if (now - entry.at > RECENT_REQUEST_TTL_MS) recentRequests.delete(id);
   const existing = requestId && recentRequests.get(requestId);
   if (existing) return { promise: existing.promise, repeated: true, entry: existing };
   const entry = { at: now, result: null };
-  entry.promise = track(payload).then(result => {
+  entry.promise = run(payload).then(result => {
     entry.result = result;
-    console.log(JSON.stringify({ event: "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
+    console.log(JSON.stringify({ event: "tracking_attempt", requestId, success: Boolean(result.success), failureCode: result.failureCode || "", batchSize: Array.isArray(result.results) ? result.results.length : undefined }));
     return result;
   });
   if (requestId) recentRequests.set(requestId, entry);
@@ -325,6 +329,35 @@ async function findSubmitButton(page) {
   return null;
 }
 
+function blockMessage(failureCode) {
+  return failureCode === "SITE_BLOCKED" ? "موقع البريد يمنع التشغيل الآلي" : "ظهرت شاشة تحقق بشري أو CAPTCHA";
+}
+
+// Opens the track page, waiting for a person when the site shows its own check. failureCode is set only when the
+// site is still refusing afterwards.
+async function loadTrackingSite(page) {
+  // The page re-runs the previous search saved in localStorage when it opens; clearing it saves those lookups.
+  if (page.url().startsWith("https://egyptpost.gov.eg")) await page.evaluate(() => window.localStorage.removeItem("ordersId")).catch(() => {});
+  await page.goto(EGYPT_POST_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+
+  let title = await page.title().catch(() => "");
+  let bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => "");
+  let failureCode = classifyBlock(bodyText, title, page.url());
+  if (!failureCode) return { title, bodyText, failureCode: "" };
+  if (failureCode === "HUMAN_VERIFICATION_REQUIRED") {
+    // Show the window only when a person has to complete the site's check.
+    await setWindowState(page, "normal");
+    await page.bringToFront().catch(() => {});
+    await page.waitForTimeout(Number(process.env.LOCAL_TRACKING_RPA_HUMAN_WAIT_MS || 60000));
+  }
+  title = await page.title().catch(() => title);
+  bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => bodyText);
+  failureCode = classifyBlock(bodyText, title, page.url()) || failureCode;
+  return { title, bodyText, failureCode: looksHumanVerification(bodyText, title, page.url()) ? failureCode : "" };
+}
+
 async function realTrack(payload) {
   const trackingNumber = normalizeTrackingNumber(payload.trackingNumber);
   const shipmentId = payload.shipmentId || "";
@@ -349,34 +382,17 @@ async function realTrack(payload) {
     ensureDirs();
     page = await trackingPage(playwright);
     context = page.context();
-    await page.goto(EGYPT_POST_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
-    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(2500);
-
-    let title = await page.title().catch(() => "");
-    let bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => "");
-    let failureCode = classifyBlock(bodyText, title, page.url());
+    let { title, bodyText, failureCode } = await loadTrackingSite(page);
     if (failureCode) {
-      if (failureCode === "HUMAN_VERIFICATION_REQUIRED") {
-        // Show the window only when a person has to complete the site's check.
-        await setWindowState(page, "normal");
-        await page.bringToFront().catch(() => {});
-        await page.waitForTimeout(Number(process.env.LOCAL_TRACKING_RPA_HUMAN_WAIT_MS || 60000));
-      }
-      title = await page.title().catch(() => title);
-      bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => bodyText);
-      failureCode = classifyBlock(bodyText, title, page.url()) || failureCode;
-      if (looksHumanVerification(bodyText, title, page.url())) {
-        const diagnostics = await saveDiagnostics({
-          page,
-          trackingNumber,
-          shipmentId,
-          failureCode,
-          failureMessage: failureCode === "SITE_BLOCKED" ? "موقع البريد يمنع التشغيل الآلي" : "ظهرت شاشة تحقق بشري أو CAPTCHA",
-          diagnostics: { pageOpened: true, pageTitle: title, pageUrl: page.url(), bodyTextSample: bodyText.slice(0, 4000), durationMs: Date.now() - startedAt }
-        });
-        return baseResponse({ trackingNumber, failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
-      }
+      const diagnostics = await saveDiagnostics({
+        page,
+        trackingNumber,
+        shipmentId,
+        failureCode,
+        failureMessage: blockMessage(failureCode),
+        diagnostics: { pageOpened: true, pageTitle: title, pageUrl: page.url(), bodyTextSample: bodyText.slice(0, 4000), durationMs: Date.now() - startedAt }
+      });
+      return baseResponse({ trackingNumber, failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
     }
 
     const input = await findInput(page);
@@ -426,7 +442,10 @@ async function realTrack(payload) {
       return baseResponse({ trackingNumber, failureCode, failureMessage: diagnostics.failureMessage, manualReviewRequired: true, diagnostics });
     }
 
-    const steps = await page.locator(".ordersListingItem__title h3").filter({ hasText: trackingNumber }).first().count()
+    // The site's own JSON answer is read first; the result page text is the fallback.
+    const providerBody = providerResponse ? await providerResponse.json().catch(() => null) : null;
+    const jsonSteps = stepsFromShipmentDetails(providerBody);
+    const steps = jsonSteps.length ? jsonSteps : await page.locator(".ordersListingItem__title h3").filter({ hasText: trackingNumber }).first().count()
       ? await page.locator(".ordersListingItem .order__container").evaluateAll(nodes => nodes.map(node => ({
           fields: Array.from(node.querySelectorAll(".ordersListingItem__item__data > p"), item => item.textContent.trim())
         })))
@@ -525,6 +544,161 @@ async function track(payload = {}) {
   }
 }
 
+// Batch answers the System treats as "this code was not looked up properly" and searches alone instead.
+const BATCH_FAILED = "BATCH_FAILED";
+const BATCH_ITEM_MISSING = "BATCH_ITEM_MISSING";
+
+function batchItemFailure(trackingNumber, failureCode, failureMessage, extra = {}) {
+  return baseResponse({ trackingNumber, failureCode, failureMessage, manualReviewRequired: false, ...extra });
+}
+
+function batchResultFromDetails(trackingNumber, httpStatus, body) {
+  if (!httpStatus) return batchItemFailure(trackingNumber, BATCH_ITEM_MISSING, "لم يصل رد موقع البريد لهذا الكود ضمن البحث المجمّع");
+  if (httpStatus === 429) return batchItemFailure(trackingNumber, "SITE_RATE_LIMITED", "موقع البريد حدّد عدد طلبات التتبع مؤقتًا؛ ستتم إعادة المحاولة.");
+  if (httpStatus >= 400) return batchItemFailure(trackingNumber, "SITE_UNAVAILABLE", "موقع البريد لا يعرض بيانات التتبع حاليًا؛ ستتم إعادة المحاولة.");
+  if (!body || body.success !== true || !body.data) return batchItemFailure(trackingNumber, BATCH_ITEM_MISSING, "رد موقع البريد لهذا الكود غير مكتمل");
+  const rows = Array.isArray(body.data.data) ? body.data.data.filter(row => row && row.itemStatus) : [];
+  const timeline = parseEgyptPostSteps(stepsFromShipmentDetails(body), trackingNumber);
+  // Events the parser cannot read yet are looked up alone, where the result page text is read as well.
+  if (rows.length && !timeline.length) return batchItemFailure(trackingNumber, BATCH_ITEM_MISSING, "تعذر قراءة أحداث هذا الكود من البحث المجمّع");
+  if (!timeline.length) return baseResponse({ trackingNumber, failureCode: "RESULT_NOT_FOUND", failureMessage: "لم تظهر نتيجة تتبع مؤكدة", manualReviewRequired: true });
+  const latest = timeline[timeline.length - 1] || {};
+  const delivered = timeline.some(item => item.normalizedStatus === "delivered");
+  return baseResponse({ success: true, trackingNumber, confirmedStatus: delivered ? "delivered" : (latest.normalizedStatus || "unknown"), timeline, delivered });
+}
+
+// Searches up to 10 codes at once the way a person does on the site: one barcode per line, then one click. The site
+// answers each barcode with its own GetShipmentDetails reply, which is read per code.
+async function realTrackBatch(trackingNumbers) {
+  const startedAt = Date.now();
+  const label = `${trackingNumbers[0]}-BATCH${trackingNumbers.length}`;
+  const failAll = (failureCode, failureMessage, manualReviewRequired, diagnostics = {}) =>
+    trackingNumbers.map(trackingNumber => baseResponse({ trackingNumber, failureCode, failureMessage, manualReviewRequired, diagnostics }));
+  let playwright;
+  try { playwright = require("playwright"); }
+  catch { return { results: failAll("PLAYWRIGHT_NOT_INSTALLED", "Playwright غير مثبت داخل خدمة RPA. شغّل npm install ثم npm run install:browsers.", true), stopCycle: true, failureCode: "PLAYWRIGHT_NOT_INSTALLED" }; }
+
+  const replies = new Map();
+  const onResponse = response => {
+    let url;
+    try { url = new URL(response.url()); } catch { return; }
+    if (!/\/TrackTrace\/GetShipmentDetails$/i.test(url.pathname)) return;
+    const barcode = normalizeTrackingNumber(url.searchParams.get("barcode"));
+    if (!trackingNumbers.includes(barcode) || replies.has(barcode)) return;
+    replies.set(barcode, response.json().catch(() => null).then(body => ({ status: response.status(), body })));
+  };
+  let context;
+  let page;
+  try {
+    ensureDirs();
+    page = await trackingPage(playwright);
+    context = page.context();
+    let { title, bodyText, failureCode } = await loadTrackingSite(page);
+    if (failureCode) {
+      const diagnostics = await saveDiagnostics({ page, trackingNumber: label, shipmentId: "", failureCode, failureMessage: blockMessage(failureCode), diagnostics: { batch: trackingNumbers, pageOpened: true, pageTitle: title, pageUrl: page.url(), bodyTextSample: bodyText.slice(0, 4000), durationMs: Date.now() - startedAt } });
+      return { results: failAll(failureCode, diagnostics.failureMessage, true, diagnostics), stopCycle: true, failureCode };
+    }
+    for (const [index, trackingNumber] of trackingNumbers.entries()) {
+      const input = page.locator(`.trackTraceInput input.input${index}, input.input${index}`).first();
+      await input.waitFor({ state: "visible", timeout: 10000 });
+      await input.click();
+      await input.fill("");
+      await input.type(trackingNumber, { delay: 80 });
+      // Enter opens the next barcode line.
+      if (index < trackingNumbers.length - 1) await input.press("Enter");
+    }
+    const button = await findSubmitButton(page);
+    if (!button) throw Object.assign(new Error("زر التتبع غير موجود"), { failureCode: "INPUT_NOT_FOUND" });
+    page.on("response", onResponse);
+    await button.click();
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline && replies.size < trackingNumbers.length) await page.waitForTimeout(500);
+    const answers = new Map();
+    for (const [barcode, reply] of replies) answers.set(barcode, await reply);
+
+    title = await page.title().catch(() => "");
+    bodyText = await page.locator("body").innerText({ timeout: 10000 }).catch(() => "");
+    failureCode = classifyBlock(bodyText, title, page.url());
+    if (failureCode && !answers.size) {
+      const diagnostics = await saveDiagnostics({ page, trackingNumber: label, shipmentId: "", failureCode, failureMessage: blockMessage(failureCode), diagnostics: { batch: trackingNumbers, pageOpened: true, submitClicked: true, pageTitle: title, pageUrl: page.url(), bodyTextSample: bodyText.slice(0, 4000), durationMs: Date.now() - startedAt } });
+      return { results: failAll(failureCode, diagnostics.failureMessage, true, diagnostics), stopCycle: true, failureCode };
+    }
+    const results = trackingNumbers.map(trackingNumber => {
+      const answer = answers.get(trackingNumber);
+      return batchResultFromDetails(trackingNumber, answer?.status || 0, answer?.body || null);
+    });
+    const diagnostics = await saveDiagnostics({ page, trackingNumber: label, shipmentId: "", failureCode: "", failureMessage: "", diagnostics: { batch: trackingNumbers, pageOpened: true, submitClicked: true, repliesReceived: answers.size, results: results.map(item => ({ trackingNumber: item.trackingNumber, success: item.success, failureCode: item.failureCode })), durationMs: Date.now() - startedAt } });
+    for (const result of results) result.diagnostics = { batch: true, durationMs: diagnostics.durationMs, htmlFile: diagnostics.htmlFile, jsonFile: diagnostics.jsonFile };
+    const rateLimited = results.some(item => item.failureCode === "SITE_RATE_LIMITED");
+    return { results, stopCycle: rateLimited, failureCode: rateLimited ? "SITE_RATE_LIMITED" : "" };
+  } catch (error) {
+    const diagnostics = await saveDiagnostics({ page, trackingNumber: label, shipmentId: "", failureCode: BATCH_FAILED, failureMessage: error.message || "تعذر البحث المجمّع", diagnostics: { batch: trackingNumbers, durationMs: Date.now() - startedAt } });
+    return { results: trackingNumbers.map(trackingNumber => batchItemFailure(trackingNumber, BATCH_FAILED, "تعذر البحث المجمّع؛ سيتم البحث عن الكود منفردًا.", { diagnostics })), stopCycle: false, failureCode: BATCH_FAILED };
+  } finally {
+    if (page) page.off("response", onResponse);
+    if (context && !KEEP_WINDOW) await context.close().catch(() => {});
+    else if (page && !page.isClosed() && !windowMinimized) await setWindowState(page, "minimized");
+  }
+}
+
+// POST /track-batch: { items: [{ shipmentId, trackingNumber }], force }. Every code gets the same answer shape as
+// /track, in "results". A code whose failureCode is BATCH_FAILED or BATCH_ITEM_MISSING was not looked up and the
+// System searches it alone; stopCycle means the site is refusing lookups for now.
+async function trackBatch(payload = {}) {
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length || items.length > MAX_BATCH_SIZE) {
+    return { success: false, batch: true, results: [], failureCode: "INVALID_BATCH", failureMessage: `البحث المجمّع يقبل من 1 إلى ${MAX_BATCH_SIZE} أكواد` };
+  }
+  const now = Date.now();
+  const answers = new Map();
+  const toSearch = [];
+  for (const item of items) {
+    const trackingNumber = normalizeTrackingNumber(item?.trackingNumber);
+    if (answers.has(trackingNumber) || toSearch.includes(trackingNumber)) continue;
+    if (!/^[A-Z0-9]{8,30}$/.test(trackingNumber)) {
+      answers.set(trackingNumber, baseResponse({ trackingNumber, failureCode: "INVALID_TRACKING_NUMBER", failureMessage: "رقم التتبع غير صالح", manualReviewRequired: true }));
+      continue;
+    }
+    const previous = lastAttemptByTrackingNumber.get(trackingNumber);
+    if (!payload.force && previous && now - previous < MIN_REPEAT_INTERVAL_MS) {
+      answers.set(trackingNumber, baseResponse({ trackingNumber, failureCode: "RATE_LIMITED", failureMessage: "تم تتبع نفس الكود منذ قليل", manualReviewRequired: false, diagnostics: { lastAttemptAt: new Date(previous).toISOString() } }));
+      continue;
+    }
+    toSearch.push(trackingNumber);
+  }
+  let outcome = { results: [], stopCycle: false, failureCode: "" };
+  if (toSearch.length && activeJobs >= MAX_CONCURRENT) {
+    for (const trackingNumber of toSearch) answers.set(trackingNumber, baseResponse({ trackingNumber, failureCode: "BUSY", failureMessage: "خدمة RPA مشغولة الآن", manualReviewRequired: false }));
+  } else if (toSearch.length) {
+    activeJobs += 1;
+    try {
+      if (lastAttempt) {
+        const elapsed = Date.now() - lastAttempt;
+        const minDelay = Math.floor(MIN_DELAY_MS + Math.random() * Math.max(0, MAX_DELAY_MS - MIN_DELAY_MS));
+        if (elapsed < minDelay) await new Promise(resolve => setTimeout(resolve, minDelay - elapsed));
+      }
+      lastAttempt = Date.now();
+      outcome = await realTrackBatch(toSearch);
+    } finally {
+      activeJobs -= 1;
+    }
+    for (const result of outcome.results) {
+      answers.set(result.trackingNumber, result);
+      // Codes the batch could not look up stay free for the single search that follows.
+      if (![BATCH_FAILED, BATCH_ITEM_MISSING].includes(result.failureCode)) lastAttemptByTrackingNumber.set(result.trackingNumber, Date.now());
+    }
+    if (outcome.results.some(item => item.success)) lastSuccessfulRunAt = new Date().toISOString();
+    if (outcome.results.some(item => !item.success)) lastFailureAt = new Date().toISOString();
+  }
+  const results = [];
+  for (const item of items) {
+    const trackingNumber = normalizeTrackingNumber(item?.trackingNumber);
+    if (!answers.has(trackingNumber) || results.some(result => result.trackingNumber === trackingNumber)) continue;
+    results.push({ ...answers.get(trackingNumber), shipmentId: item?.shipmentId || "" });
+  }
+  return { success: results.some(item => item.success), batch: true, results, stopCycle: Boolean(outcome.stopCycle), failureCode: outcome.failureCode || "" };
+}
+
 const server = http.createServer(async (req, res) => {
   const requestId = String(req.headers["x-request-id"] || crypto.randomUUID()).slice(0, 128);
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
@@ -538,6 +712,7 @@ const server = http.createServer(async (req, res) => {
         agentVersion: AGENT_VERSION,
         browserAvailable: browserAvailable(),
         activeJob: activeJobs > 0,
+        maxBatchSize: MAX_BATCH_SIZE,
         lastSuccessfulRunAt,
         lastFailureAt
       }, requestId);
@@ -551,6 +726,13 @@ const server = http.createServer(async (req, res) => {
       const result = await promise;
       if (repeated) console.log(JSON.stringify({ event: "tracking_result_resent", requestId, success: Boolean(result.success), failureCode: result.failureCode || "" }));
       return json(res, 200, { ...result, requestId }, requestId);
+    }
+    if (url.pathname === "/track-batch" && req.method === "POST") {
+      const payload = await readBody(req);
+      const { promise } = trackOnce(requestId, payload, trackBatch);
+      // Same async mode as /track: the result is fetched with GET /track/<requestId>.
+      if (url.searchParams.get("async") === "1") return json(res, 202, { status: "accepted", requestId }, requestId);
+      return json(res, 200, { ...(await promise), requestId }, requestId);
     }
     const jobMatch = url.pathname.match(/^\/track\/([A-Za-z0-9-]{8,128})$/);
     if (jobMatch && req.method === "GET") {
