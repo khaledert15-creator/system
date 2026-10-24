@@ -87,5 +87,63 @@
     return Object.keys(CITIES).filter(governorate => CITIES[governorate].some(name => fold(name) === wanted));
   }
 
-  return { CITIES, GOVERNORATES: Object.keys(CITIES), citiesOf, canonicalCity, governoratesOfCity, fold };
+  // How well a typed text matches a name: lower is better, -1 is no match. Tolerates ه/ة, أ/ا, ى/ي, a missing «ال»,
+  // missing spaces («بورسعيد» / «بور سعيد») and one wrong letter in a word of four letters or more.
+  function matchScore(name, query) {
+    const q = fold(query), n = fold(name);
+    if (!q) return 0;
+    const bare = text => text.split(" ").map(word => word.replace(/^ال(?=..)/, "")).join(" ");
+    // Each tier first as typed, then without «ال» (half a point worse), so «المحله» puts «المحلة الكبرى» first.
+    const tiers = [
+      (a, b) => a === b || a.replace(/ /g, "") === b.replace(/ /g, ""),
+      (a, b) => a.startsWith(b) || a.replace(/ /g, "").startsWith(b.replace(/ /g, "")),
+      (a, b) => a.split(" ").some(word => word.startsWith(b)),
+      (a, b) => b.length >= 2 && a.includes(b)
+    ];
+    for (let tier = 0; tier < tiers.length; tier++) {
+      if (tiers[tier](n, q)) return tier;
+      if (tiers[tier](bare(n), bare(q)) || tiers[tier](n, bare(q))) return tier + 0.5;
+    }
+    const words = bare(n).split(" "), typed = bare(q).split(" ").filter(Boolean);
+    if (typed.length && typed.every(word => word.length >= 4 && words.some(candidate => nearlySame(candidate, word)))) return 4;
+    return -1;
+  }
+
+  function nearlySame(a, b) {
+    if (Math.abs(a.length - b.length) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { i++; j++; continue; }
+      if (++edits > 1) return false;
+      if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+    }
+    return edits + (a.length - i) + (b.length - j) <= 1;
+  }
+
+  const GOVERNORATE_ALIASES = { "مصر": "القاهرة", "كايرو": "القاهرة", "اسكندريه": "الإسكندرية", "اسكندرية": "الإسكندرية", "الاسكندرية": "الإسكندرية", "اسماعيليه": "الإسماعيلية", "الواحات": "الوادي الجديد", "سينا": "شمال سيناء" };
+
+  // Governorates for a typed text, best first. A city name finds its governorate too («ميت غمر» → الدقهلية).
+  function searchGovernorates(query, limit = 27) {
+    const out = [];
+    for (const governorate of Object.keys(CITIES)) {
+      const score = matchScore(governorate, query);
+      if (score >= 0) out.push({ governorate, city: "", score });
+    }
+    const alias = GOVERNORATE_ALIASES[fold(query)];
+    if (alias && !out.some(item => item.governorate === alias)) out.push({ governorate: alias, city: "", score: 1 });
+    if (fold(query).length >= 3) for (const item of searchCities(query, "", 8)) if (!out.some(row => row.governorate === item.governorate && !row.city)) out.push({ ...item, score: item.score + 5 });
+    return withoutGuesses(out).sort((a, b) => a.score - b.score || a.governorate.localeCompare(b.governorate, "ar")).slice(0, limit);
+  }
+
+  // A one-letter-typo guess is offered only when nothing matches as written.
+  function withoutGuesses(rows) { return rows.some(row => row.score < 4) ? rows.filter(row => row.score < 4) : rows; }
+
+  // Cities for a typed text: of one governorate when it is chosen, otherwise of all of Egypt with their governorate.
+  function searchCities(query, governorate = "", limit = 60) {
+    const pool = governorate ? citiesOf(governorate).map(city => ({ governorate, city })) : Object.entries(CITIES).flatMap(([gov, cities]) => cities.map(city => ({ governorate: gov, city })));
+    return withoutGuesses(pool.map((item, index) => ({ ...item, index, score: matchScore(item.city, query) })).filter(item => item.score >= 0))
+      .sort((a, b) => a.score - b.score || a.index - b.index).slice(0, limit).map(({ index, ...item }) => item);
+  }
+
+  return { CITIES, GOVERNORATES: Object.keys(CITIES), citiesOf, canonicalCity, governoratesOfCity, fold, matchScore, searchGovernorates, searchCities };
 });

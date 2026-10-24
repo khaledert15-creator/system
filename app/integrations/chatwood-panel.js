@@ -318,7 +318,8 @@
     if (existing) existing.qty += qty;
     else draft.lines.push({ bookId: book.id, qty, price: Number(book.price || 0), discount: book.discount, discountType: book.discountType, reserved: 0, fromStore: state.form.order?.website });
     state.form.search = "";
-    const input = $("form-book-search"); if (input) input.value = "";
+    state.form.bookActive = 0;
+    const input = $("form-book-search"); if (input) { input.value = ""; input.focus(); }
     refreshLines(); refreshResults();
   }
 
@@ -330,29 +331,69 @@
     return el("label", { class: `field ${attrs.wide ? "wide" : ""} ${attrs.required ? "required" : ""}`, "data-field": name }, el("span", { text: label }), input);
   }
 
-  // Governorate and city are lists: the city list holds only the cities and centres of the chosen governorate. A city
-  // saved earlier in another spelling stays visible until the employee picks one from the list.
+  // A text box with a list under it: typing filters the list (tolerant of ه/ة، أ/ا، «ال» and one typo), ↑/↓ move,
+  // Enter or a click picks, Esc closes. Leaving the box without picking puts back the value that was picked before.
+  function combo({ field, label, value, placeholder, disabled, hint, items, pick }) {
+    let active = 0, shown = [];
+    const input = el("input", { name: field, value: value || "", placeholder, disabled, autocomplete: "off", role: "combobox", "aria-expanded": "false" });
+    const list = el("div", { class: "combo-list", role: "listbox", hidden: true });
+    const open = () => {
+      const typed = input.value.trim() === String(value || "") ? "" : input.value;
+      shown = items(typed); active = 0;
+      list.replaceChildren(...(shown.length ? shown.map((item, index) => el("button", { type: "button", role: "option", class: `combo-option ${index === active ? "active" : ""}`,
+        onmousedown: event => { event.preventDefault(); choose(item); } }, el("span", { text: item.label }), item.hint ? el("small", { text: item.hint }) : "")) : [el("div", { class: "combo-empty", text: "مفيش نتيجة. جرّب تكتب بطريقة تانية." })]));
+      list.hidden = false; input.setAttribute("aria-expanded", "true");
+    };
+    const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); };
+    const move = step => {
+      if (list.hidden) return open();
+      if (!shown.length) return;
+      active = (active + step + shown.length) % shown.length;
+      list.querySelectorAll(".combo-option").forEach((node, index) => node.classList.toggle("active", index === active));
+      list.querySelectorAll(".combo-option")[active]?.scrollIntoView({ block: "nearest" });
+    };
+    const choose = item => { close(); pick(item); };
+    input.addEventListener("focus", () => { input.select(); open(); });
+    input.addEventListener("input", () => { clearError(); open(); });
+    input.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown") { event.preventDefault(); move(1); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); move(-1); }
+      else if (event.key === "Enter") { event.preventDefault(); if (!list.hidden && shown[active]) choose(shown[active]); }
+      else if (event.key === "Escape") { close(); input.value = value || ""; }
+    });
+    input.addEventListener("blur", () => { close(); if (input.value !== (value || "")) input.value = value || ""; });
+    return el("label", { id: `${field}-field`, class: "field required combo", "data-field": field }, el("span", { text: label }), el("div", { class: "combo-box" }, input, list), hint ? el("small", { class: "muted", text: hint }) : "");
+  }
+
+  // Governorate and city: the city list holds only the chosen governorate's cities and centres. Typing a city in the
+  // governorate box (or in the city box before a governorate) picks both. A city saved earlier in another spelling
+  // stays shown until one is picked from the list.
+  function setPlace(governorate, city) {
+    const draft = state.form.draft, changed = governorate !== draft.governorate;
+    draft.governorate = governorate;
+    draft.city = city || EgyptCities.canonicalCity(governorate, draft.city);
+    $("governorate-field")?.replaceWith(governorateField());
+    $("city-field")?.replaceWith(cityField());
+    if (changed) refreshTotals();
+    clearError();
+    if (!draft.city) setTimeout(() => document.querySelector('#city-field input')?.focus(), 0);
+  }
+
   function governorateField() {
     const draft = state.form.draft;
-    return el("label", { class: "field required", "data-field": "governorate" }, el("span", { text: "المحافظة" }),
-      el("select", { name: "governorate", onchange: event => {
-        draft.governorate = event.target.value;
-        draft.city = EgyptCities.canonicalCity(draft.governorate, draft.city);
-        $("city-field")?.replaceWith(cityField());
-        refreshTotals(); clearError();
-      } }, el("option", { value: "", text: "اختار المحافظة…" }),
-        EgyptCities.GOVERNORATES.map(name => el("option", { value: name, selected: name === draft.governorate, text: name })),
-        draft.governorate && !EgyptCities.GOVERNORATES.includes(draft.governorate) ? el("option", { value: draft.governorate, selected: true, text: `${draft.governorate} (اختار من القايمة)` }) : ""));
+    return combo({ field: "governorate", label: "المحافظة", value: draft.governorate, placeholder: "اكتب المحافظة أو المدينة…",
+      items: typed => typed.trim()
+        ? EgyptCities.searchGovernorates(typed, 12).map(item => ({ ...item, label: item.city ? `${item.city}` : item.governorate, hint: item.city ? `محافظة ${item.governorate}` : "" }))
+        : EgyptCities.GOVERNORATES.map(governorate => ({ governorate, city: "", label: governorate })),
+      pick: item => setPlace(item.governorate, item.city) });
   }
 
   function cityField() {
     const draft = state.form.draft, cities = EgyptCities.citiesOf(draft.governorate), listed = cities.includes(draft.city);
-    return el("label", { id: "city-field", class: "field required", "data-field": "city" }, el("span", { text: "المدينة / المركز" }),
-      el("select", { name: "city", disabled: !cities.length, onchange: event => { draft.city = event.target.value; clearError(); } },
-        el("option", { value: "", text: cities.length ? "اختار المدينة أو المركز…" : "اختار المحافظة الأول" }),
-        draft.city && !listed ? el("option", { value: draft.city, selected: true, text: `${draft.city} (اختار من القايمة)` }) : "",
-        cities.map(name => el("option", { value: name, selected: name === draft.city, text: name }))),
-      cities.length ? el("small", { class: "muted", text: "القرية أو الشارع يتكتبوا في العنوان." }) : "");
+    return combo({ field: "city", label: "المدينة / المركز", value: draft.city, placeholder: draft.governorate ? `اكتب مدينة أو مركز في ${draft.governorate}…` : "اكتب المدينة، والمحافظة هتتحدد لوحدها…",
+      hint: draft.city && !listed ? "المدينة دي مكتوبة بطريقة قديمة؛ اختار واحدة من القايمة." : "القرية أو الشارع يتكتبوا في العنوان.",
+      items: typed => EgyptCities.searchCities(typed, draft.governorate, draft.governorate ? 60 : 12).map(item => ({ ...item, label: item.city, hint: draft.governorate ? "" : `محافظة ${item.governorate}` })),
+      pick: item => setPlace(item.governorate, item.city) });
   }
 
   function renderForm() {
@@ -387,9 +428,13 @@
           governorateField(), cityField(), field("العنوان (القرية / الشارع / العمارة)", "address", { wide: true, multiline: true, required: true }),
           field("علامة مميزة", "addressMark"), field("رقم بديل", "alternativePhone", { dir: "ltr", inputmode: "tel" }))),
       el("section", { class: "block", "data-field": "lines" }, el("h3", { text: "2 · الكتب" }),
-        el("input", { id: "form-book-search", class: "search", placeholder: "اكتب اسم الكتاب… (Enter يضيف أول نتيجة)", autocomplete: "off",
-          oninput: event => { form.search = event.target.value; refreshResults(); },
-          onkeydown: event => { if (event.key === "Enter") { event.preventDefault(); const first = ChatwoodSuggest.searchBooks(form.search, catalog.books, 1, catalog.index)[0]; if (first) addBook(first); } } }),
+        el("input", { id: "form-book-search", class: "search", placeholder: "ابحث عن كتاب: الاسم، المادة، الصف (↑↓ ثم Enter)", autocomplete: "off",
+          oninput: event => { form.search = event.target.value; form.bookActive = 0; refreshResults(); },
+          onkeydown: event => {
+            const count = $("book-results")?.querySelectorAll(".result").length || 0;
+            if ((event.key === "ArrowDown" || event.key === "ArrowUp") && count) { event.preventDefault(); form.bookActive = ((form.bookActive || 0) + (event.key === "ArrowDown" ? 1 : -1) + count) % count; refreshResults(); }
+            else if (event.key === "Enter") { event.preventDefault(); const book = (form.bookResults || [])[form.bookActive || 0]; if (book) addBook(book); }
+            else if (event.key === "Escape") { form.search = ""; event.target.value = ""; refreshResults(); } } }),
         el("div", { id: "book-results", class: "results" }), el("div", { id: "form-lines" }), orderDiscountField()),
       el("section", { class: "block" }, el("h3", { text: "3 · الشحن" }),
         el("div", { class: "grid" },
@@ -442,8 +487,9 @@
 
   function refreshResults() {
     const box = $("book-results"); if (!box) return;
-    const list = state.form.search.trim() ? ChatwoodSuggest.searchBooks(state.form.search, state.catalog.books, 6, state.catalog.index) : [];
-    box.replaceChildren(...list.map(book => el("button", { type: "button", class: "result", onclick: () => addBook(book) },
+    const list = state.form.search.trim() ? ChatwoodSuggest.searchBooks(state.form.search, state.catalog.books, 8, state.catalog.index) : [];
+    state.form.bookResults = list; if ((state.form.bookActive || 0) >= list.length) state.form.bookActive = 0;
+    box.replaceChildren(...list.map((book, index) => el("button", { type: "button", class: `result ${index === (state.form.bookActive || 0) ? "active" : ""}`, onmousedown: event => event.preventDefault(), onclick: () => addBook(book) },
       el("span", { text: book.name }), el("small", { class: book.available > 0 ? "ok" : "warn", text: `${money(book.price)} · ${book.available > 0 ? `متاح ${book.available}` : "غير متاح · حجز مسبق"}` }))));
     if (state.form.search.trim() && !list.length) box.append(el("div", { class: "small muted", text: "مفيش كتاب بالاسم ده." }));
   }

@@ -39,6 +39,23 @@ pass("other spellings map to the list", () => {
   assert.equal(EgyptCities.canonicalCity("القاهرة", ""), "");
 });
 
+pass("smart search finds governorates and cities the way customers write them", () => {
+  const gov = query => EgyptCities.searchGovernorates(query, 3).map(item => item.city ? `${item.governorate}·${item.city}` : item.governorate);
+  assert.equal(gov("اسكندريه")[0], "الإسكندرية");
+  assert.equal(gov("بور سعيد")[0], "بورسعيد");
+  assert.equal(gov("دقهليه")[0], "الدقهلية");
+  assert.equal(gov("سوهج")[0], "سوهاج", "one wrong letter");
+  assert.equal(gov("مصر")[0], "القاهرة");
+  assert.equal(gov("ميت غمر")[0], "الدقهلية·ميت غمر", "a city finds its governorate");
+  const city = (query, governorate = "") => EgyptCities.searchCities(query, governorate, 3).map(item => governorate ? item.city : `${item.city}·${item.governorate}`);
+  assert.deepEqual(city("منصوره", "الدقهلية"), ["المنصورة", "المنصورة الجديدة"]);
+  assert.equal(city("تجمع", "القاهرة")[0], "التجمع الخامس");
+  assert.equal(city("المحله")[0], "المحلة الكبرى·الغربية", "«ال» as typed ranks first");
+  assert.deepEqual(city("طنطا"), ["طنطا·الغربية"], "no typo guesses when the name matches");
+  assert.deepEqual(city("طنتا"), ["طنطا·الغربية"], "a typo still finds it");
+  assert.deepEqual(city("طنطا", "الدقهلية"), [], "only the chosen governorate's cities");
+});
+
 pass("the server requires a city of the chosen governorate and stores the list spelling", () => {
   const server = fs.readFileSync(path.join(__dirname, "../server-node.js"), "utf8");
   const extract = name => {

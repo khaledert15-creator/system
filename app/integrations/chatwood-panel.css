@@ -91,3 +91,11 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .footer-row { display:flex; align-items:center; gap:10px; }
 .footer-total { flex:1; display:grid; } .footer-total b { font-size:16px; }
 .footer-row .btn { padding:10px 16px; font-size:15px; }
+/* Type-to-search lists for governorate and city; the highlighted book result is the one Enter adds. */
+.combo-box { position:relative; }
+.combo-list { position:absolute; inset-inline:0; top:calc(100% + 2px); z-index:5; max-height:240px; overflow-y:auto; background:#fff; border:1px solid var(--border); border-radius:9px; box-shadow:0 8px 20px rgba(23,50,77,.14); padding:4px; }
+.combo-option { display:flex; justify-content:space-between; gap:8px; width:100%; padding:7px 9px; border:0; border-radius:7px; background:none; font:inherit; font-weight:600; text-align:start; cursor:pointer; color:var(--ink); }
+.combo-option small { color:var(--muted); font-weight:400; white-space:nowrap; }
+.combo-option.active, .combo-option:hover { background:var(--blue-soft); color:var(--blue); }
+.combo-empty { padding:8px; color:var(--muted); font-size:12px; font-weight:400; }
+.result.active { border-color:var(--blue); background:var(--blue-soft); }
