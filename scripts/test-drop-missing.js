@@ -23,7 +23,7 @@ const H = require('./integration-test-helpers.js');
     const book = id => system.readDb().books.find(row => row.id === id);
     const drop = (id, body = {}, username = 'cashier') => system.api(`/api/orders/${id}/drop-missing`, { username, method:'POST', body:{ customerConsent:true, consentChannel:'واتساب', operationKey:`k-${id}-${Math.random()}`, ...body } });
     const quick = async (requestId, lines, payment = {}) => {
-      let r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ requestId, phone:'01009998887', customerName:'سارة', governorate:'القاهرة', address:'شارع 2', shippingCost:0, lines, ...payment } });
+      let r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ requestId, phone:'01009998887', customerName:'سارة', governorate:'القاهرة', city:'مدينة نصر', address:'شارع 2', shippingCost:0, lines, ...payment } });
       assert.equal(r.status, 201, r.text);
       const id = r.body.order.id;
       r = await system.api(`/api/orders/${id}/confirm`, { username:'cashier', method:'POST', body:{} });

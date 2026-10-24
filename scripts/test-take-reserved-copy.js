@@ -20,7 +20,7 @@ const pass = name => console.log(`PASS ${name}`);
     const order = id => system.readDb().onlineOrders.find(row => row.id === id);
     const book = id => system.readDb().books.find(row => row.id === id);
     const create = async (phone, lines, key) => {
-      const r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: { phone, customerName: `عميل ${phone.slice(-2)}`, governorate: 'القاهرة', address: 'شارع', shippingCompany: 'البريد المصري', requestId: key, lines } });
+      const r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: { phone, customerName: `عميل ${phone.slice(-2)}`, governorate: 'القاهرة', city:'مدينة نصر', address: 'شارع', shippingCompany: 'البريد المصري', requestId: key, lines } });
       await system.api(`/api/orders/${r.body.order.id}/confirm`, { username: 'cashier', method: 'POST', body: {} });
       return r.body.order.id;
     };

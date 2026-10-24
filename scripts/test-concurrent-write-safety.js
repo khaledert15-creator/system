@@ -19,7 +19,7 @@ async function until(fn){for(let i=0;i<100;i++){if(await fn())return;await sleep
   child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'false'},stdio:'ignore'});
   await until(async()=>{try{return (await fetch(base+'/api/health')).ok;}catch{return false;}});
   const token=(await (await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password})})).json()).token;
-  const payload=(phone,name)=>JSON.stringify({phone,customerName:name,governorate:'القاهرة',address:'شارع الاختبار',lines:[{bookId:'B1',qty:1}],shippingCost:0});
+  const payload=(phone,name)=>JSON.stringify({phone,customerName:name,governorate:'القاهرة',city:'مدينة نصر',address:'شارع الاختبار',lines:[{bookId:'B1',qty:1}],shippingCost:0});
 
   // Request A sends its headers now and its body 300ms later (a slow mobile upload).
   const slow=new Promise((resolve,reject)=>{

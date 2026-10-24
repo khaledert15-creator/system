@@ -35,7 +35,7 @@ const H = require('./integration-test-helpers.js');
     };
 
     // ---- A WhatsApp order: create, confirm, pack.
-    let r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ phone:'01011112222', customerName:'عميل تعديل', governorate:'القاهرة', address:'شارع 1', shippingCompany:'البريد المصري', requestId:'edit-1', lines:[{ bookId:'B0001', qty:2 }] } });
+    let r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ phone:'01011112222', customerName:'عميل تعديل', governorate:'القاهرة', city:'مدينة نصر', address:'شارع 1', shippingCompany:'البريد المصري', requestId:'edit-1', lines:[{ bookId:'B0001', qty:2 }] } });
     assert.ok([200, 201].includes(r.status), r.text);
     const id = r.body.order.id;
     assert.equal((await system.api(`/api/orders/${id}/confirm`, { username:'cashier', method:'POST', body:{} })).status, 200);
@@ -64,7 +64,7 @@ const H = require('./integration-test-helpers.js');
     assert.equal(system.readDb().sales.filter(sale => sale.status === 'ملغاة').length, 1, 'a repeated click changes nothing');
     console.log('PASS the cashier reopened the packed order: invoice voided and detached, books reserved again');
 
-    r = await system.api(`/api/orders/${id}/quick`, { username:'cashier', method:'PATCH', body:{ phone:'01011112222', customerName:'عميل تعديل', governorate:'القاهرة', address:'شارع 1', shippingCompany:'البريد المصري', shippingCost:reopened.shippingCost ?? reopened.shippingFee, lines:[{ bookId:'B0001', qty:1 }, { bookId:'B0002', qty:1 }] } });
+    r = await system.api(`/api/orders/${id}/quick`, { username:'cashier', method:'PATCH', body:{ phone:'01011112222', customerName:'عميل تعديل', governorate:'القاهرة', city:'مدينة نصر', address:'شارع 1', shippingCompany:'البريد المصري', shippingCost:reopened.shippingCost ?? reopened.shippingFee, lines:[{ bookId:'B0001', qty:1 }, { bookId:'B0002', qty:1 }] } });
     assert.equal(r.status, 200, r.text);
     assert.deepEqual(order(id).lines.map(line => [line.bookId, line.qty]), [['B0001', 1], ['B0002', 1]]);
     assert.equal(book('B0001').reservedStock, 1); assert.equal(book('B0002').reservedStock, 1);

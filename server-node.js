@@ -9,6 +9,7 @@ const os = require("os");
 const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
 const OrderFinance = require("./app/order-finance.js");
+const EgyptCities = require("./app/egypt-cities.js");
 const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
@@ -40,7 +41,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -632,18 +633,27 @@ function normalizeCustomerPhone(value="") {
   return digits;
 }
 
+// The order's city in the list's spelling. For a known governorate it must be one of that governorate's cities and
+// centres; a governorate outside the list (an old spelling) only needs a city to be written.
+function quickOrderCity(payload={},customer={}) {
+  const governorate=String(payload.governorate||customer.governorate||"").trim(),city=String(payload.city||customer.city||"").trim();
+  if(!EgyptCities.GOVERNORATES.includes(governorate))return city;
+  return EgyptCities.canonicalCity(governorate,city);
+}
+
 function quickOrderMissingCustomerFields(payload={},customer={}) {
   const values={
     customerName:String(payload.customerName||customer.name||"").trim(),
     governorate:String(payload.governorate||customer.governorate||"").trim(),
+    city:quickOrderCity(payload,customer),
     address:String(payload.address||customer.address||"").trim()
   };
   return Object.entries(values).filter(([,value])=>!value).map(([field])=>field);
 }
 
 function quickOrderValidationMessage(fields=[]) {
-  const labels={customerName:"اسم العميل",governorate:"المحافظة",address:"عنوان العميل"};
-  if(fields.length===1)return fields[0]==="customerName"?"أدخل اسم العميل":fields[0]==="governorate"?"اختر المحافظة":"أدخل عنوان العميل";
+  const labels={customerName:"اسم العميل",governorate:"المحافظة",city:"المدينة / المركز",address:"عنوان العميل"};
+  if(fields.length===1)return {customerName:"أدخل اسم العميل",governorate:"اختر المحافظة",city:"اختر المدينة / المركز من مدن المحافظة",address:"أدخل عنوان العميل"}[fields[0]];
   return `أكمل الحقول التالية: ${fields.map(field=>labels[field]).join("، ")}`;
 }
 
@@ -3354,6 +3364,7 @@ const server = http.createServer(async (req, res) => {
       const now=new Date().toISOString();
       const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
       if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
+      payload.city=quickOrderCity(payload,customer||{});
       if(!customer){
         customer={id:nextId("C",db.customers),name:String(payload.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),createdAt:now,updatedAt:now,deletedAt:null};
         db.customers.push(customer);
@@ -3397,6 +3408,7 @@ const server = http.createServer(async (req, res) => {
       const customer=(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt);
       const missingCustomerFields=quickOrderMissingCustomerFields(payload,customer||{});
       if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
+      payload.city=quickOrderCity(payload,customer||{});
       const requested=Array.isArray(payload.lines)?payload.lines:[];
       if(!requested.length)return send(res,400,{ok:false,message:"أضف كتابًا واحدًا على الأقل."});
       // A website order is edited only on the customer's request and keeps the website's prices: books already on it keep

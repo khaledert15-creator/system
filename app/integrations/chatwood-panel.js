@@ -280,7 +280,7 @@
     const customer = state.data?.customer || {}, saved = customer.address || {};
     // A WhatsApp name of dots or digits is not a name.
     const contactName = /\d{5,}/.test(state.contactName) || !/\p{L}{2,}/u.test(state.contactName) ? "" : state.contactName;
-    return { phone: state.phone, customerName: customer.known ? customer.name : (customer.name || contactName), alternativePhone: saved.alternativePhone || "", governorate: saved.governorate || "", city: saved.city || "",
+    return { phone: state.phone, customerName: customer.known ? customer.name : (customer.name || contactName), alternativePhone: saved.alternativePhone || "", governorate: saved.governorate || "", city: EgyptCities.canonicalCity(saved.governorate, saved.city) || saved.city || "",
       address: saved.address || "", addressMark: saved.addressMark || "", shippingCompany: state.catalog.defaultShippingCompany, shippingCost: 0, shippingManual: false, lines: [], paymentPlan: "cash_on_delivery",
       paidAmount: 0, paymentConfirmed: false, cashAccountId: "", receiptMethod: "InstaPay", notes: "", orderDiscount: 0, orderDiscountType: "percent", requestId: `panel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       customerEdit: { confirmed: false, channel: "واتساب", note: "" }, reopenConfirmed: false };
@@ -298,7 +298,7 @@
     catch (error) { if (error.status !== 401) message(error.status === 403 ? "ليس لديك صلاحية تعديل الطلبات." : `تعذر فتح الطلب: ${error.message}`, "error"); return; }
     if (result.editBlock) return message(`${orderId}: ${result.editBlock}`, "warning");
     const order = result.order;
-    state.form = { mode: "edit", order, search: "", applied: new Set(), error: "", draft: { ...emptyDraft(), phone: order.phone, customerName: order.customerName, alternativePhone: order.alternativePhone, governorate: order.governorate, city: order.city,
+    state.form = { mode: "edit", order, search: "", applied: new Set(), error: "", draft: { ...emptyDraft(), phone: order.phone, customerName: order.customerName, alternativePhone: order.alternativePhone, governorate: order.governorate, city: EgyptCities.canonicalCity(order.governorate, order.city) || order.city || "",
       address: order.address, addressMark: order.addressMark, shippingCompany: order.shippingCompany || state.catalog.defaultShippingCompany, shippingCost: order.shippingCost, notes: order.notes, orderDiscount: order.orderDiscount, orderDiscountType: order.orderDiscountType,
       paymentPlan: order.paymentPlan, paidAmount: order.paidAmount, lines: order.lines.map(line => ({ ...line })) } };
     state.form.draft.shippingManual = Math.abs(order.shippingCost - autoShipping(state.form.draft)) > 0.009;
@@ -327,7 +327,32 @@
     const input = el(attrs.multiline ? "textarea" : "input", { name, value: attrs.multiline ? undefined : draft[name] || "", dir: attrs.dir, inputmode: attrs.inputmode, placeholder: attrs.placeholder, list: attrs.list, rows: attrs.multiline ? 2 : undefined,
       oninput: event => { draft[name] = event.target.value; if (name === "governorate") refreshTotals(); clearError(); } });
     if (attrs.multiline) input.value = draft[name] || "";
-    return el("label", { class: `field ${attrs.wide ? "wide" : ""}` }, el("span", { text: label }), input);
+    return el("label", { class: `field ${attrs.wide ? "wide" : ""} ${attrs.required ? "required" : ""}`, "data-field": name }, el("span", { text: label }), input);
+  }
+
+  // Governorate and city are lists: the city list holds only the cities and centres of the chosen governorate. A city
+  // saved earlier in another spelling stays visible until the employee picks one from the list.
+  function governorateField() {
+    const draft = state.form.draft;
+    return el("label", { class: "field required", "data-field": "governorate" }, el("span", { text: "المحافظة" }),
+      el("select", { name: "governorate", onchange: event => {
+        draft.governorate = event.target.value;
+        draft.city = EgyptCities.canonicalCity(draft.governorate, draft.city);
+        $("city-field")?.replaceWith(cityField());
+        refreshTotals(); clearError();
+      } }, el("option", { value: "", text: "اختار المحافظة…" }),
+        EgyptCities.GOVERNORATES.map(name => el("option", { value: name, selected: name === draft.governorate, text: name })),
+        draft.governorate && !EgyptCities.GOVERNORATES.includes(draft.governorate) ? el("option", { value: draft.governorate, selected: true, text: `${draft.governorate} (اختار من القايمة)` }) : ""));
+  }
+
+  function cityField() {
+    const draft = state.form.draft, cities = EgyptCities.citiesOf(draft.governorate), listed = cities.includes(draft.city);
+    return el("label", { id: "city-field", class: "field required", "data-field": "city" }, el("span", { text: "المدينة / المركز" }),
+      el("select", { name: "city", disabled: !cities.length, onchange: event => { draft.city = event.target.value; clearError(); } },
+        el("option", { value: "", text: cities.length ? "اختار المدينة أو المركز…" : "اختار المحافظة الأول" }),
+        draft.city && !listed ? el("option", { value: draft.city, selected: true, text: `${draft.city} (اختار من القايمة)` }) : "",
+        cities.map(name => el("option", { value: name, selected: name === draft.city, text: name }))),
+      cities.length ? el("small", { class: "muted", text: "القرية أو الشارع يتكتبوا في العنوان." }) : "");
   }
 
   function renderForm() {
@@ -346,28 +371,27 @@
       el("label", { class: "check" }, el("input", { type: "checkbox", checked: draft.reopenConfirmed, onchange: event => { draft.reopenConfirmed = event.target.checked; clearError(); } }), "تمام، رجّعه للتغليف")));
     else if (order && ["preparing", "needs_review"].includes(order.workflowStage)) notices.push(el("div", { class: "notice" }, el("span", { class: "small", text: "التجهيز بدأ: قائمة التجهيز هتتصفّر وموظف التجهيز هيوصله تنبيه." })));
     const receive = catalog.permissions.receive && form.mode === "create";
-    const payment = el("section", { class: "block" }, el("h3", { text: "الدفع" }),
+    const payment = el("section", { class: "block" }, el("h3", { text: "4 · الدفع" }),
       form.mode === "edit" ? el("div", { class: "small muted", text: `المدفوع: ${money(draft.paidAmount)} · تصحيح الدفعات من تفاصيل الطلب في السيستم.` })
         : el("div", {},
           el("select", { name: "paymentPlan", onchange: event => { draft.paymentPlan = event.target.value; refreshPayment(); refreshTotals(); } },
             Object.entries(PLAN_LABELS).filter(([key]) => receive || key === "cash_on_delivery").map(([key, label]) => el("option", { value: key, selected: draft.paymentPlan === key, text: label }))),
           el("div", { id: "payment-fields" }),
           el("div", { class: "small muted", text: `العربون المطلوب لطلبات الواتساب: ${money(catalog.depositRequired)}` })));
-    const lists = el("datalist", { id: "governorate-list" }, ChatwoodSuggest.GOVERNORATES.map(name => el("option", { value: name })));
     $("orders-list").replaceChildren(el("section", { class: "card order-form" },
       el("div", { class: "row" }, el("h2", { text: title }), el("button", { type: "button", class: "link", onclick: closeForm, text: "رجوع" })),
       notices,
       el("div", { id: "suggestions", class: "chips" }),
-      el("section", { class: "block" }, el("h3", { text: "العميل والعنوان" }),
-        el("div", { class: "grid" }, field("رقم المستلم", "phone", { dir: "ltr", inputmode: "tel", placeholder: "01xxxxxxxxx" }), field("الاسم", "customerName"),
-          field("المحافظة", "governorate", { list: "governorate-list" }), field("المدينة / المنطقة", "city"), field("العنوان", "address", { wide: true, multiline: true }),
-          field("علامة مميزة", "addressMark"), field("رقم بديل", "alternativePhone", { dir: "ltr", inputmode: "tel" })), lists),
-      el("section", { class: "block" }, el("h3", { text: "الكتب" }),
+      el("section", { class: "block" }, el("h3", { text: "1 · العميل والعنوان" }),
+        el("div", { class: "grid" }, field("رقم المستلم", "phone", { dir: "ltr", inputmode: "tel", placeholder: "01xxxxxxxxx", required: true }), field("الاسم", "customerName", { required: true }),
+          governorateField(), cityField(), field("العنوان (القرية / الشارع / العمارة)", "address", { wide: true, multiline: true, required: true }),
+          field("علامة مميزة", "addressMark"), field("رقم بديل", "alternativePhone", { dir: "ltr", inputmode: "tel" }))),
+      el("section", { class: "block", "data-field": "lines" }, el("h3", { text: "2 · الكتب" }),
         el("input", { id: "form-book-search", class: "search", placeholder: "اكتب اسم الكتاب… (Enter يضيف أول نتيجة)", autocomplete: "off",
           oninput: event => { form.search = event.target.value; refreshResults(); },
           onkeydown: event => { if (event.key === "Enter") { event.preventDefault(); const first = ChatwoodSuggest.searchBooks(form.search, catalog.books, 1, catalog.index)[0]; if (first) addBook(first); } } }),
         el("div", { id: "book-results", class: "results" }), el("div", { id: "form-lines" }), orderDiscountField()),
-      el("section", { class: "block" }, el("h3", { text: "الشحن" }),
+      el("section", { class: "block" }, el("h3", { text: "3 · الشحن" }),
         el("div", { class: "grid" },
           el("label", { class: "field" }, el("span", { text: "شركة الشحن" }), el("select", { onchange: event => { draft.shippingCompany = event.target.value; } }, catalog.shippingCompanies.map(name => el("option", { selected: name === draft.shippingCompany, text: name })))),
           el("label", { class: "field" }, el("span", { text: "رسوم الشحن" }), catalog.permissions.shipping
@@ -376,8 +400,11 @@
       payment,
       el("section", { class: "block" }, field("ملاحظة", "notes", { wide: true, multiline: true })),
       el("div", { id: "form-totals", class: "totals" }),
-      el("p", { id: "form-error", class: "message error", role: "alert" }),
-      el("button", { type: "button", id: "form-save", class: "btn wide", onclick: saveForm, text: form.mode === "create" ? (catalog.permissions.confirm ? "حفظ وتأكيد الطلب" : "حفظ الطلب") : "حفظ التعديل" })));
+      el("div", { class: "form-footer" },
+        el("p", { id: "form-error", class: "message error", role: "alert" }),
+        el("div", { class: "footer-row" },
+          el("div", { class: "footer-total" }, el("span", { class: "small muted", text: "الإجمالي" }), el("b", { id: "footer-total", text: "—" })),
+          el("button", { type: "button", id: "form-save", class: "btn", onclick: saveForm, text: form.mode === "create" ? (catalog.permissions.confirm ? "حفظ وتأكيد الطلب" : "حفظ الطلب") : "حفظ التعديل" })))));
     refreshSuggestions(); refreshResults(); refreshLines(); refreshPayment(); refreshTotals();
   }
 
@@ -389,10 +416,28 @@
     const chip = (key, label, apply) => { if (form.applied.has(key)) return; chips.push(el("button", { type: "button", class: "chip", title: "اضغط عشان يتضاف", onclick: () => { form.applied.add(key); apply(); renderForm(); } }, label)); };
     if (found.name && found.name !== draft.customerName) chip(`name:${found.name}`, `👤 ${found.name}`, () => { draft.customerName = found.name; });
     for (const phone of found.phones.slice(0, 2)) if (phone !== draft.phone && phone !== draft.alternativePhone) chip(`phone:${phone}`, `📞 ${phone}`, () => { if (!draft.phone) draft.phone = phone; else draft.alternativePhone = phone; });
-    if (found.governorate && found.governorate !== draft.governorate) chip(`gov:${found.governorate}`, `📍 ${found.governorate}${found.city ? ` - ${found.city}` : ""}`, () => { draft.governorate = found.governorate; if (found.city && !draft.city) draft.city = found.city; });
+    const place = suggestedLocation(found);
+    if (place.governorate && (place.governorate !== draft.governorate || (place.city && place.city !== draft.city)))
+      chip(`gov:${place.governorate}:${place.city}`, `📍 ${place.governorate}${place.city ? ` · ${place.city}` : ""}`, () => { draft.governorate = place.governorate; draft.city = place.city || EgyptCities.canonicalCity(place.governorate, draft.city); });
     if (found.address && found.address !== draft.address) chip(`addr:${found.address}`, `🏠 ${found.address.length > 60 ? `${found.address.slice(0, 60)}…` : found.address}`, () => { draft.address = found.address; });
     for (const book of found.books) if (!draft.lines.some(line => line.bookId === book.id)) chip(`book:${book.id}`, `📚 ${book.name}`, () => addBook(book));
-    box.replaceChildren(...(chips.length ? [el("span", { class: "small muted", text: "من رسايل العميل:" }), ...chips] : []));
+    box.replaceChildren(...(chips.length ? [el("span", { class: "small muted", text: "من رسايل العميل · اضغط يتضاف:" }), ...chips] : []));
+  }
+
+  // Common words that are also city names; they are not taken as a city when no governorate was written.
+  const AMBIGUOUS_CITY_WORDS = new Set(["السلام", "دار السلام", "النهضه", "الشهداء", "الساحل", "الرياض", "الفتح", "الوقف", "الحمام", "باريس", "الظاهر", "الجمرك", "الزهور", "الجنوب", "الشرق", "العرب", "المناخ", "الضواحي", "الخليفه", "الزيتون", "فيصل", "ناصر", "بدر", "نصر", "طره", "بلاط", "نخل", "الطور"].map(EgyptCities.fold));
+
+  function cityInside(texts, cities, skipAmbiguous) {
+    const plain = ` ${texts.map(EgyptCities.fold).join(" ")} `;
+    return cities.filter(name => { const key = EgyptCities.fold(name); return key.length >= 3 && !(skipAmbiguous && AMBIGUOUS_CITY_WORDS.has(key)) && plain.includes(` ${key} `); })
+      .sort((a, b) => b.length - a.length)[0] || "";
+  }
+
+  function suggestedLocation(found) {
+    const texts = [found.city, found.address].filter(Boolean);
+    if (found.governorate) return { governorate: found.governorate, city: EgyptCities.canonicalCity(found.governorate, found.city) || cityInside(texts, EgyptCities.citiesOf(found.governorate), false) };
+    const matches = EgyptCities.GOVERNORATES.map(governorate => ({ governorate, city: cityInside(texts, EgyptCities.citiesOf(governorate), true) })).filter(item => item.city);
+    return matches.length === 1 ? matches[0] : { governorate: "", city: "" };
   }
 
   function refreshResults() {
@@ -478,6 +523,7 @@
     const label = $("shipping-label"); if (label) label.textContent = result.shipping ? money(result.shipping) : "مجاني";
     const input = $("shipping-input"); if (input && updateShippingInput && !draft.shippingManual) input.value = amount(result.shipping);
     const paid = Math.min(Number(draft.paidAmount || 0), result.total);
+    const footer = $("footer-total"); if (footer) footer.textContent = `${money(result.total)}${draft.lines.length ? ` · ${draft.lines.reduce((sum, line) => sum + Number(line.qty || 0), 0)} كتاب` : ""}`;
     box.replaceChildren(
       result.productDiscountTotal ? el("div", {}, el("span", { text: "خصم الكتب" }), el("b", { text: `− ${money(result.productDiscountTotal)}` })) : "",
       el("div", {}, el("span", { text: "الكتب" }), el("b", { text: money(result.goods) })),
@@ -487,16 +533,25 @@
       paid ? el("div", {}, el("span", { text: "المتبقي عند الاستلام" }), el("b", { text: money(result.total - paid) })) : "");
   }
 
-  function clearError() { const node = $("form-error"); if (node) node.textContent = ""; }
+  function clearError() { const node = $("form-error"); if (node) node.textContent = ""; document.querySelectorAll(".order-form .invalid").forEach(item => item.classList.remove("invalid")); }
+  function markInvalid(field) {
+    const node = field && document.querySelector(`.order-form [data-field="${field}"]`); if (!node) return;
+    node.classList.add("invalid"); node.scrollIntoView({ block: "center" });
+    node.querySelector("input, select, textarea")?.focus({ preventScroll: true });
+  }
   function formError(text) { const node = $("form-error"); if (node) { node.textContent = text; node.scrollIntoView({ block: "nearest" }); } }
 
   function validate(draft) {
-    if (!normalizePhone(draft.phone)) return "اكتب رقم موبايل مصري صحيح للمستلم.";
-    if (!draft.customerName.trim()) return "اكتب اسم العميل.";
-    if (!draft.governorate.trim()) return "اختار المحافظة.";
-    if (!ChatwoodSuggest.GOVERNORATES.includes(draft.governorate.trim())) return "اختار المحافظة من القايمة.";
-    if (!draft.address.trim()) return "اكتب العنوان.";
-    if (!draft.lines.length) return "ضيف كتاب واحد على الأقل.";
+    const bad = (field, text) => { state.form.invalidField = field; return text; };
+    state.form.invalidField = "";
+    if (!normalizePhone(draft.phone)) return bad("phone", "اكتب رقم موبايل مصري صحيح للمستلم.");
+    if (!draft.customerName.trim()) return bad("customerName", "اكتب اسم العميل.");
+    if (!draft.governorate.trim()) return bad("governorate", "اختار المحافظة.");
+    if (!EgyptCities.GOVERNORATES.includes(draft.governorate.trim())) return bad("governorate", "اختار المحافظة من القايمة.");
+    if (!draft.city.trim()) return bad("city", "اختار المدينة أو المركز.");
+    if (!EgyptCities.canonicalCity(draft.governorate, draft.city)) return bad("city", `اختار المدينة من مدن ${draft.governorate}.`);
+    if (!draft.address.trim()) return bad("address", "اكتب العنوان.");
+    if (!draft.lines.length) return bad("lines", "ضيف كتاب واحد على الأقل.");
     if (state.form.mode === "create" && draft.paymentPlan !== "cash_on_delivery") {
       if (!(Number(draft.paidAmount) > 0)) return "اكتب المبلغ اللي وصل، أو اختار «الدفع عند الاستلام».";
       if (!draft.cashAccountId) return "اختار الخزنة اللي المبلغ اتحوّل عليها.";
@@ -510,7 +565,7 @@
   }
 
   function payloadOf(draft) {
-    return { phone: normalizePhone(draft.phone), customerName: draft.customerName.trim(), alternativePhone: normalizePhone(draft.alternativePhone), governorate: draft.governorate.trim(), city: draft.city.trim(), address: draft.address.trim(), addressMark: draft.addressMark.trim(),
+    return { phone: normalizePhone(draft.phone), customerName: draft.customerName.trim(), alternativePhone: normalizePhone(draft.alternativePhone), governorate: draft.governorate.trim(), city: EgyptCities.canonicalCity(draft.governorate, draft.city) || draft.city.trim(), address: draft.address.trim(), addressMark: draft.addressMark.trim(),
       shippingCompany: draft.shippingCompany, shippingCost: draft.shippingCost, orderDiscount: draft.orderDiscount, orderDiscountType: draft.orderDiscountType, notes: draft.notes.trim(),
       lines: draft.lines.map(line => ({ bookId: line.bookId, qty: line.qty, discount: line.discount, discountType: line.discountType, discountScope: "unit" })) };
   }
@@ -519,7 +574,7 @@
     const form = state.form, draft = form.draft, button = $("form-save");
     if (form.saving) return;
     try { totals(draft); } catch (error) { return formError(error.message); }
-    const problem = validate(draft); if (problem) return formError(problem);
+    const problem = validate(draft); if (problem) { formError(problem); return markInvalid(form.invalidField); }
     const required = Number(state.catalog.depositRequired || 0), paidNow = form.mode === "create" && draft.paymentPlan !== "cash_on_delivery" ? Number(draft.paidAmount || 0) : 0;
     if (form.mode === "create" && required > 0 && paidNow < required && !confirm(paidNow ? `المبلغ اللي هيتسجّل ${money(paidNow)}، والعربون المطلوب ${money(required)}. متأكد؟` : `مفيش عربون، والعربون المطلوب ${money(required)}. تحفظ الطلب من غير عربون؟`)) return;
     form.saving = true; if (button) { button.disabled = true; button.textContent = "جارٍ الحفظ…"; }

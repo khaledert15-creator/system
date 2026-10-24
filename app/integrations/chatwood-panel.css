@@ -80,3 +80,14 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .line-discount input { width:80px; margin:0; padding:4px 8px; } .line-discount select { width:auto; margin:0; padding:4px 6px; }
 .line-discount.order { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); } .line-discount.order input { width:90px; }
 .stats small { display:block; font-size:11px; } .pay-form { display:grid; gap:6px; width:100%; } .pay-form .two { display:grid; grid-template-columns:1fr 1fr; gap:6px; } .pay-form input, .pay-form select { padding:6px 8px; border:1px solid var(--border); border-radius:8px; font:inherit; width:100%; }
+/* Required fields, the field that blocks saving, and the footer that keeps the total and save button in view. */
+.order-form .field.required > span::after { content:" *"; color:var(--red); }
+.order-form .field.invalid input, .order-form .field.invalid select, .order-form .field.invalid textarea { border-color:var(--red); box-shadow:0 0 0 3px #fde4e1; }
+.order-form .block.invalid { outline:2px solid #f3c1bc; outline-offset:4px; border-radius:6px; }
+.order-form .field small { display:block; margin-top:2px; font-weight:400; font-size:11px; }
+.order-form select:disabled { background:var(--bg); color:var(--muted); }
+.form-footer { position:sticky; bottom:0; z-index:2; margin:10px -12px -12px; padding:8px 12px 10px; background:#fff; border-top:1px solid var(--border); border-radius:0 0 12px 12px; box-shadow:0 -6px 12px rgba(23,50,77,.06); }
+.form-footer .message { margin:0 0 6px; } .form-footer .message:empty { display:none; }
+.footer-row { display:flex; align-items:center; gap:10px; }
+.footer-total { flex:1; display:grid; } .footer-total b { font-size:16px; }
+.footer-row .btn { padding:10px 16px; font-size:15px; }

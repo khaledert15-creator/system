@@ -17,7 +17,7 @@ const pass = name => console.log(`PASS ${name}`);
     system = await H.startSystem({ db, name: 'reship-' });
     const order = id => system.readDb().onlineOrders.find(row => row.id === id);
     const create = async (phone, key) => {
-      const r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: { phone, customerName: `عميل ${key}`, governorate: 'القاهرة', address: 'شارع', shippingCompany: 'البريد المصري', requestId: key, lines: [{ bookId: 'B1', qty: 1 }] } });
+      const r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: { phone, customerName: `عميل ${key}`, governorate: 'القاهرة', city:'مدينة نصر', address: 'شارع', shippingCompany: 'البريد المصري', requestId: key, lines: [{ bookId: 'B1', qty: 1 }] } });
       await system.api(`/api/orders/${r.body.order.id}/confirm`, { username: 'cashier', method: 'POST', body: {} });
       return r.body.order.id;
     };

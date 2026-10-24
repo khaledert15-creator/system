@@ -12,7 +12,7 @@ async function call(path,{token,method="GET",body}={}){const r=await fetch(base+
   pass(login.status===200,"owner login");
   const db=(await call("/api/db",{token})).body,book=(db.books||[]).find(item=>!item.deletedAt&&Number(item.stock)>0),account=(db.cashAccounts||[]).find(item=>item.active!==false);
   pass(Boolean(book&&account),"book and cash account fixture available");
-  const stamp=Date.now(),payload={phone:`010${String(stamp).slice(-8)}`,customerName:"عميل دفعة QA",governorate:"القاهرة",address:"QA",requestId:`payment-${stamp}`,chatwootConversationId:String(stamp).slice(-9),lines:[{bookId:book.id,qty:1,discount:20,discountType:"percent"}],shippingCost:70,paymentPlan:"advance_cod",paymentMethod:"دفع مقدم + الباقي عند الاستلام",paidAmount:100,paymentConfirmed:true,receiptMethod:"كاش",cashAccountId:account.id};
+  const stamp=Date.now(),payload={phone:`010${String(stamp).slice(-8)}`,customerName:"عميل دفعة QA",governorate:"القاهرة",city:"مدينة نصر",address:"QA",requestId:`payment-${stamp}`,chatwootConversationId:String(stamp).slice(-9),lines:[{bookId:book.id,qty:1,discount:20,discountType:"percent"}],shippingCost:70,paymentPlan:"advance_cod",paymentMethod:"دفع مقدم + الباقي عند الاستلام",paidAmount:100,paymentConfirmed:true,receiptMethod:"كاش",cashAccountId:account.id};
   const created=await call("/api/orders/quick",{token,method:"POST",body:payload});
   pass(created.status===201,"advance-payment order created");
   const order=created.body.order;

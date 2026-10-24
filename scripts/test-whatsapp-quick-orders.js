@@ -92,7 +92,7 @@ async function request(path,{token,method="GET",body}={}){
   const concurrentBook={...books[0],id:`B-QA-RSV-${stamp}`,name:"كتاب آخر نسخة QA",stock:1,reservedStock:0,barcode:`QA${stamp}`,deletedAt:null};
   concurrencyDb.books.push(concurrentBook);
   assert((await request("/api/db",{token:owner,method:"PUT",body:concurrencyDb})).status===200,"isolated last-copy fixture saved");
-  const concurrentPayload=index=>({phone:`012${String(stamp+index).slice(-8)}`,customerName:`عميل تزامن ${index}`,governorate:"القاهرة",address:"QA",requestId:`qa-concurrent-${stamp}-${index}`,lines:[{bookId:concurrentBook.id,qty:1}]});
+  const concurrentPayload=index=>({phone:`012${String(stamp+index).slice(-8)}`,customerName:`عميل تزامن ${index}`,governorate:"القاهرة",city:"مدينة نصر",address:"QA",requestId:`qa-concurrent-${stamp}-${index}`,lines:[{bookId:concurrentBook.id,qty:1}]});
   const drafts=await Promise.all([1,2].map(index=>request("/api/orders/quick",{token:owner,method:"POST",body:concurrentPayload(index)})));
   assert(drafts.every(item=>item.status===201),"two drafts can reference the last copy without reserving it");
   const confirmations=await Promise.all(drafts.map(item=>request(`/api/orders/${item.body.order.id}/confirm`,{token:owner,method:"POST"})));
@@ -107,7 +107,7 @@ async function request(path,{token,method="GET",body}={}){
 
   const siteDb=(await request("/api/db",{token:owner})).body;
   const siteOrderId=`ORD-QA-SITE-${stamp}`;
-  siteDb.onlineOrders.push({id:siteOrderId,date:new Date().toISOString().slice(0,10),customerId:siteDb.customers[0]?.id||"",customerName:"عميل موقع QA",phone:"01000000000",governorate:"القاهرة",address:"QA",source:"الموقع",paymentMethod:"الدفع عند الاستلام",status:"طلب جديد",workflowStage:"draft",lines:[{bookId:books[0].id,qty:1,price:Number(books[0].price||0)}],shippingCost:0,total:Number(books[0].price||0),createdAt:new Date().toISOString(),deletedAt:null});
+  siteDb.onlineOrders.push({id:siteOrderId,date:new Date().toISOString().slice(0,10),customerId:siteDb.customers[0]?.id||"",customerName:"عميل موقع QA",phone:"01000000000",governorate:"القاهرة",city:"مدينة نصر",address:"QA",source:"الموقع",paymentMethod:"الدفع عند الاستلام",status:"طلب جديد",workflowStage:"draft",lines:[{bookId:books[0].id,qty:1,price:Number(books[0].price||0)}],shippingCost:0,total:Number(books[0].price||0),createdAt:new Date().toISOString(),deletedAt:null});
   assert((await request("/api/db",{token:owner,method:"PUT",body:siteDb})).status===200,"legacy website-order fixture saved");
   const siteConfirm=await request(`/api/orders/${siteOrderId}/confirm`,{token:owner,method:"POST"});
   assert(siteConfirm.status===200&&siteConfirm.body.order.inventoryReservation?.status==="active","website order uses the same atomic reservation policy");

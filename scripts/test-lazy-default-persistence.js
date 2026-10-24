@@ -128,7 +128,7 @@ function runtimeMaterializedPayload(source) {
     const book = db.books.find(item => Number(item.stock || 0) >= 3);
     assert(Boolean(book), "legacy reservation fixture has stock");
     const stamp = Date.now();
-    const draft = await request(base, "/api/orders/quick", { token, method:"POST", body:{ phone:`010${String(stamp).slice(-8)}`, customerName:"عميل Lazy QA", governorate:"القاهرة", address:"QA", chatwootConversationId:`lazy-${stamp}`, lines:[{ bookId:book.id, qty:2 }] } });
+    const draft = await request(base, "/api/orders/quick", { token, method:"POST", body:{ phone:`010${String(stamp).slice(-8)}`, customerName:"عميل Lazy QA", governorate:"القاهرة", city:"مدينة نصر", address:"QA", chatwootConversationId:`lazy-${stamp}`, lines:[{ bookId:book.id, qty:2 }] } });
     assert(draft.status === 201, "reservation first-use draft created");
     db = (await request(base, "/api/db", { token })).body;
     assert(!hasOwn(db.books.find(item => item.id === book.id), "reservedStock"), "draft does not create reservedStock");

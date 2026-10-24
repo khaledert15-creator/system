@@ -169,14 +169,14 @@ const key = () => `pc-test-${++keySeq}`;
     console.log('PASS refused with a clear reason: cancelled order, carrier collection already recorded, closed day');
 
     // ---- A quick order whose payment was cancelled can record the real payment again.
-    r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ requestId:'pc-quick-1', phone:'01009998887', customerName:'سارة', governorate:'القاهرة', address:'شارع 2', shippingCost:0,
+    r = await system.api('/api/orders/quick', { username:'cashier', method:'POST', body:{ requestId:'pc-quick-1', phone:'01009998887', customerName:'سارة', governorate:'القاهرة', city:'مدينة نصر', address:'شارع 2', shippingCost:0,
       lines:[{ bookId:'B0001', qty:2, discount:0, discountType:'percent' }], paymentPlan:'advance_cod', paidAmount:50, paymentConfirmed:true, cashAccountId:'CA-003', receiptMethod:'InstaPay' } });
     assert.equal(r.status, 201, r.text);
     const quick = r.body.order;
     const quickPayment = db().orderPayments.find(row => row.orderId === quick.id && row.status === 'confirmed');
     r = await correct(quickPayment.id, { cancelPayment:true, reason:'اتسجّلت بالغلط' });
     assert.equal(r.status, 200, r.text);
-    r = await system.api(`/api/orders/${quick.id}/quick`, { username:'cashier', method:'PATCH', body:{ requestId:'pc-quick-1', phone:'01009998887', customerName:'سارة', governorate:'القاهرة', address:'شارع 2', shippingCost:0,
+    r = await system.api(`/api/orders/${quick.id}/quick`, { username:'cashier', method:'PATCH', body:{ requestId:'pc-quick-1', phone:'01009998887', customerName:'سارة', governorate:'القاهرة', city:'مدينة نصر', address:'شارع 2', shippingCost:0,
       lines:[{ bookId:'B0001', qty:2, discount:0, discountType:'percent' }], paymentPlan:'advance_cod', paidAmount:100, paymentConfirmed:true, cashAccountId:'CA-003', receiptMethod:'InstaPay' } });
     assert.equal(r.status, 200, r.text);
     d = db();

@@ -3624,6 +3624,13 @@ function quickGovernorateOptions() {
   return EGYPT_GOVERNORATES.map((value,index)=>{const fee=quickOrderShipping(value,quickOrderDraft.lines);return `<button type="button" role="option" id="quick-governorate-option-${index}" data-action="quick-order-select-governorate" data-value="${esc(value)}" aria-selected="${quickOrderDraft.governorate===value}"><span>${esc(value)}</span><b>${fee?money(fee):"مجاني"}</b></button>`}).join("");
 }
 
+// Only the cities and centres of the chosen governorate. A city saved earlier in another spelling stays shown until
+// one is picked from the list; villages and streets go in the address.
+function quickCityOptions() {
+  const cities=EgyptCities.citiesOf(quickOrderDraft.governorate),current=String(quickOrderDraft.city||"");
+  return `<option value="">${cities.length?"اختر المدينة أو المركز…":"اختر المحافظة الأول"}</option>${current&&!cities.includes(current)?`<option value="${esc(current)}" selected>${esc(current)} (اختر من القائمة)</option>`:""}${cities.map(name=>`<option value="${esc(name)}" ${name===current?"selected":""}>${esc(name)}</option>`).join("")}`;
+}
+
 function openQuickGovernorateList(open=true) {
   const input=document.getElementById("quick-order-governorate-search"),list=document.getElementById("quick-order-governorate-list");
   if(!input||!list)return;
@@ -3643,6 +3650,9 @@ function filterQuickGovernorates(query="") {
 function selectQuickGovernorate(value) {
   if(!EGYPT_GOVERNORATES.includes(value))return;
   quickOrderDraft.governorate=value;
+  quickOrderDraft.city=EgyptCities.canonicalCity(value,quickOrderDraft.city);
+  const citySelect=document.getElementById("quick-order-city");
+  if(citySelect){citySelect.innerHTML=quickCityOptions();citySelect.disabled=!EgyptCities.citiesOf(value).length;}
   quickOrderDraft.shippingManual=false;
   quickOrderDraft.shippingCost=quickOrderShipping(value,quickOrderDraft.lines);
   const input=document.getElementById("quick-order-governorate-search");
@@ -3655,7 +3665,7 @@ function selectQuickGovernorate(value) {
 }
 
 function quickOrderFieldNode(field) {
-  return field==="customerName"?document.getElementById("quick-order-name"):field==="governorate"?document.getElementById("quick-order-governorate-search"):document.getElementById("quick-order-address");
+  return field==="customerName"?document.getElementById("quick-order-name"):field==="governorate"?document.getElementById("quick-order-governorate-search"):field==="city"?document.getElementById("quick-order-city"):document.getElementById("quick-order-address");
 }
 
 function clearQuickOrderFieldError(field) {
@@ -3667,6 +3677,7 @@ function validateQuickOrderCustomerFields() {
   const fields=[
     ["customerName",String(quickOrderDraft.customerName||quickOrderCustomer()?.name||"").trim(),"أدخل اسم العميل"],
     ["governorate",String(quickOrderDraft.governorate||"").trim(),"اختر المحافظة"],
+    ["city",EgyptCities.canonicalCity(quickOrderDraft.governorate,quickOrderDraft.city),"اختر المدينة / المركز من القائمة"],
     ["address",String(quickOrderDraft.address||"").trim(),"أدخل عنوان العميل"]
   ];
   fields.forEach(([field,value])=>{if(value)clearQuickOrderFieldError(field);});
@@ -3734,7 +3745,7 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
-      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label>المدينة / المنطقة</label><input id="quick-order-city" value="${esc(quickOrderDraft.city||"")}"></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label class="required" for="quick-order-city">المدينة / المركز</label><select id="quick-order-city" ${EgyptCities.citiesOf(quickOrderDraft.governorate).length?"":"disabled"}>${quickCityOptions()}</select></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
