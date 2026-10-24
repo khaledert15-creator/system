@@ -42,7 +42,7 @@ function fakeAgent(state){
   });});
 }
 
-async function withSystem(state,codes,run){
+async function withSystem(state,codes,run,{env={},patch=()=>{}}={}){
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'tracking-batch-'));let child,agent;
   try{
     const agentPort=await freePort();agent=fakeAgent(state).listen(agentPort,'127.0.0.1');
@@ -51,9 +51,9 @@ async function withSystem(state,codes,run){
     const shipment=(id,trackingNumber)=>({id,trackingNumber,tracking:trackingNumber,carrier:'البريد المصري',company:'البريد المصري',carrierCode:'EGYPT_POST',trackingEnabled:true,status:'تم الشحن',shippingStatus:'shipped',normalizedStatus:'shipped',createdAt:now,updatedAt:now});
     fs.writeFileSync(dbFile,JSON.stringify({version:4,meta:{dataRevision:0},
       users:[{id:'U1',username:'owner',name:'Owner',role:'مالك',active:true,salt,passwordHash:crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex')}],
-      settings:{tracking:{enabled:false,minDelaySeconds:5,rateLimitMs:10000}},audit:[],books:[],sales:[],shipments:codes.map((code,i)=>shipment(`SH-${i+1}`,code))}));
+      settings:{tracking:{enabled:false,minDelaySeconds:5,rateLimitMs:10000}},audit:[],books:[],sales:[],shipments:codes.map((code,i)=>({...shipment(`SH-${i+1}`,code),...patch(i)}))}));
     const port=await freePort(),base=`http://127.0.0.1:${port}`;
-    child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'true',TRACKING_RPA_BASE_URL:`http://127.0.0.1:${agentPort}`,TRACKING_RPA_SHARED_SECRET:'secret',TRACKING_RPA_TIMEOUT_MS:'20000'},stdio:'ignore'});
+    child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'true',TRACKING_RPA_BASE_URL:`http://127.0.0.1:${agentPort}`,TRACKING_RPA_SHARED_SECRET:'secret',TRACKING_RPA_TIMEOUT_MS:'20000',...env},stdio:'ignore'});
     await until(async()=>{try{return (await fetch(base+'/api/health')).ok;}catch{return false;}});
     const token=(await (await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password})})).json()).token;
     const runAll=async()=>(await fetch(`${base}/api/tracking/run`,{method:'POST',headers:{'X-Session-Token':token,'Content-Type':'application/json','X-Request-ID':'same-cycle-id'},body:JSON.stringify({shipmentIds:codes.map((_,i)=>`SH-${i+1}`)})})).json();
@@ -131,5 +131,25 @@ const ownEventsOnly=(db,shipment)=>{
       for(const id of ['SH-2','SH-3']){const s=db.shipments.find(x=>x.id===id);assert(!s.lastTrackingAt,`${id} untouched`);assert(!s.manualInterventionNeeded,`${id} not flagged`);}
     });
     console.log('PASS a blocking site stops the cycle at once and leaves the other shipments untouched');
+  }
+
+  // 4. Worker tick: one shipment is due; three more fall due within 30 minutes and join its batch; one due in 2 h
+  // waits. Shipped shipments are tracked every 4 h.
+  {
+    const state={mode:'batch',calls:[]};
+    const codes=['ENO11111111EG','ENO22222222EG','ENO33333333EG','ENO44444444EG','ENO55555555EG'];
+    const hoursAgo=[4.1,3.9,3.75,3.6,2];
+    await withSystem(state,codes,async({read})=>{
+      const seeded=read().shipments.find(x=>x.id==='SH-5').lastTrackingAt;
+      for(let i=0;i<300&&read().shipments.filter(s=>s.lastTrackedAt).length<4;i++)await sleep(100);
+      const batches=state.calls.filter(c=>c.kind==='batch');
+      assert(batches.length>=1,'a batch search ran');
+      assert.deepEqual(batches[0].codes,codes.slice(0,4),'the due shipment and the three due within 30 minutes share one search');
+      const db=read();
+      assert.equal(db.shipments.filter(s=>s.lastTrackedAt).length,4,'all four were updated');
+      assert.equal(db.shipments.find(x=>x.id==='SH-5').lastTrackingAt,seeded,'a shipment due in 2 hours is not checked early');
+      assert(!state.calls.some(c=>c.codes.includes('ENO55555555EG')),'its code is never searched');
+    },{env:{TRACKING_WORKER_TICK_MS:'1000'},patch:i=>({lastTrackingAt:new Date(Date.now()-hoursAgo[i]*3600000).toISOString()})});
+    console.log('PASS the worker groups shipments falling due within 30 minutes into one batch search');
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});

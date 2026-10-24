@@ -1695,6 +1695,7 @@ const LOCAL_RPA_BATCH_FALLBACK_CODES = new Set(["BATCH_FAILED", "BATCH_ITEM_MISS
 // The site is refusing automated lookups: the cycle stops and the worker waits before trying the site again.
 const TRACKING_SITE_PAUSE_MINUTES = { SITE_RATE_LIMITED: 15, SITE_BLOCKED: 30, HUMAN_VERIFICATION_REQUIRED: 30 };
 let trackingSitePausedUntil = 0;
+const TRACKING_BATCH_AHEAD_MS = 30 * 60000;
 
 // Agent request ids are per shipment: the agent answers a repeated id with its earlier result, so sharing the
 // cycle's id would hand one shipment's result to the next.
@@ -2810,9 +2811,10 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
   }
 }
 
-function activeTrackableShipments(db, { manual = false } = {}) {
+// aheadMs also counts shipments that fall due within that time, so the worker can search them together.
+function activeTrackableShipments(db, { manual = false, aheadMs = 0 } = {}) {
   const settings = defaultTrackingSettings(db.settings || {});
-  const now = Date.now();
+  const now = Date.now() + aheadMs;
   const maxAgeMs = settings.activeShipmentMaxAgeDays * 24 * 3600000;
   return (db.shipments || []).filter(shipment => {
     const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
@@ -2972,7 +2974,7 @@ let trackingRecoveryQueue = new Set();
 
 function scheduleTrackingWorker() {
   if (trackingTimer) clearTimeout(trackingTimer);
-  const intervalMs = TRACKING_RPA_ENABLED ? 60 * 1000 : 60 * 60 * 1000;
+  const intervalMs = TRACKING_RPA_ENABLED ? Number(process.env.TRACKING_WORKER_TICK_MS || 60 * 1000) : 60 * 60 * 1000;
   trackingRuntime.running = true;
   trackingRuntime.nextRun = new Date(Date.now() + intervalMs).toISOString();
   trackingTimer = setTimeout(async () => {
@@ -3007,7 +3009,10 @@ function scheduleTrackingWorker() {
         }
         const due = activeTrackableShipments(db);
         if (!due.length) return;
-        await runTrackingCycle({ manual: false, shipmentIds: due.slice(0, perTick).map(shipment => shipment.id) });
+        // Shipments falling due within the next half hour join the search, so due times drift together into
+        // batches instead of one shipment per minute. They are checked at most that much early.
+        const soon = perTick > 1 ? activeTrackableShipments(db, { aheadMs: TRACKING_BATCH_AHEAD_MS }).filter(shipment => !due.includes(shipment)) : [];
+        await runTrackingCycle({ manual: false, shipmentIds: [...due, ...soon].slice(0, perTick).map(shipment => shipment.id) });
         return;
       }
       await runTrackingCycle({ manual: false });
