@@ -2166,3 +2166,11 @@ button.shortage-stat.ok b{color:#1f7a45}
 .shipping-row-actions .shipping-more:not(.shipping-manual) { grid-column:auto; }
 .shipping-manual > summary { color:var(--blue); border:1px solid #cfe0f5; background:#f5f9ff; font-weight:700; }
 .shipping-menu-label { padding:4px 6px 0; color:var(--muted); font-size:11px; }
+.party-search-suggestions { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; left: 0; display: grid; max-height: min(420px, 55vh); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: 0 14px 35px rgba(31,95,168,.18); }
+.party-search-suggestions:empty { display: none; }
+.party-search-suggestions button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); background: #fff; text-align: right; cursor: pointer; }
+.party-search-suggestions button:hover, .party-search-suggestions button:focus { background: var(--green-50); outline: none; }
+.party-suggestion-main strong, .party-suggestion-main span { display: block; }
+.party-suggestion-main span { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.party-suggestion-balance { white-space: nowrap; font-weight: 700; }
+.party-search-suggestions .customer-no-results, .party-suggestion-more { padding: 10px 14px; color: var(--muted); font-size: 12px; }

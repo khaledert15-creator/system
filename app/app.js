@@ -6050,7 +6050,27 @@ function filterParties() {
   if (body) body.innerHTML = matches.length ? matches.map(item => partyRow(item, isCustomers, partyKind)).join("") : `<tr><td colspan="${isCustomers ? 7 : 6}" class="muted">لا توجد نتائج مطابقة.</td></tr>`;
   const count = document.getElementById("party-search-count");
   if (count) count.textContent = term ? `${matches.length} من ${list.length}` : "";
+  renderPartySearchSuggestions(matches, input && document.activeElement === input ? term : "", partyKind);
   scheduleStickyTableScrollbar();
+}
+
+// Dropdown under the party search: pick a match to open its statement without scrolling the table.
+function renderPartySearchSuggestions(matches, term, partyKind) {
+  const list = document.getElementById("party-search-suggestions");
+  const input = document.getElementById("party-search");
+  if (!list) return;
+  const shown = term ? matches.slice(0, 8) : [];
+  list.innerHTML = !term ? "" : shown.length ? shown.map(item => `<button type="button" role="option" data-action="party-search-pick" data-id="${esc(item.id)}" data-kind="${partyKind}">
+      <span class="party-suggestion-main"><strong>${esc(item.name)}</strong><span>${esc(item.id)}${item.phone ? ` · <bdi dir="ltr">${esc(item.phone)}</bdi>` : ""}${item.governorate ? ` · ${esc(item.governorate)}` : ""}</span></span>
+      <span class="party-suggestion-balance ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</span>
+    </button>`).join("") + (matches.length > shown.length ? `<div class="party-suggestion-more">و${(matches.length - shown.length).toLocaleString("ar-EG")} نتيجة أخرى في الجدول</div>` : "")
+    : `<div class="customer-no-results">لا يوجد ${partyKind === "customer" ? "عميل" : "مورد"} مطابق.</div>`;
+  input?.setAttribute("aria-expanded", list.innerHTML ? "true" : "false");
+}
+
+function closePartySearchSuggestions() {
+  const list = document.getElementById("party-search-suggestions");
+  if (list?.innerHTML) { list.innerHTML = ""; document.getElementById("party-search")?.setAttribute("aria-expanded", "false"); }
 }
 
 function renderParties() {
@@ -6077,7 +6097,7 @@ function renderParties() {
         <div class="mini-metric"><span>إجمالي المديونية</span><strong>${money(list.reduce((s, i) => s + (Number(i.balance) || 0), 0))}</strong></div>
         <div class="mini-metric"><span>حدود ائتمانية</span><strong>${list.filter(i => i.creditLimit > 0).length}</strong></div>
       </div>
-      <div class="toolbar"><div class="search"><input id="party-search" type="search" placeholder="بحث بالاسم أو الهاتف أو الكود" value="${esc(partySearchTerm)}" autocomplete="off"></div><span class="muted" id="party-search-count"></span></div>
+      <div class="toolbar"><div class="search party-search"><input id="party-search" type="search" placeholder="بحث بالاسم أو الهاتف أو الكود" value="${esc(partySearchTerm)}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="party-search-suggestions" aria-expanded="false"><div id="party-search-suggestions" class="party-search-suggestions" role="listbox" aria-label="نتائج البحث"></div></div><span class="muted" id="party-search-count"></span></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>الاسم</th><th>الهاتف</th><th>${isCustomers ? "الفئة" : "مدة السداد"}</th><th>الحد الائتماني</th><th>الرصيد</th>${isCustomers ? "<th>النقاط</th>" : ""}<th></th></tr></thead>
@@ -8620,6 +8640,7 @@ document.getElementById("notification-btn").addEventListener("click", showNotifi
 document.getElementById("close-modal").addEventListener("click", closeModal);
 modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
 document.addEventListener("click", event => {
+  if(!event.target.closest?.(".party-search"))closePartySearchSuggestions();
   const help=event.target.closest?.("[data-help]");
   document.querySelectorAll(".context-help.open").forEach(button=>{if(button!==help){button.classList.remove("open");button.setAttribute("aria-expanded","false");}});
   if(help){
@@ -8698,6 +8719,7 @@ document.addEventListener("submit", event => {
 });
 document.addEventListener("focusin", event => {
   configureNumericInput(event.target);
+  if (event.target.id === "party-search" && event.target.value.trim()) filterParties();
 }, true);
 document.addEventListener("input", event => {
   const input = event.target;
@@ -9141,6 +9163,7 @@ root.addEventListener("click", async event => {
   if (action === "adjust-stock") adjustStock(target.dataset.id);
   if (action === "stock-count") stockCountModal();
   if (action === "statement") showStatement(target.dataset.id, target.dataset.kind);
+  if (action === "party-search-pick") { closePartySearchSuggestions(); showStatement(target.dataset.id, target.dataset.kind); }
   if (action === "update-shipment") addShipmentModal(data.shipments.find(item => item.id === target.dataset.id));
   if (action === "edit-shipment-status") shipmentStatusQuickModal(target.dataset.id);
   if (action === "shipment-history") shipmentHistoryModal(target.dataset.id);
@@ -9247,6 +9270,13 @@ root.addEventListener("click", async event => {
 });
 
 root.addEventListener("keydown", event => {
+  if (event.target.id === "party-search" || event.target.closest("#party-search-suggestions")) {
+    const input = document.getElementById("party-search");
+    const list = document.getElementById("party-search-suggestions");
+    if (focusSuggestionWithArrow(event, input, list)) return;
+    if (event.key === "Escape" && list?.innerHTML) { event.preventDefault(); closePartySearchSuggestions(); input?.focus(); return; }
+    if (event.key === "Enter" && event.target === input) { event.preventDefault(); list?.querySelector("button")?.click(); return; }
+  }
   if (event.target.id === "sale-book-search" || event.target.closest("#sale-book-suggestions")) {
     const input = document.getElementById("sale-book-search");
     const list = document.getElementById("sale-book-suggestions");
