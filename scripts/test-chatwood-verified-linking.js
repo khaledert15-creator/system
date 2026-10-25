@@ -25,7 +25,7 @@ const orderCore = order => { const { chatwootConversationId, chatwootContactId, 
     db.onlineOrders = [{ id:'ORD-L1', date:'2026-10-16', customerId:'C-L', customerName:'عميل قديم', phone:'01033330003', alternativePhone:'', source:'whatsapp', status:'تم الشحن', workflowStage:'shipped', lines:[{ bookId:'B0001', qty:1, price:100, lineTotal:100 }], total:135, paidAmount:0, confirmedAt:'2026-10-16T10:00:00.000Z', createdAt:'2026-10-16T10:00:00.000Z', deletedAt:null }];
     system = await H.startSystem({ db, env:H.integrationEnv(store), name:'chatwood-verified-' });
     const panel = (query, username = 'owner') => system.api(`/api/integration/v1/panel/customer?${new URLSearchParams(query)}`, { username });
-    const create = (body, username = 'owner') => system.api('/api/orders/quick', { username, method:'POST', body:{ customerName:'مستلم', governorate:'القاهرة', city:'مدينة نصر', address:'شارع الاختبار 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], requestId:crypto.randomUUID(), ...body } });
+    const create = (body, username = 'owner') => system.api('/api/orders/quick', { username, method:'POST', body:{ duplicateOverrideReason:'اختبار طلبات متعددة لنفس العميل', customerName:'مستلم', governorate:'القاهرة', city:'مدينة نصر', address:'شارع الاختبار 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], requestId:crypto.randomUUID(), ...body } });
     const link = (id, body, username = 'owner') => system.api(`/api/orders/${id}/chatwood-link`, { username, method:'POST', body });
     const correct = (id, body, username = 'owner') => system.api(`/api/orders/${id}/chatwood-link/correct`, { username, method:'POST', body });
     const order = id => system.readDb().onlineOrders.find(row => row.id === id);

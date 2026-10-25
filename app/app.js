@@ -215,7 +215,7 @@ let shippingImportPreviewRevision = null;
 // requestId makes a retried save return the same order; the Chatwood fields say who the order belongs to
 // (conversation, contact, WhatsApp number), apart from phone, which is the recipient's delivery number.
 const quickOrderRequestId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `QO-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-const emptyQuickOrderDraft = () => ({ requestId:quickOrderRequestId(), chatwoodContext:null, phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", savedOrderId:"" });
+const emptyQuickOrderDraft = () => ({ requestId:quickOrderRequestId(), chatwoodContext:null, phone:"", customerId:"", customerName:"", governorate:"", city:"", address:"", addressMark:"", alternativePhone:"", shippingCompany:"", lines:[], shippingCost:0, shippingManual:false, paymentPlan:"cash_on_delivery", paymentMethod:"الدفع عند الاستلام", paidAmount:0, paymentConfirmed:false, receiptMethod:"كاش", cashAccountId:"", orderDiscount:0, orderDiscountType:"percent", notes:"", savedOrderId:"", duplicateOverrideReason:"" });
 let quickOrderDraft = emptyQuickOrderDraft();
 // The verified Chatwood conversation this browser tab was opened from (via the tab's button). New drafts here keep it
 // until it expires or the employee drops it; it is never taken from ids in the address bar.
@@ -3539,6 +3539,40 @@ function quickOrderCustomerInsight(customer=quickOrderCustomer()) {
   return {count:orders.length,last:orders[0]||null};
 }
 
+// Open orders of the same customer (same phone, or same name in the same governorate from another chat).
+function quickOrderDuplicateMatches() {
+  if(quickOrderDraft.savedOrderId)return [];
+  const customer=quickOrderCustomer();
+  return DuplicateOrders.findCustomerOrders(data.onlineOrders||[],{phone:quickOrderDraft.phone,alternativePhone:quickOrderDraft.alternativePhone,customerId:quickOrderDraft.customerId||customer?.id,customerName:quickOrderDraft.customerName||customer?.name,governorate:quickOrderDraft.governorate||customer?.governorate,whatsAppPhone:quickOrderDraft.chatwoodContext?.customerWhatsAppPhone});
+}
+
+function quickOrderDuplicatePanel(matches=quickOrderDuplicateMatches()) {
+  if(!matches.length)return "";
+  const blocking=DuplicateOrders.blockingMatches(matches);
+  const rows=matches.map(({order,state,strength,label})=>{
+    const books=(order.lines||[]).map(line=>`${getBook(line.bookId)?.name||line.bookId}${Number(line.qty)>1?` × ${line.qty}`:""}`);
+    const meta=[order.createdBy?`سجّله ${order.createdBy}`:"",order.createdAt?arabicDateTimeLabel(order.createdAt):"",strength==="weak"?`موبايل مختلف: ${order.phone||"—"}`:""].filter(Boolean).join(" · ");
+    const hint=state==="packed"?"الطرد مغلّف ولسه في المكتبة. قبل أي إضافة ارجع لموظف التغليف يعيد فتحه للتجهيز."
+      :state==="recent_shipped"?"اتشحن خلاص؛ للعلم فقط وبلّغ العميل."
+      :strength==="weak"?"نفس الاسم في نفس المحافظة برقم مختلف. اسأل العميل لو هو نفس الشخص."
+      :"الأفضل تضيف الكتب الجديدة على الطلب ده بدل طلب جديد.";
+    const action=state==="open"&&canAction("order.quick.edit")?`<button class="btn small" data-action="edit-quick-order" data-id="${esc(order.id)}">✏️ أضف على الطلب ده</button>`:"";
+    return `<li class="duplicate-order-row ${state}"><div><strong>${esc(order.id)}</strong> ${badge(label,state==="recent_shipped"?"blue":state==="packed"?"warning":"danger")}<small>${esc(meta)}</small>${books.length?`<span>${esc(books.slice(0,4).join("، "))}${books.length>4?` و${books.length-4} آخرين`:""} · ${money(order.total||0)}</span>`:""}<em>${esc(hint)}</em></div>${action}</li>`;
+  }).join("");
+  const reason=blocking.length?`<div class="form-field duplicate-order-reason"><label class="required" for="quick-order-duplicate-reason">لو ده طلب منفصل فعلًا، اكتب السبب</label><input id="quick-order-duplicate-reason" value="${esc(quickOrderDraft.duplicateOverrideReason||"")}" placeholder="مثال: العميل أكد إنه طلب لابنه التاني على عنوان مختلف"><small>السبب بيتسجل باسمك ويظهر للإدارة.</small></div>`:"";
+  return `<section class="duplicate-order-alert${blocking.length?" blocking":""}" role="alert"><strong>⚠ ${blocking.length?`العميل ده عنده ${blocking.length===1?"طلب مفتوح":blocking.length===2?"طلبين مفتوحين":`${blocking.length} طلبات مفتوحة`} — اتأكد منه قبل ما تسجل طلب جديد`:"العميل ده عنده طلب اتشحن قريب"}</strong><ul>${rows}</ul>${reason}</section>`;
+}
+
+// Throws before a new order is sent while the customer has an open order and no reason was written.
+function assertQuickOrderDuplicateDecision() {
+  if(quickOrderDraft.savedOrderId)return;
+  const blocking=DuplicateOrders.blockingMatches(quickOrderDuplicateMatches());
+  if(!blocking.length||DuplicateOrders.validReason(quickOrderDraft.duplicateOverrideReason))return;
+  if(!document.getElementById("quick-order-duplicate-reason"))renderQuickOrderPreservingContext();
+  setTimeout(()=>{const field=document.getElementById("quick-order-duplicate-reason");field?.scrollIntoView({block:"center",behavior:"smooth"});field?.focus({preventScroll:true});},0);
+  throw new Error(`العميل عنده طلب مفتوح (${blocking.map(match=>match.order.id).join("، ")}). أضف على الطلب الموجود، أو اكتب سبب تسجيل طلب منفصل.`);
+}
+
 function quickOrderTotalsNow() {
   return onlineOrderTotals(quickOrderDraft.lines,quickOrderDraft.orderDiscount||0,quickOrderDraft.orderDiscountType||"percent",quickOrderDraft.shippingCost);
 }
@@ -3807,7 +3841,7 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
-      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label class="required" for="quick-order-city">المدينة / المركز</label><select id="quick-order-city" ${EgyptCities.citiesOf(quickOrderDraft.governorate).length?"":"disabled"}>${quickCityOptions()}</select></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}${quickOrderDuplicatePanel()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label class="required" for="quick-order-city">المدينة / المركز</label><select id="quick-order-city" ${EgyptCities.citiesOf(quickOrderDraft.governorate).length?"":"disabled"}>${quickCityOptions()}</select></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
@@ -3834,6 +3868,11 @@ function renderQuickOrderScreen() {
 
 // Pre-orders whose books arrived are carried over and packed first.
 function isCarriedOverOrder(order={}) {return Boolean(order.carriedOverFromBackorder&&!order.preparedAt&&!["cancelled","delivered"].includes(onlineOrderWorkflowStage(order)));}
+// Set when the order was saved while the same customer already had an open order; packers check before shipping twice.
+function duplicateOverrideBadge(order={}) {
+  const info=order.duplicateOverride;if(!info)return "";
+  return `<span class="duplicate-override-badge" title="${esc(`سجّله ${info.by||"—"} رغم وجود ${(info.matchedOrderIds||[]).join("، ")} · السبب: ${info.reason||"—"}`)}">⚠ للعميل طلب آخر: ${esc((info.matchedOrderIds||[]).join("، "))}</span>`;
+}
 function carriedOverBadge(order={}) {return isCarriedOverOrder(order)?`<span class="carried-badge" title="توفرت كتبه بعد الحجز المسبق${order.carriedOverAt?` · ${esc(arabicDateTimeLabel(order.carriedOverAt))}`:""}">⚡ مُرحَّل من الحجز المسبق — أولوية</span>`:"";}
 
 function preparationOrders() {
@@ -4204,7 +4243,7 @@ async function allocateBackorder(id) {
 
 function renderPreparationQueue() {
   const rows=preparationOrders();
-  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(phonesText(order))}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button>${onlineOrderMoreActions(order)}</td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
+  const table=list=>`<div class="table-wrap"><table class="fulfillment-table"><thead><tr><th>الطلب</th><th>العميل</th><th>ملخص الكتب</th><th>الدفع</th><th>الحالة / السبب</th><th>الإجراء</th></tr></thead><tbody>${list.map(order=>{const units=(order.lines||[]).reduce((s,l)=>s+Number(l.qty||0),0),pay=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),summary=(order.lines||[]).slice(0,3).map(line=>`${getBook(line.bookId)?.name||line.bookId} × ${line.qty}`).join("، ");return `<tr class="${order.workflowStage==="needs_review"?"needs-review":""}" ${orderSearchAttr(order)}><td><strong>${esc(order.id)}</strong><small>${arabicDateTimeLabel(order.confirmedAt||order.createdAt)}</small></td><td><strong>${esc(order.customerName||"—")}</strong><small dir="ltr">${esc(phonesText(order))}</small></td><td>${esc(summary||"—")}<small>${units} قطعة${(order.lines||[]).length>3?` · +${order.lines.length-3} صنف`:""}</small></td><td><strong>${money(pay.remainingAmount)}</strong><small>${pay.paymentStatus==="paid"?"مدفوع بالكامل":pay.paidAmount?`مقدم ${money(pay.paidAmount)}`:"عند الاستلام"}</small></td><td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${duplicateOverrideBadge(order)}${orderIssueNote(order)}</td><td><button class="btn compact" data-action="${order.workflowStage==="preparing"?"prepare-order-open":"prepare-order-start"}" data-id="${order.id}">${order.workflowStage==="preparing"?"استكمال التغليف":"بدء التغليف"}</button>${onlineOrderMoreActions(order)}</td></tr>`;}).join("")||`<tr><td colspan="6" class="text-center muted">لا توجد طلبات هنا.</td></tr>`}</tbody></table></div>`;
   const active=rows.filter(order=>order.workflowStage!=="needs_review"),blocked=rows.filter(order=>order.workflowStage==="needs_review");
   return `${workflowModeTabs("preparation")}<div class="section-title fulfillment-title"><div><span class="eyebrow">مسار التنفيذ</span><h2>جاهز للتغليف</h2><p>جدول واحد سريع؛ الطلبات المتوقفة لا تدخل ملف شركة الشحن.</p></div><div class="fulfillment-counters"><b>${active.length}<small>جاهز للعمل</small></b><b class="warning">${blocked.length}<small>متوقف</small></b></div></div><article class="card fulfillment-panel"><div class="workflow-queue-title"><div><span class="queue-dot waiting"></span><h3>جاهز للتغليف</h3></div></div>${table(active)}</article><article class="card fulfillment-panel blocked"><div class="workflow-queue-title"><div><span class="queue-dot danger"></span><h3>متوقف ويحتاج إجراء</h3></div></div>${table(blocked)}</article>`;
 }
@@ -4310,6 +4349,7 @@ function quickOrderWebsiteEditMarkup() {
 async function saveQuickOrderDraft({silent=false,reload="background"}={}) {
   const blocked=quickOrderBlockedLines();
   if(blocked.length)throw new Error(`الطلب ${quickOrderDraft.savedOrderId} بدأ تجهيزه، و${blocked.map(line=>`«${getBook(line.bookId)?.name||line.bookId}»`).join(" و")} مش متاح. احذفه أو اضغط «طلب منفصل للكتاب ده» قبل الحفظ.`);
+  assertQuickOrderDuplicateDecision();
   if(!confirmQuickOrderPaymentAmount())throw Object.assign(new Error("راجع المبلغ المستلم فعلًا قبل الحفظ."),{code:"PAYMENT_AMOUNT_UNCONFIRMED"});
   if(quickOrderWebsiteEditMarkup()&&quickOrderDraft.customerEditConfirmed!==true){document.getElementById("quick-order-customer-edit")?.focus();throw Object.assign(new Error("طلب موقع: علّم «العميل هو اللي طلب التعديل ده» قبل الحفظ."),{code:"CUSTOMER_REQUEST_REQUIRED"});}
   const payload=quickOrderPayload();
@@ -4367,7 +4407,7 @@ async function splitQuickOrderBook(index) {
   catch(error){quickOrderDraft=previous;renderQuickOrderPreservingContext();return toast(error.message,"error");}
   const customerFields=["phone","customerId","customerName","governorate","city","address","addressMark","alternativePhone","shippingCompany"];
   const context=activeChatwoodContext(),owner=chatwoodOrderOwner(getOnlineOrder(orderId));
-  quickOrderDraft={...emptyQuickOrderDraft(),...Object.fromEntries(customerFields.map(key=>[key,previous[key]||""])),chatwoodContext:context&&owner&&owner.conversationId===context.conversationId?context:null,lines:[moved],notes:`كتاب منفصل من الطلب ${orderId}: الطلب كان في التجهيز والكتاب مش متاح.`};
+  quickOrderDraft={...emptyQuickOrderDraft(),...Object.fromEntries(customerFields.map(key=>[key,previous[key]||""])),chatwoodContext:context&&owner&&owner.conversationId===context.conversationId?context:null,lines:[moved],duplicateOverrideReason:`كتاب منفصل من الطلب ${orderId}`,notes:`كتاب منفصل من الطلب ${orderId}: الطلب كان في التجهيز والكتاب مش متاح.`};
   quickOrderSearch="";onlineOrdersMode="quick";renderOnlineOrders();
   toast(`اتحفظ الطلب ${orderId} من غير «${name}». راجع الطلب الجديد (الشحن والدفع) وأكّده، وهيتسجل حجز مسبق.`);
 }
@@ -4654,7 +4694,7 @@ async function openPreparationOrder(id,start=false) {
     const totals=onlineOrderTotals(order.lines,order.orderDiscount,order.orderDiscountType,orderShippingFee(order));
     openModal(`تجهيز ${order.id}`,"تغليف الطلب",`
       <div class="packing-sheet" data-packing-order="${esc(order.id)}">
-        ${carriedOverBadge(order)}
+        ${carriedOverBadge(order)}${duplicateOverrideBadge(order)}
         <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc([phonesText(order),order.governorate,order.city].filter(Boolean).join(" · "))}</span><small>${esc(order.address||"")}</small></div>
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")?order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-full" data-id="${esc(order.id)}">تعديل الطلب — الفاتورة ${esc(order.saleId)} هتتلغي وتطلع جديدة بعد التغليف</button>`:`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
@@ -5081,7 +5121,7 @@ function onlineOrdersTable(list) {
       <td>${esc(order.governorate||"—")}<br><span class="muted">${esc(order.city||"")}</span></td>
       <td><strong>${(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0)}</strong></td>
       <td><strong class="money">${money(order.total||0)}</strong><br><span class="order-payment-mini">مدفوع ${money(order.paidAmount||0)} · متبقي ${money(Math.max(0,Number(order.total||0)-Number(order.paidAmount||0)))}</span></td>
-      <td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${order.tracking?`<small class="order-tracking" dir="ltr">${esc(order.tracking)}</small>`:""}${orderIssueNote(order)}</td>
+      <td>${onlineOrderWorkflowBadge(order)}${carriedOverBadge(order)}${duplicateOverrideBadge(order)}${order.tracking?`<small class="order-tracking" dir="ltr">${esc(order.tracking)}</small>`:""}${orderIssueNote(order)}</td>
       <td><span class="order-created-time">${arabicDateTimeLabel(order.createdAt||order.date)}</span></td>
       <td><div class="row-actions order-next-actions">${onlineOrderPrimaryAction(order)}${onlineOrderMoreActions(order)}</div></td>
     </tr>`).join("") || `<tr><td colspan="8" class="text-center muted">لا توجد طلبات أونلاين.</td></tr>`}
@@ -9438,12 +9478,13 @@ root.addEventListener("input", event => {
     save?.classList.add("dirty");if(state)state.textContent="تعديلات غير محفوظة";
     return;
   }
+  if(event.target.id==="quick-order-duplicate-reason"){quickOrderDraft.duplicateOverrideReason=event.target.value;return;}
   if(event.target.id==="quick-order-phone"){
     event.target.value=normalizeArabicDigits(event.target.value);
     const previousCustomerId=quickOrderDraft.customerId;
     quickOrderDraft.phone=event.target.value;
     const matchedCustomer=quickOrderCustomer();
-    if(normalizePhone(event.target.value).length===11&&(matchedCustomer?.id||"")!==previousCustomerId){
+    if(normalizePhone(event.target.value).length===11&&((matchedCustomer?.id||"")!==previousCustomerId||quickOrderDuplicateMatches().length)){
       quickOrderDraft.customerId="";
       renderQuickOrderPreservingContext();
     }

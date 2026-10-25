@@ -14,6 +14,7 @@ const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
+const DuplicateOrders = require("./app/duplicate-orders.js");
 const OrderRefunds = require("./app/order-refund.js");
 const PaymentCorrection = require("./app/payment-correction.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
@@ -41,7 +42,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -3500,11 +3501,18 @@ const server = http.createServer(async (req, res) => {
       if(Number(totals.orderDiscountAmount)>0&&!canOrderAction(db,user,"order.discount.override"))return send(res,403,{ok:false,code:"DISCOUNT_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية إضافة خصم على مستوى الطلب."});
       const automaticShipping=automaticShippingFee(db,payload.governorate||customer.governorate,lines,payload.orderDiscount,payload.orderDiscountType);
       if(Math.abs(totals.shipping-automaticShipping)>.009&&!canOrderAction(db,user,"order.shipping.override"))return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة."});
+      const duplicateMatches=DuplicateOrders.blockingMatches(DuplicateOrders.findCustomerOrders(db.onlineOrders,{phone,alternativePhone:payload.alternativePhone,customerId:customer?.id,customerName:payload.customerName||customer?.name,governorate:payload.governorate||customer?.governorate,whatsAppPhone:identity.customerWhatsAppPhone,chatwootContactId:identity.chatwootContactId}));
+      const duplicateReason=String(payload.duplicateOverrideReason||"").trim();
+      if(duplicateMatches.length&&!DuplicateOrders.validReason(duplicateReason))return send(res,409,{ok:false,code:"POSSIBLE_DUPLICATE_ORDER",message:`لهذا العميل طلب مفتوح (${duplicateMatches.map(match=>`${match.order.id} · ${match.label}`).join("، ")}). أضف على الطلب الموجود أو اكتب سبب تسجيل طلب منفصل.`,orders:duplicateMatches.map(match=>({id:match.order.id,state:match.state,strength:match.strength,label:match.label}))});
       const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",quickOrderRequestId:requestId,chatwootContactId:identity.chatwootContactId,customerWhatsAppPhone:identity.customerWhatsAppPhone,sourcePlatform:"chatwoot",chatwootConversationId:identity.chatwootConversationId,...(chatwood.identity?{chatwoodLink:quickOrderChatwoodLink(chatwood.identity,user,now)}:{}),paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       // The required deposit at the time the order is taken (WhatsApp default); what was paid is kept apart.
       order.depositRequired=WebsiteOrders.whatsappDepositDefault(db);
+      if(duplicateMatches.length){
+        order.duplicateOverride={reason:duplicateReason,matchedOrderIds:duplicateMatches.map(match=>match.order.id),by:user.name||user.username,byUsername:user.username,at:now};
+        appendOrderAudit(db,user,order,"تسجيل طلب منفصل رغم وجود طلب مفتوح",`${order.duplicateOverride.matchedOrderIds.join("، ")} · السبب: ${duplicateReason}`);
+      }
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
       writeDb(db,{expectedRevision:revision});
       return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});

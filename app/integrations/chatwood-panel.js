@@ -38,7 +38,7 @@
     const response = await fetch(path, { ...options, cache: "no-store", headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(state.token ? { "X-Session-Token": state.token } : {}) } });
     const body = await response.json().catch(() => ({}));
     if (response.status === 401 && path !== "/api/login") { logout(false); throw Object.assign(new Error("انتهت الجلسة، سجّل الدخول مرة أخرى."), { status: 401 }); }
-    if (!response.ok) throw Object.assign(new Error(body.message || "تعذر تنفيذ الطلب."), { status: response.status, code: body.code });
+    if (!response.ok) throw Object.assign(new Error(body.message || "تعذر تنفيذ الطلب."), { status: response.status, code: body.code, orders: body.orders });
     return body;
   }
 
@@ -283,7 +283,7 @@
     return { phone: state.phone, customerName: customer.known ? customer.name : (customer.name || contactName), alternativePhone: saved.alternativePhone || "", governorate: saved.governorate || "", city: EgyptCities.canonicalCity(saved.governorate, saved.city) || saved.city || "",
       address: saved.address || "", addressMark: saved.addressMark || "", shippingCompany: state.catalog.defaultShippingCompany, shippingCost: 0, shippingManual: false, lines: [], paymentPlan: "cash_on_delivery",
       paidAmount: 0, paymentConfirmed: false, cashAccountId: "", receiptMethod: "InstaPay", notes: "", orderDiscount: 0, orderDiscountType: "percent", requestId: `panel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      customerEdit: { confirmed: false, channel: "واتساب", note: "" }, reopenConfirmed: false };
+      customerEdit: { confirmed: false, channel: "واتساب", note: "" }, reopenConfirmed: false, duplicateOverrideReason: "" };
   }
 
   async function openCreateForm() {
@@ -446,11 +446,27 @@
       el("section", { class: "block" }, field("ملاحظة", "notes", { wide: true, multiline: true })),
       el("div", { id: "form-totals", class: "totals" }),
       el("div", { class: "form-footer" },
+        el("div", { id: "duplicate-box" }),
         el("p", { id: "form-error", class: "message error", role: "alert" }),
         el("div", { class: "footer-row" },
           el("div", { class: "footer-total" }, el("span", { class: "small muted", text: "الإجمالي" }), el("b", { id: "footer-total", text: "—" })),
           el("button", { type: "button", id: "form-save", class: "btn", onclick: saveForm, text: form.mode === "create" ? (catalog.permissions.confirm ? "حفظ وتأكيد الطلب" : "حفظ الطلب") : "حفظ التعديل" })))));
-    refreshSuggestions(); refreshResults(); refreshLines(); refreshPayment(); refreshTotals();
+    refreshSuggestions(); refreshResults(); refreshLines(); refreshPayment(); refreshTotals(); refreshDuplicate();
+  }
+
+  // The System refuses a new order while the customer has an open one: the employee adds to it or writes why it is separate.
+  function refreshDuplicate() {
+    const box = $("duplicate-box"), form = state.form, orders = form?.duplicateOrders || [];
+    if (!box) return;
+    if (!orders.length) return box.replaceChildren();
+    const hint = match => match.state === "packed" ? "مغلّف ومنتظر كود التتبع: قبل أي إضافة ارجع لموظف التغليف." : match.strength === "weak" ? "نفس الاسم في نفس المحافظة برقم تاني: اسأل العميل لو هو نفس الشخص." : "الأفضل تضيف الكتب على الطلب ده.";
+    box.replaceChildren(el("div", { class: "notice warn duplicate" },
+      el("strong", { text: "⚠ العميل ده عنده طلب مفتوح؛ اتأكد منه قبل ما تسجل طلب جديد" }),
+      orders.map(match => el("div", { class: "row" },
+        el("span", { class: "small", text: `${match.id} · ${match.label} — ${hint(match)}` }),
+        match.state === "open" ? el("button", { type: "button", class: "link", onclick: () => openEditForm(match.id), text: "أضف عليه" }) : "")),
+      el("input", { placeholder: "لو ده طلب منفصل فعلًا، اكتب السبب", value: form.draft.duplicateOverrideReason || "", oninput: event => { form.draft.duplicateOverrideReason = event.target.value; clearError(); } }),
+      el("span", { class: "small muted", text: "السبب بيتسجل باسمك ويظهر للإدارة." })));
   }
 
   function refreshSuggestions() {
@@ -627,7 +643,7 @@
     try {
       let order;
       if (form.mode === "create") {
-        const body = { ...payloadOf(draft), requestId: draft.requestId, chatwoodContext: state.data.orderContext?.token || "", paymentPlan: draft.paymentPlan, paymentMethod: PLAN_LABELS[draft.paymentPlan],
+        const body = { ...payloadOf(draft), requestId: draft.requestId, duplicateOverrideReason: draft.duplicateOverrideReason || "", chatwoodContext: state.data.orderContext?.token || "", paymentPlan: draft.paymentPlan, paymentMethod: PLAN_LABELS[draft.paymentPlan],
           paidAmount: draft.paymentPlan === "cash_on_delivery" ? 0 : Number(draft.paidAmount), paymentConfirmed: draft.paymentPlan !== "cash_on_delivery" && draft.paymentConfirmed, cashAccountId: draft.cashAccountId, receiptMethod: draft.receiptMethod };
         order = (await api("/api/orders/quick", { method: "POST", body: JSON.stringify(body) })).order;
         if (state.catalog.permissions.confirm && !order.confirmedAt) order = (await api(`/api/orders/${encodeURIComponent(order.id)}/confirm`, { method: "POST", body: "{}" })).order;
@@ -647,6 +663,7 @@
       if (error.status === 401) return;
       const known = { CHATWOOD_CONTEXT_EXPIRED: "صلاحية ربط المحادثة انتهت؛ ارجع وافتح «طلب جديد» تاني.", CHATWOOD_CONTEXT_INVALID: "تعذر التحقق من المحادثة؛ ارجع وافتح «طلب جديد» تاني.",
         STORE_UNAVAILABLE: "المتجر مش بيرد دلوقتي، فمش عارفين سعر الكتاب على الموقع. ما اتحفظش حاجة؛ جرّب تاني.", BOOK_NOT_ON_WEBSITE: error.message, INSUFFICIENT_AVAILABLE_STOCK: error.message };
+      if (error.code === "POSSIBLE_DUPLICATE_ORDER") { form.duplicateOrders = error.orders || []; refreshDuplicate(); $("duplicate-box")?.querySelector("input")?.focus(); }
       formError(known[error.code] || error.message);
     } finally {
       form.saving = false; if (button && !form.done) { button.disabled = false; button.textContent = form.mode === "create" ? (state.catalog.permissions.confirm ? "حفظ وتأكيد الطلب" : "حفظ الطلب") : "حفظ التعديل"; }

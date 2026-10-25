@@ -19,7 +19,7 @@ const line = (qty = 1, price = 100) => [{ bookId:'B0001', qty, price, lineTotal:
     db.onlineOrders = [{ id:'ORD-L1', date:'2026-10-16', customerId:'C-L', customerName:'عميل قديم', phone:'01033330003', alternativePhone:'', source:'whatsapp', status:'تم الشحن', workflowStage:'shipped', lines:line(), total:135, paidAmount:0, chatwootConversationId:'', confirmedAt:'2026-10-16T10:00:00.000Z', createdAt:'2026-10-16T10:00:00.000Z', deletedAt:null }];
     system = await H.startSystem({ db, env:H.integrationEnv(store), name:'chatwood-ownership-' });
     const panel = query => system.api(`/api/integration/v1/panel/customer?${new URLSearchParams(query)}`, { username:'owner' });
-    const create = body => system.api('/api/orders/quick', { username:'owner', method:'POST', body:{ customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], ...body } });
+    const create = body => system.api('/api/orders/quick', { username:'owner', method:'POST', body:{ duplicateOverrideReason:'اختبار طلبات متعددة لنفس العميل', customerName:'مستلم الهدية', governorate:'القاهرة', city:'مدينة نصر', address:'شارع المستلم 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], ...body } });
     const ids = list => list.map(row => row.salesOrderId).sort();
     const contextFor = async (conversationId, contactId) => (await panel({ conversationId, contactId })).body.orderContext.token;
     const buyerContext = await contextFor('8001', '9001');

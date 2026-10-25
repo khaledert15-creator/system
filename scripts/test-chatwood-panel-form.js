@@ -86,7 +86,7 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     pass('an order made from the panel is linked to the conversation and records the deposit once');
 
     // Discounts as the panel sends them: per copy and on the order, only with «تعديل خصم النظام».
-    const discounted = { ...body, chatwoodContext: '', requestId: 'panel-test-2', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false, lines: [{ bookId: 'B0002', qty: 2, discount: 10, discountType: 'percent', discountScope: 'unit' }], orderDiscount: 20, orderDiscountType: 'amount' };
+    const discounted = { ...body, duplicateOverrideReason: 'اختبار خصم لنفس العميل', chatwoodContext: '', requestId: 'panel-test-2', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false, lines: [{ bookId: 'B0002', qty: 2, discount: 10, discountType: 'percent', discountScope: 'unit' }], orderDiscount: 20, orderDiscountType: 'amount' };
     r = await system.api('/api/orders/quick', { username: 'cashier', method: 'POST', body: discounted });
     assert.equal(r.status, 403, 'the cashier cannot add a discount');
     assert.equal((await system.api('/api/integration/v1/panel/order-form', { username: 'owner' })).body.permissions.discount, true);
@@ -103,7 +103,7 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     assert.equal(r.status, 200, r.text);
     assert.equal(system.readDb().settings.whatsappOrders.depositDefault, 70); assert.equal(system.readDb().settings.websiteOrders?.depositDefault ?? 100, 100, 'the website default is untouched');
     assert.equal((await system.api('/api/integration/v1/panel/order-form', { username: 'cashier' })).body.depositRequired, 70);
-    r = await system.api('/api/orders/quick', { username: 'owner', method: 'POST', body: { ...body, chatwoodContext: '', requestId: 'panel-test-3', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false } });
+    r = await system.api('/api/orders/quick', { username: 'owner', method: 'POST', body: { ...body, duplicateOverrideReason: 'اختبار لنفس العميل', chatwoodContext: '', requestId: 'panel-test-3', paymentPlan: 'cash_on_delivery', paidAmount: 0, paymentConfirmed: false } });
     assert.equal(r.body.order.depositRequired, 70);
     pass('WhatsApp orders have their own required deposit, saved on each new order');
 

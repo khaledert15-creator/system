@@ -99,3 +99,5 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .combo-option.active, .combo-option:hover { background:var(--blue-soft); color:var(--blue); }
 .combo-empty { padding:8px; color:var(--muted); font-size:12px; font-weight:400; }
 .result.active { border-color:var(--blue); background:var(--blue-soft); }
+.notice.duplicate { background:#ffeded; border-color:#eba3a3; }
+.notice.duplicate .row { gap:8px; }
