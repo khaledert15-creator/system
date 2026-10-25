@@ -24,8 +24,15 @@ const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };
 
 pass("a packed WhatsApp order can be edited (it goes back to packing) and cancelled", () => {
   const html = menu({ id:"ORD-1", source:"whatsapp", stage:"ready", saleId:"INV-1", preparedAt:"x" });
-  assert.ok(enabled(html, "edit-quick-order")); assert.match(html, /تعديل الطلب \(هيرجع للتغليف\)/);
-  assert.ok(enabled(html, "cancel-online-order")); assert.ok(enabled(html, "reopen-order-preparation")); assert.ok(enabled(html, "view-online-order"));
+  assert.ok(enabled(html, "edit-quick-order")); assert.match(html, /إرجاع للتغليف وتعديل الطلب/);
+  assert.ok(enabled(html, "cancel-online-order")); assert.ok(enabled(html, "view-online-order"));
+  // Going back to packing always opens editing for someone who can edit, so the no-edit return is not offered to them.
+  assert.ok(!enabled(html, "reopen-order-preparation"));
+});
+pass("packing staff who cannot edit still get the plain return to packing", () => {
+  allowed.delete("order.quick.edit");
+  assert.ok(enabled(menu({ id:"ORD-1B", source:"whatsapp", stage:"ready", saleId:"INV-1B", preparedAt:"x" }), "reopen-order-preparation"));
+  allowed.add("order.quick.edit");
 });
 pass("a website order is listed for editing too", () => {
   assert.ok(enabled(menu({ id:"ORD-2", source:"website", websiteOrderNumber:"MK1", stage:"new" }), "edit-quick-order"));

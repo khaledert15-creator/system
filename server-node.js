@@ -847,7 +847,7 @@ const PREPARATION_SHORTAGE_REASONS=["صنف غير متوفر","الكمية غ�
 const PRE_HANDOVER_SHIPMENT_STATUSES=new Set(["","shipped","created","pending","label_created"]);
 
 function activeOrderShipment(db,order) {
-  return (db.shipments||[]).find(item=>!item.deletedAt&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
+  return (db.shipments||[]).find(item=>!item.deletedAt&&!isCancelledShipment(item)&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
 }
 
 function voidSaleRecord(db,sale,user,note) {
@@ -1396,7 +1396,8 @@ function ensureTrackingDb(db) {
     const trackingNumber = normalizeTrackingNumber(shipment.trackingNumber || shipment.tracking || "");
     const carrier = shipment.carrier || shipment.company || "";
     const enabledDefault = isEgyptPostShipment({ ...shipment, carrier }) && Boolean(trackingNumber);
-    const shippingStatus = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus) || "shipped";
+    // A cancelled shipment keeps its cancellation; otherwise the fallback below would turn it back into "shipped".
+    const shippingStatus = isCancelledShipment(shipment) ? "cancelled" : canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus) || "shipped";
     return {
       shipmentNo: shipment.shipmentNo || shipment.id,
       carrier,
@@ -1480,7 +1481,12 @@ function canonicalShippingStatus(value = "", fallbackText = "") {
   return map[normalized] || (["in_transit", "out_for_delivery", "delivered"].includes(normalized) ? normalized : "");
 }
 
+function isCancelledShipment(shipment = {}) {
+  return Boolean(shipment.cancelledAt) || shipment.shippingStatus === "cancelled" || shipment.status === "ملغاة";
+}
+
 function isTerminalShipmentStatus(shipment = {}) {
+  if (isCancelledShipment(shipment)) return true;
   const status = canonicalShippingStatus(
     shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus,
     shipment.status || shipment.currentStatus
@@ -1489,6 +1495,7 @@ function isTerminalShipmentStatus(shipment = {}) {
 }
 
 function trackingIntervalHoursForShipment(shipment = {}) {
+  if (isCancelledShipment(shipment)) return 0;
   const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
   if (status === "shipped") return 4;
   if (status === "in_transit") return 6;

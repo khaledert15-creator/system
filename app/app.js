@@ -4486,7 +4486,7 @@ async function editQuickOrder(id) {
   const blocked=orderEditBlockReason(order);
   if(blocked)return toast(blocked,"error");
   if(order.saleId||order.preparedAt){
-    if(!confirm(`الطلب ${order.id} اتغلّف${order.saleId?` وليه فاتورة ${order.saleId}`:""}.\nعشان يتعدل هيرجع «جاهز للتغليف»${order.saleId?" وفاتورته هتتلغي":""}، والكتب هتفضل محجوزة له. بعد التعديل افتح الطرد وغلّفه من جديد.\nمتأكد؟`))return;
+    if(!confirm(`الطلب ${order.id} هيرجع «جاهز للتغليف» وهتتفتح شاشة تعديله.${order.saleId?`\nالفاتورة ${order.saleId} هتتلغي، وفاتورة جديدة هتطلع لما تخلّص التغليف.`:""}${order.shippingExport?"\nالطلب اتصدّر لشركة الشحن قبل كده؛ هتصدّره تاني بعد التغليف.":""}\nالكتب هتفضل محجوزة له. متأكد؟`))return;
     try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/reopen-for-edit`,{body:{confirm:true,operationKey:`reopen-edit-${order.id}-${order.saleId||order.preparedAt}`},reload:"background"});}
     catch(error){return toast(error.message,"error");}
     order=getOnlineOrder(id);if(!order)return;
@@ -4513,7 +4513,7 @@ const ORDER_CANCEL_REASONS=["العميل ألغى الطلب","العميل ل�
 const PRE_HANDOVER_SHIPMENT_STATUSES=["","shipped","created","pending","label_created"];
 
 function activeOrderShipment(order) {
-  return (data.shipments||[]).find(item=>!item.deletedAt&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
+  return (data.shipments||[]).find(item=>!item.deletedAt&&!item.cancelledAt&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
 }
 
 function canCancelOrderDirectly(order) {
@@ -4655,7 +4655,7 @@ async function openPreparationOrder(id,start=false) {
         ${carriedOverBadge(order)}
         <div class="packing-customer"><strong>${esc(order.customerName)}</strong><span>${esc([phonesText(order),order.governorate,order.city].filter(Boolean).join(" · "))}</span><small>${esc(order.address||"")}</small></div>
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
-        ${canAction("order.quick.edit")&&!order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
+        ${canAction("order.quick.edit")?order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-full" data-id="${esc(order.id)}">تعديل الطلب — الفاتورة ${esc(order.saleId)} هتتلغي وتطلع جديدة بعد التغليف</button>`:`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
         <div class="packing-progress"><b data-packing-progress>تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف · ${checklist.reduce((sum,item)=>sum+Number(item.qty||0),0)} نسخة</b> <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
         <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكمية</span><span>الكتاب</span><span>إجمالي الصنف</span></div>
         <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${item.qty} × ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-qty-badge ${Number(item.qty)>1?"multi":""}" aria-hidden="true"><b>${item.qty}</b><small>${Number(item.qty)>1?"نسخ":"نسخة"}</small></span><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
@@ -4835,7 +4835,7 @@ function shippingLookupOrder(value="") {
 
 function readyShippingRow(order) {
   const payment=OrderFinance.calculatePayment(Number(order.total||0),Number(order.paidAmount||0)),units=(order.lines||[]).reduce((sum,line)=>sum+Number(line.qty||0),0);
-  const shipment=data.shipments.find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
+  const shipment=activeOrderShipment(order);
   const hasWeight=Number(order.packedWeightGrams)>0;
   const canWeight=canAction("order.pack")||canAction("order.shipping"),canShip=canWeight;
   const actions=shipment?"<strong>تم الشحن</strong>":`<div class="row-actions">${canWeight?`<button type="button" class="row-action" data-action="packed-weight-edit" data-id="${esc(order.id)}">${hasWeight?"تصحيح الوزن":"تسجيل الوزن"}</button>`:""}${!order.saleId?(canAction("convert-order-sale")?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${esc(order.id)}">إنشاء الفاتورة</button>`:""):canShip?`<button type="button" class="row-action" data-action="ship-ready-order" data-id="${esc(order.id)}" ${hasWeight?"":"disabled title=\"سجّل وزن الطرد أولًا\""}>${hasWeight?"إدخال كود يدويًا":"سجّل الوزن أولًا"}</button>`:""}${onlineOrderMoreActions(order)}</div>`;
@@ -5062,11 +5062,11 @@ function onlineOrderMoreActions(order,{details=true}={}) {
   const item=(action,label,reason,extra="")=>reason?`<button type="button" class="row-action" disabled>${label}</button><small class="action-reason">${esc(reason)}</small>`:`<button type="button" class="row-action ${extra}" data-action="${action}" data-id="${id}">${label}</button>`;
   return `<details class="table-actions-menu order-actions-more"><summary class="row-action">⋯ المزيد</summary><div class="table-actions-popover">
     ${details?`<button type="button" class="row-action" data-action="view-online-order" data-id="${id}">تفاصيل الطلب</button>`:""}
-    ${item("edit-quick-order",order.saleId||order.preparedAt?"تعديل الطلب (هيرجع للتغليف)":"تعديل الطلب",editReason)}
+    ${item("edit-quick-order",order.saleId||order.preparedAt?"إرجاع للتغليف وتعديل الطلب":"تعديل الطلب",editReason)}
     ${onlineOrderWorkflowStage(order)==="backorder"&&canAction("order.quick.edit")&&reservedCopiesFor(order).length?`<button type="button" class="row-action" data-action="take-reserved-copy" data-id="${id}">خد نسخة محجوزة من طلب تاني</button>`:""}
     ${reshipShipment(order)?`<button type="button" class="row-action" data-action="cancel-shipment-flow" data-id="${esc(reshipShipment(order).id)}" title="الطلب والفاتورة وكتبه بيفضلوا زي ما هم">إلغاء الشحنة وإصدار كود جديد</button>`:""}
     ${order.saleId?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${id}">عرض الفاتورة</button>`:""}
-    ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
+    ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")&&!canAction("order.quick.edit")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
     ${onlineOrderWorkflowStage(order)==="cancelled"?"":item("cancel-online-order","إلغاء الطلب",cancelReason,"text-danger")}
   </div></details>`;
 }
@@ -5480,7 +5480,7 @@ function onlineOrderModal(order = null) {
 function getOnlineOrder(id) { return data.onlineOrders.find(order => order.id === id && !order.deletedAt); }
 
 function orderJourneyMarkup(order) {
-  const sale=(data.sales||[]).find(item=>item.id===order.saleId||item.onlineOrderId===order.id),shipment=(data.shipments||[]).find(item=>item.id===order.shipmentId||item.onlineOrderId===order.id);
+  const sale=(data.sales||[]).find(item=>item.id===order.saleId||item.onlineOrderId===order.id),shipment=activeOrderShipment(order);
   const collection=(data.orderCollections||[]).find(item=>item.orderId===order.id||item.shipmentId===shipment?.id),settlement=(data.carrierSettlements||[]).find(item=>item.id===shipment?.settlementId||item.id===collection?.settlementId);
   const stages=[
     order.confirmedAt&&["تم تأكيد الطلب",`بواسطة ${order.confirmedBy||"—"}`],
@@ -9004,6 +9004,7 @@ root.addEventListener("click", async event => {
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
+  if (action === "packing-edit-full") { closeModal(); editQuickOrder(target.dataset.id); }
   if (action === "take-reserved-copy") openTakeReservedCopy(target.dataset.id);
   if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
