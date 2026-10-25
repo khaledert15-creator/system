@@ -21,6 +21,7 @@ const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
 const { createDatabasePersistence, dataRevision } = require("./app/database-persistence.js");
+const DbDelta = require("./app/db-delta.js");
 const IntegrationAuth = require("./app/integration-auth.js");
 const WebsiteOrders = require("./app/website-orders.js");
 const ChatwoodContext = require("./app/chatwood-context.js");
@@ -42,7 +43,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "db-delta.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -197,6 +198,28 @@ function verifyPassword(user, password) {
     : passwordHash(user.salt || "", password);
   const a = Buffer.from(actual, "utf8"), b = Buffer.from(user.passwordHash, "utf8");
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Pages get the latest tracking run of each shipment (all they show); the full log stays on the server and a save
+// never replaces it. Every state sent to a page is fingerprinted so its later refreshes can fetch only the changes.
+const clientDbTracker = DbDelta.createTracker({ hash:value => crypto.createHash("sha1").update(value).digest("base64").slice(0, 20) });
+
+function latestTrackingRunsForClient(runs = []) {
+  const latest = new Map();
+  for (const run of Array.isArray(runs) ? runs : []) {
+    const key = run?.shipmentId ? `shipment:${run.shipmentId}` : `run:${run?.id ?? latest.size}`;
+    const previous = latest.get(key);
+    if (!previous || new Date(run.finishedAt || run.startedAt || 0) >= new Date(previous.finishedAt || previous.startedAt || 0)) latest.set(key, run);
+  }
+  const keep = new Set(latest.values());
+  return runs.filter(run => keep.has(run));
+}
+
+function clientDbView(db) {
+  const view = withoutCredentials(db);
+  const { trackingRunBatches, ...rest } = view;
+  if (Array.isArray(rest.trackingRuns)) rest.trackingRuns = latestTrackingRunsForClient(rest.trackingRuns);
+  return rest;
 }
 
 function withoutCredentials(db) {
@@ -4408,7 +4431,19 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/db" && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
-      return send(res, 200, withoutCredentials(readDb()), "application/json; charset=utf-8", { "X-DB-Revision": dbRevision() });
+      const db = readDb(), revision = String(dataRevision(db)), view = clientDbView(db);
+      clientDbTracker.observe(revision, view);
+      return send(res, 200, view, "application/json; charset=utf-8", { "X-DB-Revision": revision });
+    }
+
+    // Only what changed since a state this server sent to the page; a page holding an unknown state gets everything.
+    if (route === "/api/db/delta" && req.method === "GET") {
+      if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
+      const db = readDb(), revision = String(dataRevision(db)), view = clientDbView(db);
+      clientDbTracker.observe(revision, view);
+      const delta = clientDbTracker.changesSince(url.searchParams.get("since") || "", view);
+      return send(res, 200, delta ? { mode:"delta", ...delta } : { mode:"full", revision, data:view }, "application/json; charset=utf-8", { "X-DB-Revision": revision, "Cache-Control":"no-store" });
     }
 
     const supplierDeleteMatch = route.match(/^\/api\/suppliers\/([^/]+)$/);

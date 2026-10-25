@@ -343,14 +343,13 @@ async function applyLiveRevision() {
     await saveQueue;
     if (liveMutationCount || saleSaveInFlight || lastSaveError) { scheduleLiveRefresh(300); return; }
     const before=JSON.stringify(data), revision=dbRevision, epoch=liveMutationEpoch, token=sessionToken;
-    const response=await fetch('/api/db?live=1',{headers:authHeaders(),cache:'no-store',signal:AbortSignal.timeout(15000)});
-    if (response.status === 401) { stopLiveUpdates(); orderAuthenticationError(401); return; }
-    if (!response.ok) throw new Error('Live refresh unavailable');
-    const remote=await response.json();
+    let state;
+    try { state=await loadServerState(15000); }
+    catch (error) { if (error.status === 401) { stopLiveUpdates(); orderAuthenticationError(401); return; } throw error; }
     if (token !== sessionToken) return;
     if (liveMutationCount || saleSaveInFlight || epoch !== liveMutationEpoch || revision !== dbRevision || before !== JSON.stringify(data)) { scheduleLiveRefresh(150); return; }
-    data=normalizeData(remote);
-    dbRevision=response.headers.get('X-DB-Revision') || String(remote.meta?.dataRevision || '');
+    data=state.data;
+    dbRevision=state.revision || String(data.meta?.dataRevision || '');
     if (Number(dbRevision) >= Number(liveTargetRevision)) liveTargetRevision=null;
     cacheDataLocally();
     renderLiveData();
@@ -387,6 +386,8 @@ function loadFallbackData() {
 
 let browserDataCacheAvailable = true;
 function cacheDataLocally(value = data) {
+  // Once the browser refused the copy (the database outgrew its storage quota), trying again only costs time.
+  if (!browserDataCacheAvailable) return false;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
     browserDataCacheAvailable = true;
@@ -915,13 +916,49 @@ async function refreshDashboardShipments({ silent = false } = {}) {
   }
 }
 
+// The server state this page last received, with the revision it was at. While `data` is still that object (saved
+// changes included), a refresh asks only for what changed since then instead of downloading the whole database.
+// `drift` is how much longer the page's lists are than the server's after normalizeData() adds its defaults.
+let syncedState = null;
+
+function rememberServerState(raw, revision) {
+  const next = normalizeData(raw);
+  syncedState = { data:next, revision:String(revision || raw?.meta?.dataRevision || ""), drift:DbDelta.countDrift(raw, next) };
+  return syncedState;
+}
+
+async function loadServerState(timeoutMs = 45000) {
+  const base = syncedState && data === syncedState.data && syncedState.revision && !lastSaveError && !saveConflict ? syncedState : null;
+  if (base) {
+    try {
+      const response = await fetch(`/api/db/delta?since=${encodeURIComponent(base.revision)}`, { headers:authHeaders(), cache:"no-store", signal:AbortSignal.timeout(timeoutMs) });
+      if (response.status === 401) throw Object.assign(new Error("HTTP 401"), { status:401 });
+      if (response.ok) {
+        const result = await response.json();
+        const revision = response.headers.get("X-DB-Revision") || String(result.revision || "");
+        if (result.mode === "full") return rememberServerState(result.data, revision);
+        if (result.mode === "delta") {
+          if (!Object.keys(result.changes || {}).length && DbDelta.countsMatch(base.data, result.counts, base.drift)) return (syncedState = { ...base, revision });
+          const merged = DbDelta.applyDelta(base.data, result);
+          const next = merged && normalizeData(merged);
+          if (next && DbDelta.countsMatch(next, result.counts, base.drift)) return (syncedState = { data:next, revision, drift:base.drift });
+        }
+      }
+    } catch (error) {
+      if (error.status === 401) throw error;
+    }
+  }
+  // A stalled download must not leave the screen waiting forever.
+  const response = await fetch(`/api/db?reload=${Date.now()}`, { headers:authHeaders(), cache:"no-store", signal:AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status:response.status });
+  return rememberServerState(await response.json(), response.headers.get("X-DB-Revision") || "");
+}
+
 async function reloadRemoteData() {
   if (!serverConnected) return false;
-  // A stalled download must not leave the screen waiting forever.
-  const response = await fetch(`/api/db?reload=${Date.now()}`, { headers: authHeaders(), cache: "no-store", signal: AbortSignal.timeout(45000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  data = normalizeData(await response.json());
-  dbRevision = response.headers.get("X-DB-Revision") || dbRevision;
+  const state = await loadServerState(45000);
+  data = state.data;
+  dbRevision = state.revision || dbRevision;
   cacheDataLocally();
   updateNotificationBadge();
   return true;
@@ -1120,7 +1157,7 @@ async function initializeDatabase() {
       dbRevision = response.headers.get("X-DB-Revision") || "";
       const remote = await response.json();
       const needsMigration = Number(remote.version || 0) < 3 || !Array.isArray(remote.users) || !Array.isArray(remote.stockMovements) || !Array.isArray(remote.onlineOrders) || !Array.isArray(remote.governorates) || !Array.isArray(remote.shippingCompanies);
-      data = normalizeData(remote);
+      data = rememberServerState(remote, dbRevision).data;
       serverConnected = true;
       cacheDataLocally();
       setStorageStatus("البيانات محفوظة", true);
@@ -11517,9 +11554,12 @@ async function commitSale({ printAfter = false } = {}) {
 }
 
 async function fetchLatestDatabaseForPurchase() {
-  const response = await fetch(`/api/db?purchase-preflight=${Date.now()}`, { headers:authHeaders(), cache:"no-store", signal:AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error("تعذر جلب أحدث بيانات النظام قبل اعتماد الفاتورة.");
-  return { data:normalizeData(await response.json()), revision:response.headers.get("X-DB-Revision") || "" };
+  try {
+    const state = await loadServerState(15000);
+    return { data:state.data, revision:state.revision };
+  } catch {
+    throw new Error("تعذر جلب أحدث بيانات النظام قبل اعتماد الفاتورة.");
+  }
 }
 
 function rememberPurchaseRetry(baseData, conflicts = []) {
