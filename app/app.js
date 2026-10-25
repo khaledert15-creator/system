@@ -3602,8 +3602,9 @@ function quickOrderDuplicatePanel(matches=quickOrderDuplicateMatches()) {
 
 function refusalHistoryPanel(history) {
   if(!history.length)return "";
-  const last=history[0],when=last.refusedAt||last.returnedAt||last.updatedAt;
-  return `<section class="duplicate-order-alert blocking refusal-history-alert" role="alert"><strong>⛔ العميل ده رفض استلام ${history.length===1?"طلب قبل كده":history.length===2?"طلبين قبل كده":`${history.length} طلبات قبل كده`}</strong><span>آخر مرة: ${esc(last.id)}${when?` · ${esc(arabicDateTimeLabel(when))}`:""}${last.refusal?.outcomeLabel?` · ${esc(last.refusal.outcomeLabel)}`:""}. الأفضل تاخد ديبوزت أكبر أو الدفع كامل مقدم.</span></section>`;
+  const count=history.length===1?"مرة":history.length===2?"مرتين":`${history.length} مرات`;
+  const rows=history.slice(0,3).map(order=>{const when=order.refusedAt||order.returnedAt||order.updatedAt;return `<li><strong>${esc(order.id)}</strong><span>${when?esc(arabicDateTimeLabel(when)):""}</span><em>${esc(order.refusal?.outcomeLabel||"رجع من شركة الشحن")}${order.refusal?.extraDue?` · كان عليه ${money(order.refusal.extraDue)}`:""}</em></li>`;}).join("");
+  return `<section class="refusal-history-alert" role="alert"><div class="refusal-history-head"><span aria-hidden="true">⛔</span><div><strong>العميل ده رفض استلام قبل كده (${count})</strong><small>الأفضل تاخد ديبوزت أكبر أو الدفع كامل مقدم قبل الشحن.</small></div></div><ul>${rows}</ul>${history.length>3?`<small class="muted">و${history.length-3} طلبات أقدم.</small>`:""}</section>`;
 }
 
 function quickOrderRefusalHistory() {
@@ -4704,9 +4705,9 @@ document.addEventListener("submit", event => {
 
 // Refused delivery: the whole invoice is reversed and only the deposit / shipping charge is settled (see order-refusal.js).
 const ORDER_REFUSAL_OUTCOMES=[
-  ["refund_deposit","رد الديبوزت للعميل","الخطأ مننا: الديبوزت يُرد من الخزنة ورصيد العميل يبقى صفر."],
-  ["keep_deposit","بدون رد الديبوزت","الديبوزت يُحتسب تعويض شحن ورصيد العميل يبقى صفر."],
-  ["charge_shipping","العميل يكمّل تكلفة الشحن","اكتب تكلفة الشحن اللي بلّغته بيها؛ الفرق فوق الديبوزت يتسجل مديونية عليه."]
+  ["refund_deposit","رد الديبوزت للعميل","الخطأ مننا، والديبوزت يرجع للعميل من الخزنة.","↺"],
+  ["keep_deposit","بدون رد الديبوزت","الديبوزت يتحسب تعويض عن مصاريف الشحن.","✓"],
+  ["charge_shipping","العميل يكمّل تكلفة الشحن","بلّغته بتكلفة الشحن وهيحوّل الفرق.","＋"]
 ];
 
 function orderCanBeRefused(order) {
@@ -4716,44 +4717,75 @@ function orderCanBeRefused(order) {
   return Boolean(order.shipmentId||activeOrderShipment(order));
 }
 
+// Same rules as OrderRefusals.settlementPlan, so the employee sees the money before confirming.
+function refusalPlanPreview(outcome,deposit,charge) {
+  if(outcome==="refund_deposit")return {refund:deposit,retained:0,extraDue:0,valid:true};
+  if(outcome==="keep_deposit")return {refund:0,retained:deposit,extraDue:0,valid:true};
+  if(outcome==="charge_shipping")return {refund:0,retained:deposit,extraDue:Math.max(0,charge-deposit),valid:charge>deposit};
+  return {refund:0,retained:0,extraDue:0,valid:false};
+}
+
+function refusalBalanceLabel(value) {
+  return value>0?`عليه ${money(value)}`:value<0?`له ${money(-value)}`:"صفر";
+}
+
 async function openOrderRefusal(id) {
   try{
     const {preview}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal/preview`,{method:"GET",reload:false});
     if(!preview.canRefuse)return toast(preview.blocked,"error");
-    openModal(`رفض استلام الطلب ${preview.orderId}`,"المرتجعات",`<form id="order-refusal-form" data-id="${esc(preview.orderId)}" data-deposit="${preview.deposit}" data-cod="${preview.codRemaining}">
-      <div class="finance-callout"><strong>${esc(preview.customerName)}</strong><span>${esc(preview.orderId)} · ${esc(preview.invoiceId)}${preview.trackingNumber?` · ${esc(preview.trackingNumber)}`:""} · الإجمالي ${money(preview.total)} · الديبوزت ${money(preview.deposit)} · الباقي عند الاستلام ${money(preview.codRemaining)}</span></div>
-      <p class="muted">سيتم تنفيذ الآتي معًا:</p>
-      <ol class="cancel-steps"><li>إرجاع كل كتب الطلب للمخزون</li><li>قفل الفاتورة كمرتجع – رفض استلام</li><li>شطب مبلغ الاستلام (${money(preview.codRemaining)}) من حساب العميل بالكامل</li></ol>
-      <div class="refusal-outcomes">${ORDER_REFUSAL_OUTCOMES.map(([value,label,hint],index)=>`<label class="choice-card"><input type="radio" name="outcome" value="${value}" ${index===1?"checked":""}><span><strong>${label}</strong><small>${hint}</small></span></label>`).join("")}</div>
-      <div class="form-grid">
-        <div class="form-field" data-refusal-field="charge_shipping"><label>تكلفة الشحن المطلوبة من العميل (الإجمالي)</label><input name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal"></div>
-        <div class="form-field" data-refusal-field="refund_deposit"><label>يُرد الديبوزت من خزنة</label><select name="cashAccountId">${refundCashAccountOptions(preview.depositCashAccountId)}</select></div>
-        <div class="form-field full"><label>ملاحظة (اختياري)</label><input name="note" maxlength="200" placeholder="مثال: العميل رفض لتأخير الشحنة"></div>
+    const balance=Number(getCustomer(preview.customerId)?.balance||0);
+    const fact=(label,value,note="")=>`<div class="refusal-fact"><span>${label}</span><strong>${value}</strong>${note?`<small>${note}</small>`:""}</div>`;
+    openModal(`رفض استلام الطلب ${preview.orderId}`,"المرتجعات",`<form id="order-refusal-form" class="refusal-dialog" data-id="${esc(preview.orderId)}" data-deposit="${preview.deposit}" data-cod="${preview.codRemaining}" data-balance="${balance}">
+      <div class="refusal-facts">
+        ${fact("العميل",esc(preview.customerName),preview.trackingNumber?`بوليصة <span dir="ltr">${esc(preview.trackingNumber)}</span>`:"")}
+        ${fact("الفاتورة",esc(documentDisplayName(preview.invoiceId,"sale")),`إجمالي ${money(preview.total)}`)}
+        ${fact("الديبوزت المدفوع",money(preview.deposit),preview.deposit>0?"":"مفيش ديبوزت")}
+        ${fact("الباقي عند الاستلام",money(preview.codRemaining),"هيتشطب من حساب العميل")}
       </div>
-      <div class="finance-callout refusal-summary" id="order-refusal-summary"></div>
-      <div class="form-actions"><button class="btn danger" type="submit">تأكيد رفض الاستلام</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
+      <ul class="refusal-auto-steps" aria-label="بيتعمل تلقائي">
+        <li>الكتب ترجع المخزن</li><li>الفاتورة تتقفل مرتجع</li><li>مبلغ الاستلام يتشال من الحساب</li>
+      </ul>
+      <fieldset class="refusal-choice">
+        <legend>إيه اللي اتفقت عليه مع العميل؟</legend>
+        <div class="refusal-options">${ORDER_REFUSAL_OUTCOMES.map(([value,label,hint,icon])=>`<label class="refusal-option"><input type="radio" name="outcome" value="${value}" required><span class="refusal-option-icon" aria-hidden="true">${icon}</span><span class="refusal-option-text"><strong>${label}</strong><small>${hint}</small></span></label>`).join("")}</div>
+      </fieldset>
+      <div class="refusal-details" hidden>
+        <div class="form-field" data-refusal-field="charge_shipping"><label for="refusal-shipping-charge">تكلفة الشحن اللي بلّغت بيها العميل (الإجمالي)</label><input id="refusal-shipping-charge" name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal" placeholder="مثال: ${money(Math.max(preview.deposit+50,preview.shippingFee*2))}"><small>لازم تكون أكبر من الديبوزت (${money(preview.deposit)}).</small></div>
+        <div class="form-field" data-refusal-field="refund_deposit"><label for="refusal-cash-account">يتصرف الديبوزت من خزنة</label><select id="refusal-cash-account" name="cashAccountId">${refundCashAccountOptions(preview.depositCashAccountId)}</select></div>
+        <div class="form-field full"><label for="refusal-note">ملاحظة (اختياري)</label><input id="refusal-note" name="note" maxlength="200" placeholder="مثال: العميل رفض بسبب تأخير الشحنة"></div>
+      </div>
+      <div class="refusal-result" id="order-refusal-result" aria-live="polite"></div>
+      <div class="form-actions"><button class="btn danger" type="submit" disabled>اختار الحالة الأول</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
     </form>`);
     updateOrderRefusalForm(document.getElementById("order-refusal-form"));
+    document.getElementById("order-refusal-form")?.closest(".modal")?.scrollTo(0,0);
   }catch(error){toast(error.message,"error");}
 }
 
-// Mirrors OrderRefusals.settlementPlan so the employee sees the customer's resulting balance before confirming.
 function updateOrderRefusalForm(form) {
   if(!form)return;
-  const outcome=form.elements.outcome.value,deposit=Number(form.dataset.deposit||0),charge=Number(form.elements.shippingCharge.value||0);
+  const outcome=form.elements.outcome.value,deposit=Number(form.dataset.deposit||0),cod=Number(form.dataset.cod||0),balance=Number(form.dataset.balance||0);
+  const charge=Number(form.elements.shippingCharge.value||0),plan=refusalPlanPreview(outcome,deposit,charge);
+  form.querySelector(".refusal-details").hidden=!outcome;
   form.querySelectorAll("[data-refusal-field]").forEach(field=>{const active=field.dataset.refusalField===outcome&&!(outcome==="refund_deposit"&&deposit<=0);field.hidden=!active;field.querySelector("input,select").required=active;});
-  const summary=form.querySelector("#order-refusal-summary");
-  let text;
-  if(outcome==="refund_deposit")text=deposit>0?`يُرد للعميل ${money(deposit)} من الخزنة. رصيد العميل من الطلب ده: صفر.`:"لا يوجد ديبوزت لرده. رصيد العميل من الطلب ده: صفر.";
-  else if(outcome==="keep_deposit")text=`الديبوزت ${money(deposit)} يُحتسب تعويض شحن. رصيد العميل من الطلب ده: صفر.`;
-  else text=charge>deposit?`الديبوزت ${money(deposit)} يغطي جزء من الشحن، ويتسجل على العميل ${money(charge-deposit)} لحد ما يحوّلها.`:`اكتب تكلفة شحن أكبر من الديبوزت (${money(deposit)}).`;
-  summary.innerHTML=`<strong>النتيجة</strong><span>${esc(text)}</span>`;
+  const result=form.querySelector("#order-refusal-result"),button=form.querySelector('button[type="submit"]');
+  button.disabled=!plan.valid;
+  button.textContent=!outcome?"اختار الحالة الأول":plan.valid?"تأكيد رفض الاستلام":"اكتب تكلفة الشحن";
+  if(!outcome){result.hidden=true;return;}
+  result.hidden=false;
+  const after=balance-cod+plan.extraDue;
+  const row=(label,value,tone="")=>`<div class="refusal-result-row ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+  result.innerHTML=`<h4>النتيجة بعد التأكيد</h4>
+    ${row("يتصرف للعميل من الخزنة",money(plan.refund),plan.refund?"out":"")}
+    ${row("يتحسب تعويض شحن",money(plan.retained))}
+    ${outcome==="charge_shipping"?row("يتسجل مديونية على العميل",plan.valid?money(plan.extraDue):"—",plan.extraDue?"due":""):""}
+    <div class="refusal-result-total"><span>رصيد العميل</span><strong><s>${esc(refusalBalanceLabel(balance))}</s> ← ${esc(refusalBalanceLabel(after))}</strong></div>`;
 }
 
 async function submitOrderRefusal(form) {
   const values=Object.fromEntries(new FormData(form)),id=form.dataset.id,button=form.querySelector('button[type="submit"]');
   if(button?.disabled)return;
-  if(values.outcome==="charge_shipping"&&!(Number(values.shippingCharge||0)>Number(form.dataset.deposit||0)))return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت، وإلا اختر «بدون رد الديبوزت».","error");
+  if(!refusalPlanPreview(values.outcome,Number(form.dataset.deposit||0),Number(values.shippingCharge||0)).valid)return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت، وإلا اختار «بدون رد الديبوزت».","error");
   if(button){button.disabled=true;button.textContent="جارٍ التسجيل...";}
   try{
     const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",note:String(values.note||"").trim(),operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-${id}-${Date.now()}`)}});
@@ -4781,51 +4813,80 @@ document.addEventListener("submit", event => {
 });
 
 // Returns recorded with the generic return screen before refusals had their own flow left customers with credit.
-// Each row shows what the order adds to the customer's balance now and is corrected to the chosen refusal outcome.
+// Each order shows what it adds to the customer's balance now and is corrected to the chosen refusal outcome.
 async function openRefusalRepair() {
   try{
     const {rows}=await orderWorkflowRequest("/api/refusals/repair/preview",{method:"GET",reload:false});
-    const effect=value=>value<0?`<span class="text-danger">له ${money(-value)}</span>`:value>0?`عليه ${money(value)}`:money(0);
-    openModal("تصحيح مرتجعات رفض الاستلام القديمة","المرتجعات",`
-      <div class="finance-callout"><strong>${rows.length?`${rows.length} طلب محتاج تصحيح`:"لا توجد مرتجعات محتاجة تصحيح"}</strong><span>طلبات أونلاين اتسجلت مرتجع كامل من شاشة المرتجع العادية وأثّرت على رصيد العميل. اختر لكل طلب اللي حصل فعلًا، والسيستم يعدّل رصيد العميل بقيد واضح من غير مسح أي حركة قديمة.</span></div>
-      ${rows.length?`<div class="table-wrap"><table><thead><tr><th>العميل</th><th>الطلب / الفاتورة</th><th>الديبوزت</th><th>اترد نقدي</th><th>أثره على رصيد العميل الآن</th><th>اللي حصل فعلًا</th><th></th></tr></thead><tbody>
-        ${rows.map(row=>`<tr><td>${esc(row.customerName)}<br><span class="muted">الرصيد الحالي ${money(row.customerBalance)}</span></td><td>${esc(row.orderId)}<br><span class="muted">${esc(row.invoiceId)} · ${esc(row.returnIds.join("، "))}</span></td><td>${money(row.deposit)}</td><td>${money(row.cashRefunded)}</td><td>${effect(row.contribution)}</td>
-          <td><form class="refusal-repair-form" data-invoice-id="${esc(row.invoiceId)}" data-deposit="${row.deposit}">
-            <select name="outcome">${ORDER_REFUSAL_OUTCOMES.filter(([value])=>row.allowedOutcomes.includes(value)).map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select>
-            <input name="shippingCharge" type="number" min="0" step="0.01" placeholder="تكلفة الشحن الإجمالية" hidden>
-            <select name="cashAccountId" ${row.deposit>row.cashRefunded?"":"hidden"}>${refundCashAccountOptions()}</select>
-          </form></td>
-          <td><button class="btn small" type="button" data-refusal-repair-submit="${esc(row.invoiceId)}">تصحيح</button></td></tr>`).join("")}
-      </tbody></table></div>`:""}
-      <div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+    const wrongCredit=rows.filter(row=>row.contribution<0).reduce((sum,row)=>sum-row.contribution,0);
+    const leftover=rows.filter(row=>row.contribution>0).reduce((sum,row)=>sum+row.contribution,0);
+    const card=row=>{
+      const outcomes=ORDER_REFUSAL_OUTCOMES.filter(([value])=>row.allowedOutcomes.includes(value));
+      const phone=getCustomer(row.customerId)?.phone||"";
+      return `<form class="refusal-repair-card" data-invoice-id="${esc(row.invoiceId)}" data-deposit="${row.deposit}" data-cash-refunded="${row.cashRefunded}" data-contribution="${row.contribution}" data-balance="${row.customerBalance}">
+        <header><div><strong>${esc(row.customerName)}</strong><small>${phone?`<span dir="ltr">${esc(phone)}</span> · `:""}${esc(row.orderId)} · ${esc(documentDisplayName(row.invoiceId,"sale"))} · مرتجع ${esc(row.returnIds.join("، "))}</small></div>${badge(row.contribution<0?`مسجّل له ${money(-row.contribution)}`:`باقي عليه ${money(row.contribution)}`,row.contribution<0?"danger":"warning")}</header>
+        <dl class="refusal-repair-facts"><div><dt>الديبوزت</dt><dd>${money(row.deposit)}</dd></div><div><dt>اترد كاش قبل كده</dt><dd>${money(row.cashRefunded)}</dd></div><div><dt>رصيد العميل الحالي</dt><dd>${esc(refusalBalanceLabel(row.customerBalance))}</dd></div></dl>
+        <fieldset class="refusal-repair-outcomes"><legend>اللي حصل فعلًا</legend>${outcomes.map(([value,label],index)=>`<label class="refusal-pill"><input type="radio" name="outcome" value="${value}" ${outcomes.length===1&&index===0?"checked":""}><span>${label}</span></label>`).join("")}</fieldset>
+        ${row.allowedOutcomes.length===1?`<p class="muted refusal-repair-note">اترد للعميل كاش قبل كده، فالحالة الوحيدة المتاحة هي رد الديبوزت.</p>`:""}
+        <div class="refusal-repair-inputs">
+          <div class="form-field" data-repair-field="charge_shipping" hidden><label>تكلفة الشحن الإجمالية</label><input name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal" placeholder="أكبر من ${money(row.deposit)}"></div>
+          <div class="form-field" data-repair-field="refund_deposit" hidden><label>يتصرف الباقي (${money(Math.max(0,row.deposit-row.cashRefunded))}) من خزنة</label><select name="cashAccountId">${refundCashAccountOptions()}</select></div>
+        </div>
+        <footer><span class="refusal-repair-preview" aria-live="polite">اختار اللي حصل عشان تشوف الرصيد بعد التصحيح.</span><button class="btn small" type="submit" disabled>تصحيح</button></footer>
+      </form>`;
+    };
+    openModal("تصحيح مرتجعات رفض الاستلام القديمة","المرتجعات",`<div class="refusal-repair">
+      <div class="refusal-repair-summary">
+        <div><span>طلبات محتاجة تصحيح</span><strong>${rows.length}</strong></div>
+        <div><span>رصيد مسجّل للعملا بالغلط</span><strong class="text-danger">${money(wrongCredit)}</strong></div>
+        <div><span>مديونية متبقية من الفواتير</span><strong>${money(leftover)}</strong></div>
+      </div>
+      <p class="muted">دي طلبات أونلاين اتسجلت مرتجع كامل من شاشة المرتجع العادية. اختار لكل طلب اللي حصل فعلًا، والسيستم يعدّل رصيد العميل بقيد واضح من غير ما يمسح أي حركة قديمة.</p>
+      ${rows.length?`<div class="refusal-repair-list">${rows.map(card).join("")}</div>`:`<div class="empty-state"><strong>كل الحسابات سليمة</strong><p>مفيش مرتجعات رفض استلام قديمة محتاجة تصحيح.</p></div>`}
+      <div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>
+    </div>`);
+    document.querySelectorAll(".refusal-repair-card").forEach(updateRefusalRepairForm);
+    document.querySelector(".refusal-repair")?.closest(".modal")?.scrollTo(0,0);
   }catch(error){toast(error.message,"error");}
 }
 
 function updateRefusalRepairForm(form) {
-  const outcome=form.elements.outcome.value;
-  form.elements.shippingCharge.hidden=outcome!=="charge_shipping";
-  form.elements.cashAccountId.hidden=outcome!=="refund_deposit";
+  // A single radio comes back from form.elements as the input itself, whose value ignores whether it is checked.
+  const outcome=[...form.querySelectorAll('input[name="outcome"]')].find(input=>input.checked)?.value||"";
+  const deposit=Number(form.dataset.deposit||0),cashRefunded=Number(form.dataset.cashRefunded||0),contribution=Number(form.dataset.contribution||0),balance=Number(form.dataset.balance||0);
+  form.querySelectorAll("[data-repair-field]").forEach(field=>{field.hidden=field.dataset.repairField!==outcome||(outcome==="refund_deposit"&&deposit<=cashRefunded);});
+  const plan=refusalPlanPreview(outcome,deposit,Number(form.elements.shippingCharge.value||0));
+  const preview=form.querySelector(".refusal-repair-preview"),button=form.querySelector('button[type="submit"]');
+  button.disabled=!plan.valid;
+  if(!outcome){preview.textContent="اختار اللي حصل عشان تشوف الرصيد بعد التصحيح.";return;}
+  if(!plan.valid){preview.textContent=`اكتب تكلفة شحن أكبر من الديبوزت (${money(deposit)}).`;return;}
+  const after=balance+plan.extraDue-contribution;
+  preview.innerHTML=`رصيد العميل: <s>${esc(refusalBalanceLabel(balance))}</s> ← <strong>${esc(refusalBalanceLabel(after))}</strong>${outcome==="refund_deposit"&&deposit>cashRefunded?` · يتصرف ${money(deposit-cashRefunded)}`:""}`;
 }
 
-async function submitRefusalRepair(invoiceId,button) {
-  const form=[...document.querySelectorAll(".refusal-repair-form")].find(item=>item.dataset.invoiceId===invoiceId);if(!form||button.disabled)return;
-  const values=Object.fromEntries(new FormData(form));
-  if(values.outcome==="charge_shipping"&&!(Number(values.shippingCharge||0)>Number(form.dataset.deposit||0)))return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت.","error");
-  button.disabled=true;
+async function submitRefusalRepair(form) {
+  const button=form.querySelector('button[type="submit"]');if(button.disabled)return;
+  const values=Object.fromEntries(new FormData(form)),invoiceId=form.dataset.invoiceId;
+  if(values.outcome==="refund_deposit"&&Number(form.dataset.deposit)>Number(form.dataset.cashRefunded)&&!values.cashAccountId)return toast("اختار الخزنة اللي هيتصرف منها باقي الديبوزت.","error");
+  button.disabled=true;button.textContent="جارٍ التصحيح...";
   try{
     const result=await orderWorkflowRequest(`/api/refusals/repair/${encodeURIComponent(invoiceId)}`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-repair-${invoiceId}-${Date.now()}`)}});
-    toast(`تم تصحيح ${invoiceId} — تعديل رصيد العميل ${money(result.repair?.balanceDelta||0)}.`);
+    toast(`تم تصحيح ${documentDisplayName(invoiceId,"sale")} — تعديل رصيد العميل ${money(result.repair?.balanceDelta||0)}.`);
     render();openRefusalRepair();
-  }catch(error){button.disabled=false;toast(error.message,"error");}
+  }catch(error){button.disabled=false;button.textContent="تصحيح";toast(error.message,"error");}
 }
 
-document.addEventListener("change", event => {
-  const form=event.target.closest?.(".refusal-repair-form");
+document.addEventListener("input", event => {
+  const form=event.target.closest?.(".refusal-repair-card");
   if(form)updateRefusalRepairForm(form);
 });
-document.addEventListener("click", event => {
-  const button=event.target.closest?.("[data-refusal-repair-submit]");
-  if(button)submitRefusalRepair(button.dataset.refusalRepairSubmit,button);
+document.addEventListener("change", event => {
+  const form=event.target.closest?.(".refusal-repair-card");
+  if(form)updateRefusalRepairForm(form);
+});
+document.addEventListener("submit", event => {
+  if (!event.target.classList?.contains("refusal-repair-card")) return;
+  event.preventDefault();
+  submitRefusalRepair(event.target);
 });
 
 function cancellationEndpoint(kind,id,suffix){return `/api/${kind==="sale"?"sales":"orders"}/${encodeURIComponent(id)}/${suffix}`;}
