@@ -17,6 +17,7 @@ const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.j
 const DuplicateOrders = require("./app/duplicate-orders.js");
 const OrderRefunds = require("./app/order-refund.js");
 const PaymentCorrection = require("./app/payment-correction.js");
+const OrderRefusals = require("./app/order-refusal.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
@@ -3742,6 +3743,7 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.cancelledAt||order.workflowStage==="cancelled"||["ملغي","cancelled","canceled"].includes(String(order.status||"").toLowerCase()))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      if(order.refusal)return send(res,409,{ok:false,code:"ORDER_REFUSED",message:"تم تسجيل رفض استلام لهذا الطلب؛ لا يمكن إلغاؤه."});
       if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب تم تسليمه؛ استخدم المرتجعات بدل الإلغاء."});
       try{
         const payload=JSON.parse(await readBody(req)||"{}"),reason=String(payload.reason||"").trim(),operationKey=String(payload.operationKey||"").trim();
@@ -3770,6 +3772,47 @@ const server = http.createServer(async (req, res) => {
         writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_CANCELLED_COMPLETE",performedBy:user.username});
         return send(res,200,{ok:true,order,steps,settlements,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"ORDER_CANCELLATION_FAILED",message:error.message});}
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/refusal/preview") && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{return send(res,200,{ok:true,preview:OrderRefusals.refusalPreview(db,decodeURIComponent(route.split("/")[3])),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});}
+      catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/refusal") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefusals.applyRefusal(db,decodeURIComponent(route.split("/")[3]),payload,{...user,uuid:()=>crypto.randomUUID()});
+        if(!result.existing){
+          const refusal=result.refusal;
+          appendOrderAudit(db,user,result.order,"رفض استلام الطلب",[refusal.outcomeLabel,`ديبوزت ${refusal.deposit}`,refusal.refund?`رد ${refusal.refund}`:"",refusal.extraDue?`مستحق على العميل ${refusal.extraDue}`:"",refusal.note].filter(Boolean).join(" · "));
+          writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"ORDER_REFUSED",performedBy:user.username});
+        }
+        return send(res,200,{ok:true,existing:result.existing,order:result.order,refusal:result.refusal,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"ORDER_REFUSAL_FAILED",message:error.message});}
+    }
+
+    if (route === "/api/refusals/repair/preview" && req.method === "GET") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      return send(res,200,{ok:true,rows:OrderRefusals.repairCandidates(db),revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+    }
+
+    if (route.startsWith("/api/refusals/repair/") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefusals.applyRepair(db,decodeURIComponent(route.split("/")[4]),payload,{...user,uuid:()=>crypto.randomUUID()});
+        if(!result.existing){
+          const order=(db.onlineOrders||[]).find(item=>item.id===result.sale.onlineOrderId)||{id:result.sale.onlineOrderId};
+          appendOrderAudit(db,user,order,"تصحيح حساب مرتجع رفض استلام قديم",`${result.sale.id} · ${result.repair.outcomeLabel} · تعديل رصيد العميل ${result.repair.balanceDelta}`);
+          writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"REFUSAL_REPAIRED",performedBy:user.username});
+        }
+        return send(res,200,{ok:true,existing:result.existing,repair:result.repair,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"REFUSAL_REPAIR_FAILED",message:error.message});}
     }
 
     if (route.startsWith("/api/orders/") && route.endsWith("/cancellation/preview") && req.method === "GET") {

@@ -80,5 +80,19 @@
     return String(reason || "").trim().length >= MIN_REASON_LENGTH;
   }
 
-  return { RECENT_SHIPPED_DAYS, MIN_REASON_LENGTH, normalizePhone, normalizeName, orderState, stageLabel, findCustomerOrders, blockingMatches, validReason };
+  // Orders that came back without being received: recorded refusals, and older orders the tracking marked returned.
+  function isRefusedOrder(order = {}) {
+    return Boolean(order.refusal) || order.workflowStage === "returned" || ["مرتجع", "returned"].includes(String(order.status || "").toLowerCase());
+  }
+
+  // Only the same phone (main or alternative) or the same customer record counts; a name alone is not enough to label someone.
+  function findRefusalHistory(orders = [], input = {}, options = {}) {
+    const phones = new Set([input.phone, input.alternativePhone].map(normalizePhone).filter(Boolean));
+    if (!phones.size && !input.customerId) return [];
+    return (orders || []).filter(order => order && !order.deletedAt && order.id !== options.excludeOrderId && isRefusedOrder(order) && (
+      [order.phone, order.alternativePhone].map(normalizePhone).some(phone => phone && phones.has(phone)) || (input.customerId && order.customerId === input.customerId)
+    )).sort((a, b) => new Date(b.refusedAt || b.returnedAt || b.updatedAt || 0) - new Date(a.refusedAt || a.returnedAt || a.updatedAt || 0));
+  }
+
+  return { RECENT_SHIPPED_DAYS, MIN_REASON_LENGTH, normalizePhone, normalizeName, orderState, stageLabel, findCustomerOrders, blockingMatches, validReason, isRefusedOrder, findRefusalHistory };
 });

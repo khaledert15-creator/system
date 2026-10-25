@@ -3600,6 +3600,37 @@ function quickOrderDuplicatePanel(matches=quickOrderDuplicateMatches()) {
   return `<section class="duplicate-order-alert${blocking.length?" blocking":""}" role="alert"><strong>⚠ ${blocking.length?`العميل ده عنده ${blocking.length===1?"طلب مفتوح":blocking.length===2?"طلبين مفتوحين":`${blocking.length} طلبات مفتوحة`} — اتأكد منه قبل ما تسجل طلب جديد`:"العميل ده عنده طلب اتشحن قريب"}</strong><ul>${rows}</ul>${reason}</section>`;
 }
 
+function refusalHistoryPanel(history) {
+  if(!history.length)return "";
+  const last=history[0],when=last.refusedAt||last.returnedAt||last.updatedAt;
+  return `<section class="duplicate-order-alert blocking refusal-history-alert" role="alert"><strong>⛔ العميل ده رفض استلام ${history.length===1?"طلب قبل كده":history.length===2?"طلبين قبل كده":`${history.length} طلبات قبل كده`}</strong><span>آخر مرة: ${esc(last.id)}${when?` · ${esc(arabicDateTimeLabel(when))}`:""}${last.refusal?.outcomeLabel?` · ${esc(last.refusal.outcomeLabel)}`:""}. الأفضل تاخد ديبوزت أكبر أو الدفع كامل مقدم.</span></section>`;
+}
+
+function quickOrderRefusalHistory() {
+  if(quickOrderDraft.savedOrderId)return [];
+  const customer=quickOrderCustomer();
+  return DuplicateOrders.findRefusalHistory(data.onlineOrders||[],{phone:quickOrderDraft.phone,alternativePhone:quickOrderDraft.alternativePhone,customerId:quickOrderDraft.customerId||customer?.id});
+}
+
+// The customers list asks for every row, so refused orders are indexed once per change of the orders list.
+let customerRefusalIndex={source:null,size:-1,keys:new Map()};
+function customerRefusalCount(customer) {
+  if(!customer)return 0;
+  const orders=data.onlineOrders||[];
+  if(customerRefusalIndex.source!==orders||customerRefusalIndex.size!==orders.length){
+    const keys=new Map();
+    for(const order of orders){
+      if(order.deletedAt||!DuplicateOrders.isRefusedOrder(order))continue;
+      const orderKeys=new Set([order.customerId?`id:${order.customerId}`:"",...[order.phone,order.alternativePhone].map(DuplicateOrders.normalizePhone).filter(Boolean).map(phone=>`phone:${phone}`)].filter(Boolean));
+      for(const key of orderKeys)keys.set(key,[...(keys.get(key)||[]),order.id]);
+    }
+    customerRefusalIndex={source:orders,size:orders.length,keys};
+  }
+  const ids=new Set();
+  for(const key of [`id:${customer.id}`,...[customer.phone,customer.alternativePhone||customer.phone2].map(DuplicateOrders.normalizePhone).filter(Boolean).map(phone=>`phone:${phone}`)])for(const id of customerRefusalIndex.keys.get(key)||[])ids.add(id);
+  return ids.size;
+}
+
 // Throws before a new order is sent while the customer has an open order and no reason was written.
 function assertQuickOrderDuplicateDecision() {
   if(quickOrderDraft.savedOrderId)return;
@@ -3878,7 +3909,7 @@ function renderQuickOrderScreen() {
   <div class="quick-order-layout"><div class="quick-order-main">
     <article class="card quick-customer-card"><div class="card-header"><div><h3>1. العميل والعنوان</h3><p>ابدأ بالموبايل؛ تُسترجع بيانات العميل تلقائيًا.</p></div>${customer?badge("عميل مسجل",""):badge("عميل جديد","warning")}</div>
       ${customer?`<div class="quick-customer-insight"><span class="quick-customer-check">✓</span><div><strong>${esc(customer.name)}</strong><small>${esc([customer.governorate,customer.city,customer.address].filter(Boolean).join("، ")||"لا يوجد عنوان مسجل")}</small></div><div class="quick-customer-history"><b>${customerInsight?.count||0}</b><small>طلب سابق</small>${customerInsight?.last?`<span>آخر طلب ${arabicDateTimeLabel(customerInsight.last.createdAt)}</span>`:""}</div></div>`:""}
-      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}${quickOrderDuplicatePanel()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label class="required" for="quick-order-city">المدينة / المركز</label><select id="quick-order-city" ${EgyptCities.citiesOf(quickOrderDraft.governorate).length?"":"disabled"}>${quickCityOptions()}</select></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
+      ${quickOrderChatwoodMarkup()}${quickOrderWebsiteEditMarkup()}${refusalHistoryPanel(quickOrderRefusalHistory())}${quickOrderDuplicatePanel()}<div class="form-grid three"><div class="form-field"><label class="required">رقم المستلم (للتوصيل)</label><input id="quick-order-phone" dir="ltr" inputmode="tel" value="${esc(quickOrderDraft.phone)}" placeholder="01xxxxxxxxx"></div><div class="form-field"><label class="required">الاسم</label><input id="quick-order-name" value="${esc(quickOrderDraft.customerName||customer?.name||"")}" ${customer?"readonly":""}></div><div class="form-field"><label>رقم بديل</label><input id="quick-order-alt-phone" dir="ltr" value="${esc(quickOrderDraft.alternativePhone||"")}"></div><div class="form-field"><label class="required" for="quick-order-governorate-search">المحافظة</label><div class="quick-governorate-combobox"><input id="quick-order-governorate-search" role="combobox" aria-autocomplete="list" aria-controls="quick-order-governorate-list" aria-expanded="false" autocomplete="off" value="${esc(quickOrderDraft.governorate||"")}" placeholder="اكتب للبحث عن المحافظة"><button type="button" data-action="quick-order-toggle-governorate" aria-label="فتح قائمة المحافظات">⌄</button><div id="quick-order-governorate-list" class="quick-governorate-list" role="listbox" hidden>${quickGovernorateOptions()}</div></div></div><div class="form-field"><label class="required" for="quick-order-city">المدينة / المركز</label><select id="quick-order-city" ${EgyptCities.citiesOf(quickOrderDraft.governorate).length?"":"disabled"}>${quickCityOptions()}</select></div><div class="form-field"><label class="required">العنوان</label><input id="quick-order-address" value="${esc(quickOrderDraft.address||"")}"></div><div class="form-field"><label class="required">شركة الشحن</label><select id="quick-order-shipping-company" required>${shippingCompanyOptions(quickOrderDraft.shippingCompany||preferredShippingCompanyName())}</select></div><div class="form-field full"><label>علامة مميزة أو وصف إضافي</label><input id="quick-order-address-mark" value="${esc(quickOrderDraft.addressMark||"")}"></div></div>
     </article>
     <article class="card quick-products-card"><div class="card-header"><div><h3>2. الكتب</h3><p>اكتب جزءًا من الاسم أو امسح الباركود، ثم اضغط Enter لإضافة أول نتيجة.</p></div><span>${quickOrderDraft.lines.length} كتاب مختلف</span></div>
       <div class="quick-book-search"><span class="quick-search-icon" aria-hidden="true">⌕</span><input id="quick-order-book-search" value="${esc(quickOrderSearch)}" autocomplete="off" placeholder="اسم الكتاب، الباركود، الكود، الصف أو المادة..." aria-label="بحث وإضافة كتاب">${quickOrderBookResults()}</div>
@@ -4671,6 +4702,132 @@ document.addEventListener("submit", event => {
   submitOrderCancelComplete(event.target);
 });
 
+// Refused delivery: the whole invoice is reversed and only the deposit / shipping charge is settled (see order-refusal.js).
+const ORDER_REFUSAL_OUTCOMES=[
+  ["refund_deposit","رد الديبوزت للعميل","الخطأ مننا: الديبوزت يُرد من الخزنة ورصيد العميل يبقى صفر."],
+  ["keep_deposit","بدون رد الديبوزت","الديبوزت يُحتسب تعويض شحن ورصيد العميل يبقى صفر."],
+  ["charge_shipping","العميل يكمّل تكلفة الشحن","اكتب تكلفة الشحن اللي بلّغته بيها؛ الفرق فوق الديبوزت يتسجل مديونية عليه."]
+];
+
+function orderCanBeRefused(order) {
+  if(!order||order.refusal||order.cancelledAt||order.status==="ملغي"||!order.saleId||!canAction("order.quick.edit"))return false;
+  const sale=(data.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
+  if(!sale||["ملغاة","مرتجع","مرتجع جزئي"].includes(sale.status))return false;
+  return Boolean(order.shipmentId||activeOrderShipment(order));
+}
+
+async function openOrderRefusal(id) {
+  try{
+    const {preview}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal/preview`,{method:"GET",reload:false});
+    if(!preview.canRefuse)return toast(preview.blocked,"error");
+    openModal(`رفض استلام الطلب ${preview.orderId}`,"المرتجعات",`<form id="order-refusal-form" data-id="${esc(preview.orderId)}" data-deposit="${preview.deposit}" data-cod="${preview.codRemaining}">
+      <div class="finance-callout"><strong>${esc(preview.customerName)}</strong><span>${esc(preview.orderId)} · ${esc(preview.invoiceId)}${preview.trackingNumber?` · ${esc(preview.trackingNumber)}`:""} · الإجمالي ${money(preview.total)} · الديبوزت ${money(preview.deposit)} · الباقي عند الاستلام ${money(preview.codRemaining)}</span></div>
+      <p class="muted">سيتم تنفيذ الآتي معًا:</p>
+      <ol class="cancel-steps"><li>إرجاع كل كتب الطلب للمخزون</li><li>قفل الفاتورة كمرتجع – رفض استلام</li><li>شطب مبلغ الاستلام (${money(preview.codRemaining)}) من حساب العميل بالكامل</li></ol>
+      <div class="refusal-outcomes">${ORDER_REFUSAL_OUTCOMES.map(([value,label,hint],index)=>`<label class="choice-card"><input type="radio" name="outcome" value="${value}" ${index===1?"checked":""}><span><strong>${label}</strong><small>${hint}</small></span></label>`).join("")}</div>
+      <div class="form-grid">
+        <div class="form-field" data-refusal-field="charge_shipping"><label>تكلفة الشحن المطلوبة من العميل (الإجمالي)</label><input name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal"></div>
+        <div class="form-field" data-refusal-field="refund_deposit"><label>يُرد الديبوزت من خزنة</label><select name="cashAccountId">${refundCashAccountOptions(preview.depositCashAccountId)}</select></div>
+        <div class="form-field full"><label>ملاحظة (اختياري)</label><input name="note" maxlength="200" placeholder="مثال: العميل رفض لتأخير الشحنة"></div>
+      </div>
+      <div class="finance-callout refusal-summary" id="order-refusal-summary"></div>
+      <div class="form-actions"><button class="btn danger" type="submit">تأكيد رفض الاستلام</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
+    </form>`);
+    updateOrderRefusalForm(document.getElementById("order-refusal-form"));
+  }catch(error){toast(error.message,"error");}
+}
+
+// Mirrors OrderRefusals.settlementPlan so the employee sees the customer's resulting balance before confirming.
+function updateOrderRefusalForm(form) {
+  if(!form)return;
+  const outcome=form.elements.outcome.value,deposit=Number(form.dataset.deposit||0),charge=Number(form.elements.shippingCharge.value||0);
+  form.querySelectorAll("[data-refusal-field]").forEach(field=>{const active=field.dataset.refusalField===outcome&&!(outcome==="refund_deposit"&&deposit<=0);field.hidden=!active;field.querySelector("input,select").required=active;});
+  const summary=form.querySelector("#order-refusal-summary");
+  let text;
+  if(outcome==="refund_deposit")text=deposit>0?`يُرد للعميل ${money(deposit)} من الخزنة. رصيد العميل من الطلب ده: صفر.`:"لا يوجد ديبوزت لرده. رصيد العميل من الطلب ده: صفر.";
+  else if(outcome==="keep_deposit")text=`الديبوزت ${money(deposit)} يُحتسب تعويض شحن. رصيد العميل من الطلب ده: صفر.`;
+  else text=charge>deposit?`الديبوزت ${money(deposit)} يغطي جزء من الشحن، ويتسجل على العميل ${money(charge-deposit)} لحد ما يحوّلها.`:`اكتب تكلفة شحن أكبر من الديبوزت (${money(deposit)}).`;
+  summary.innerHTML=`<strong>النتيجة</strong><span>${esc(text)}</span>`;
+}
+
+async function submitOrderRefusal(form) {
+  const values=Object.fromEntries(new FormData(form)),id=form.dataset.id,button=form.querySelector('button[type="submit"]');
+  if(button?.disabled)return;
+  if(values.outcome==="charge_shipping"&&!(Number(values.shippingCharge||0)>Number(form.dataset.deposit||0)))return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت، وإلا اختر «بدون رد الديبوزت».","error");
+  if(button){button.disabled=true;button.textContent="جارٍ التسجيل...";}
+  try{
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",note:String(values.note||"").trim(),operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-${id}-${Date.now()}`)}});
+    closeModal();render();
+    const refusal=result.refusal||{};
+    toast(result.existing?`رفض استلام الطلب ${id} مسجل بالفعل.`:`تم تسجيل رفض استلام الطلب ${id} — ${refusal.outcomeLabel||""}${refusal.extraDue?` · مستحق على العميل ${money(refusal.extraDue)}`:""}.`);
+  }catch(error){
+    if(button){button.disabled=false;button.textContent="تأكيد رفض الاستلام";}
+    toast(error.message,"error");
+  }
+}
+
+document.addEventListener("input", event => {
+  const form=event.target.closest?.("#order-refusal-form");
+  if(form)updateOrderRefusalForm(form);
+});
+document.addEventListener("change", event => {
+  const form=event.target.closest?.("#order-refusal-form");
+  if(form)updateOrderRefusalForm(form);
+});
+document.addEventListener("submit", event => {
+  if (event.target.id !== "order-refusal-form") return;
+  event.preventDefault();
+  submitOrderRefusal(event.target);
+});
+
+// Returns recorded with the generic return screen before refusals had their own flow left customers with credit.
+// Each row shows what the order adds to the customer's balance now and is corrected to the chosen refusal outcome.
+async function openRefusalRepair() {
+  try{
+    const {rows}=await orderWorkflowRequest("/api/refusals/repair/preview",{method:"GET",reload:false});
+    const effect=value=>value<0?`<span class="text-danger">له ${money(-value)}</span>`:value>0?`عليه ${money(value)}`:money(0);
+    openModal("تصحيح مرتجعات رفض الاستلام القديمة","المرتجعات",`
+      <div class="finance-callout"><strong>${rows.length?`${rows.length} طلب محتاج تصحيح`:"لا توجد مرتجعات محتاجة تصحيح"}</strong><span>طلبات أونلاين اتسجلت مرتجع كامل من شاشة المرتجع العادية وأثّرت على رصيد العميل. اختر لكل طلب اللي حصل فعلًا، والسيستم يعدّل رصيد العميل بقيد واضح من غير مسح أي حركة قديمة.</span></div>
+      ${rows.length?`<div class="table-wrap"><table><thead><tr><th>العميل</th><th>الطلب / الفاتورة</th><th>الديبوزت</th><th>اترد نقدي</th><th>أثره على رصيد العميل الآن</th><th>اللي حصل فعلًا</th><th></th></tr></thead><tbody>
+        ${rows.map(row=>`<tr><td>${esc(row.customerName)}<br><span class="muted">الرصيد الحالي ${money(row.customerBalance)}</span></td><td>${esc(row.orderId)}<br><span class="muted">${esc(row.invoiceId)} · ${esc(row.returnIds.join("، "))}</span></td><td>${money(row.deposit)}</td><td>${money(row.cashRefunded)}</td><td>${effect(row.contribution)}</td>
+          <td><form class="refusal-repair-form" data-invoice-id="${esc(row.invoiceId)}" data-deposit="${row.deposit}">
+            <select name="outcome">${ORDER_REFUSAL_OUTCOMES.filter(([value])=>row.allowedOutcomes.includes(value)).map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select>
+            <input name="shippingCharge" type="number" min="0" step="0.01" placeholder="تكلفة الشحن الإجمالية" hidden>
+            <select name="cashAccountId" ${row.deposit>row.cashRefunded?"":"hidden"}>${refundCashAccountOptions()}</select>
+          </form></td>
+          <td><button class="btn small" type="button" data-refusal-repair-submit="${esc(row.invoiceId)}">تصحيح</button></td></tr>`).join("")}
+      </tbody></table></div>`:""}
+      <div class="form-actions"><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
+  }catch(error){toast(error.message,"error");}
+}
+
+function updateRefusalRepairForm(form) {
+  const outcome=form.elements.outcome.value;
+  form.elements.shippingCharge.hidden=outcome!=="charge_shipping";
+  form.elements.cashAccountId.hidden=outcome!=="refund_deposit";
+}
+
+async function submitRefusalRepair(invoiceId,button) {
+  const form=[...document.querySelectorAll(".refusal-repair-form")].find(item=>item.dataset.invoiceId===invoiceId);if(!form||button.disabled)return;
+  const values=Object.fromEntries(new FormData(form));
+  if(values.outcome==="charge_shipping"&&!(Number(values.shippingCharge||0)>Number(form.dataset.deposit||0)))return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت.","error");
+  button.disabled=true;
+  try{
+    const result=await orderWorkflowRequest(`/api/refusals/repair/${encodeURIComponent(invoiceId)}`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-repair-${invoiceId}-${Date.now()}`)}});
+    toast(`تم تصحيح ${invoiceId} — تعديل رصيد العميل ${money(result.repair?.balanceDelta||0)}.`);
+    render();openRefusalRepair();
+  }catch(error){button.disabled=false;toast(error.message,"error");}
+}
+
+document.addEventListener("change", event => {
+  const form=event.target.closest?.(".refusal-repair-form");
+  if(form)updateRefusalRepairForm(form);
+});
+document.addEventListener("click", event => {
+  const button=event.target.closest?.("[data-refusal-repair-submit]");
+  if(button)submitRefusalRepair(button.dataset.refusalRepairSubmit,button);
+});
+
 function cancellationEndpoint(kind,id,suffix){return `/api/${kind==="sale"?"sales":"orders"}/${encodeURIComponent(id)}/${suffix}`;}
 
 function mergeCancelledOrder(result) {
@@ -4702,7 +4859,7 @@ async function finalizeCancellation(button) {
   }
 }
 
-function cancellationSettlementLabel(type){return({cash_refund:"رد نقدي للعميل",customer_credit:"تحويل المبلغ إلى رصيد دائن",linked_disbursement:"ربط إيصال صرف موجود",pending_credit:"إبقاء المبلغ كرصيد معلق — Advanced"}[type]||type);}
+function cancellationSettlementLabel(type){return({cash_refund:"رد نقدي للعميل",customer_credit:"تحويل المبلغ إلى رصيد دائن",linked_disbursement:"ربط إيصال صرف موجود",pending_credit:"إبقاء المبلغ كرصيد معلق — Advanced",retained_fee:"الاحتفاظ بالديبوزت كتعويض شحن مرتجع"}[type]||type);}
 
 function openCancellationSettlement(kind,id,financial){
   const paymentOptions=(financial.payments||[]).map(item=>`<option value="${esc(item.id)}">${esc(item.id)} · ${money(item.amount)} · ${esc(item.cashAccountName||item.paymentMethod||"—")}</option>`).join("");
@@ -5147,6 +5304,7 @@ function onlineOrderMoreActions(order,{details=true}={}) {
     ${order.saleId?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${id}">عرض الفاتورة</button>`:""}
     ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")&&!canAction("order.quick.edit")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
     ${onlineOrderWorkflowStage(order)==="cancelled"?"":item("cancel-online-order","إلغاء الطلب",cancelReason,"text-danger")}
+    ${orderCanBeRefused(order)?`<button type="button" class="row-action text-danger" data-action="refuse-online-order" data-id="${id}">رفض استلام</button>`:""}
   </div></details>`;
 }
 
@@ -6052,7 +6210,12 @@ function returnTypeLabel(type) {
   return returnKind(type) === "purchase" ? "مرتجع مشتريات" : "مرتجع مبيعات";
 }
 
+function refusalOutcomeLabel(outcome) {
+  return (ORDER_REFUSAL_OUTCOMES.find(([value]) => value === outcome) || [])[1] || "رفض استلام";
+}
+
 function returnSettlementLabel(item = {}) {
+  if (item.mode === "refusal") return `رفض استلام — ${refusalOutcomeLabel(item.refusalOutcome)}`;
   const settlement = item.settlementType || item.settlement || "";
   const labels = {
     cash: returnKind(item.type) === "purchase" ? "رد نقدي من المورد للخزنة" : "رد نقدي من الخزنة",
@@ -6107,7 +6270,7 @@ function renderReturns() {
   root.innerHTML = `
     <div class="section-title">
       <div><h2>المرتجعات</h2><p>فاتورة مرتجع مستقلة مرتبطة بحساب العميل أو المورد، مع تحديد الأصناف والكميات فقط.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="open-sale-return-list">مرتجع من فاتورة بيع</button><button class="btn" data-action="new-sale-return-customer">مرتجع مبيعات مستقل حسب العميل</button><button class="btn ghost" data-action="open-purchase-return-list">مرتجع من فاتورة مشتريات</button><button class="btn secondary" data-action="new-purchase-return-supplier">مرتجع مشتريات مستقل حسب المورد</button><button class="btn ghost" data-action="open-return-search">بحث في المرتجعات</button></div>
+      <div class="actions"><button class="btn ghost" data-action="open-sale-return-list">مرتجع من فاتورة بيع</button><button class="btn" data-action="new-sale-return-customer">مرتجع مبيعات مستقل حسب العميل</button>${canAction("order.quick.edit") ? `<button class="btn ghost" data-action="open-refusal-repair">تصحيح مرتجعات رفض الاستلام القديمة</button>` : ""}<button class="btn ghost" data-action="open-purchase-return-list">مرتجع من فاتورة مشتريات</button><button class="btn secondary" data-action="new-purchase-return-supplier">مرتجع مشتريات مستقل حسب المورد</button><button class="btn ghost" data-action="open-return-search">بحث في المرتجعات</button></div>
     </div>
     <div class="metric-strip">
       <div class="mini-metric"><span>فواتير بيع متاحة</span><strong>${saleDocs.length}</strong></div>
@@ -6138,7 +6301,7 @@ function renderReturns() {
 
 function partyRow(item, isCustomers, partyKind) {
   return `<tr>
-            <td><strong>${esc(item.name)}</strong><br><span class="muted">${item.id}</span></td>
+            <td><strong>${esc(item.name)}</strong>${isCustomers && customerRefusalCount(item) ? ` ${badge(`رفض استلام × ${customerRefusalCount(item)}`, "danger")}` : ""}<br><span class="muted">${item.id}</span></td>
             <td><span dir="ltr">${esc(phonesText(item, "—"))}</span></td>
             <td>${isCustomers ? badge(item.type, item.type === "جملة" ? "blue" : "") : `${item.terms || 0} يوم`}</td>
             <td class="money">${money(item.creditLimit)}</td>
@@ -6320,7 +6483,7 @@ function shipmentsTable(list) {
       <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${days === null || terminal ? "" : `<span class="shipping-workdays" title="من تاني يوم الشحن، من غير الجمعة والسبت">${esc(shipmentWorkingDaysLabel(shipmentWorkingDaysSinceShipped(item)))}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
       <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td>
       <td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error" title="${esc(item.trackingError)}">تعذر آخر تحديث</span>` : item.trackingNotice ? `<span class="shipment-update-hint" title="${esc(item.trackingNotice)}">بانتظار إعادة المحاولة</span>` : ""}${complaintSummary}</td>
-      <td><div class="shipping-row-actions">${trackingAction}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
+      <td><div class="shipping-row-actions">${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="refuse-online-order" data-id="${esc(order.id)}">↩ رفض استلام</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
         <button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">✎ تعديل الحالة</button>
         <button class="row-action" data-action="shipment-history" data-id="${item.id}">◷ سجل التتبع</button>
         <button class="row-action" data-action="add-shipment-complaint" data-id="${item.id}">＋ إضافة شكوى</button>
@@ -9087,6 +9250,8 @@ root.addEventListener("click", async event => {
   if (action === "take-reserved-copy") openTakeReservedCopy(target.dataset.id);
   if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
+  if (action === "refuse-online-order") openOrderRefusal(target.dataset.id);
+  if (action === "open-refusal-repair") openRefusalRepair();
   if (action === "backorder-allocate") allocateBackorder(target.dataset.id);
   if (action === "split-shipment") openSplitShipment(target.dataset.id);
   if (action === "shortage-purchase") preparePurchaseForBook(target.dataset.id, Number(target.dataset.qty));
@@ -10248,7 +10413,7 @@ modalBody.addEventListener("input", event => {
     updateAuditLogResults();
     return;
   }
-  if (event.target.closest("#sale-customer-return-form") && event.target.matches(".customer-return-qty, [name='replacementDeduction']")) {
+  if (event.target.closest("#sale-customer-return-form") && event.target.matches(".customer-return-qty, [name='replacementDeduction'], [name='returnShippingDeduction']")) {
     updateCustomerSaleReturnSummary();
     return;
   }
@@ -10256,7 +10421,7 @@ modalBody.addEventListener("input", event => {
     updateSupplierPurchaseReturnSummary();
     return;
   }
-  if (event.target.closest("#sale-return-form") && event.target.matches(".sale-return-qty, [name='replacementDeduction']")) {
+  if (event.target.closest("#sale-return-form") && event.target.matches(".sale-return-qty, [name='replacementDeduction'], [name='returnShippingDeduction']")) {
     updateSaleReturnSummary();
     return;
   }
@@ -10960,7 +11125,8 @@ modalBody.addEventListener("submit", async event => {
       date: formData.date,
       reason: formData.reason,
       settlement: formData.settlement || "cash",
-      replacementDeduction: formData.replacementDeduction
+      replacementDeduction: formData.replacementDeduction,
+      returnShippingDeduction: formData.returnShippingDeduction
     });
     return;
   }
@@ -12025,9 +12191,10 @@ function statementRows(id, kind) {
       date: item.date,
       type:"return",
       reference: returnNo(item),
-      description: `${returnTypeLabel(item.type)} من ${item.sourceDocuments?.join("، ") || item.documentId || "—"} — ${returnSettlementLabel(item)}`,
+      description: item.mode === "refusal" ? `رفض استلام ${item.onlineOrderId || ""} — ${refusalOutcomeLabel(item.refusalOutcome)}${item.paidAmount ? ` · رد ${money(item.paidAmount)}` : ""}${item.refusalExtraDue ? ` · شحن مستحق ${money(item.refusalExtraDue)}` : ""}` : `${returnTypeLabel(item.type)} من ${item.sourceDocuments?.join("، ") || item.documentId || "—"} — ${returnSettlementLabel(item)}`,
       debit: 0,
-      credit: Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))),
+      // A refused delivery lowers the invoice's own remaining amount instead, so its return row adds nothing here.
+      credit: item.mode === "refusal" || item.refusalRepaired ? 0 : Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))),
       status: item.status || "معتمد",user:item.createdBy||item.user||"—",links:{invoiceId:item.documentId||""}
     })),
     ...vouchers.map(receipt => ({
@@ -12039,7 +12206,7 @@ function statementRows(id, kind) {
       credit: receipt.status === "ملغى" ? 0 : Number(receipt.balanceApplied || 0),
       status: receipt.status,user:receipt.createdBy||"—",note:receipt.note||"",links:{receiptId:receipt.id}
     })),
-    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
+    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt&&!item.refusalId).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
     ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:"استخدام رصيد دائن في طلب جديد",debit:Number(item.amount),credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
     ...(kind==="customer"?(data.onlineOrders||[]).filter(item=>item.customerId===id&&item.status==="ملغي").map(item=>({date:item.cancelledAt,type:"cancelled_order",reference:item.id,description:"إلغاء طلب — إلغاء مستند دون حذف",debit:0,credit:0,status:"ملغي",user:item.cancelledBy||"—",links:{orderId:item.id,invoiceId:item.saleId||""}})):[])
   ].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row,index,rows)=>({...row,balance:rows.slice(0,index+1).reduce((sum,item)=>sum+Number(item.debit||0)-Number(item.credit||0),0)}));
@@ -13248,17 +13415,26 @@ function selectedCustomerReturnLinesFromForm(formData, returnableLines) {
   }).filter(Boolean);
 }
 
-function saleReturnCalculation(sale, selectedLines, replacementDeduction = 0) {
+// Return shipping the customer bears comes out of what we would give back first, then out of the debt the return
+// would have cleared, so the customer keeps owing it. It never exceeds the value of the returned books.
+function withReturnShippingDeduction(result, shippingDeduction = 0) {
+  const shipping = Math.max(0, Math.min(Number(shippingDeduction || 0), Math.max(0, result.returnAmount - result.replacement)));
+  const fromDue = Math.min(shipping, result.customerDue);
+  const fromDebt = Math.min(shipping - fromDue, result.debtReduction);
+  return { ...result, shippingDeduction: fromDue + fromDebt, debtBeforeShipping: result.debtReduction, debtReduction: result.debtReduction - fromDebt, customerDue: result.customerDue - fromDue };
+}
+
+function saleReturnCalculation(sale, selectedLines, replacementDeduction = 0, shippingDeduction = 0) {
   const returnAmount = selectedLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const total = Math.max(1, Number(sale?.total || 0));
   const remainingBase = Number(sale?.remaining || 0) + Number(sale?.returnedRemaining || 0);
   const debtReduction = Math.min(Number(sale?.remaining || 0), remainingBase * returnAmount / total);
   const replacement = Math.max(0, Math.min(Number(replacementDeduction || 0), Math.max(0, returnAmount - debtReduction)));
   const customerDue = Math.max(0, returnAmount - debtReduction - replacement);
-  return { returnAmount, debtReduction, replacement, customerDue };
+  return withReturnShippingDeduction({ returnAmount, debtReduction, replacement, customerDue }, shippingDeduction);
 }
 
-function customerSaleReturnCalculation(selectedLines, replacementDeduction = 0) {
+function customerSaleReturnCalculation(selectedLines, replacementDeduction = 0, shippingDeduction = 0) {
   const returnAmount = selectedLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const debtReduction = selectedLines.reduce((sum, line) => {
     const sale = data.sales.find(item => item.id === line.documentId);
@@ -13271,7 +13447,7 @@ function customerSaleReturnCalculation(selectedLines, replacementDeduction = 0) 
   }, 0);
   const replacement = Math.max(0, Math.min(Number(replacementDeduction || 0), Math.max(0, returnAmount - debtReduction)));
   const customerDue = Math.max(0, returnAmount - debtReduction - replacement);
-  return { returnAmount, debtReduction, replacement, customerDue };
+  return withReturnShippingDeduction({ returnAmount, debtReduction, replacement, customerDue }, shippingDeduction);
 }
 
 function updateSaleReturnSummary() {
@@ -13290,12 +13466,12 @@ function updateSaleReturnSummary() {
   const debtReduction = Math.min(saleRemaining, (saleRemaining + returnedRemaining) * returnAmount / saleTotal);
   const replacementInput = form.querySelector('[name="replacementDeduction"]');
   const replacement = Math.max(0, Math.min(Number(replacementInput?.value || 0), Math.max(0, returnAmount - debtReduction)));
-  const customerDue = Math.max(0, returnAmount - debtReduction - replacement);
+  const result = withReturnShippingDeduction({ returnAmount, debtReduction, replacement, customerDue: Math.max(0, returnAmount - debtReduction - replacement) }, form.elements.returnShippingDeduction?.value);
   const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = money(value); };
   set("sale-return-gross", returnAmount);
-  set("sale-return-debt", debtReduction);
-  set("sale-return-replacement", replacement);
-  set("sale-return-due", customerDue);
+  set("sale-return-debt", result.debtReduction);
+  set("sale-return-replacement", replacement + result.shippingDeduction);
+  set("sale-return-due", result.customerDue);
   const settlement = form.elements.settlement?.value || "cash";
   const cashField = form.querySelector('[data-cash-account-field]');
   if (cashField) cashField.hidden = settlement !== "cash";
@@ -13312,11 +13488,11 @@ function updateCustomerSaleReturnSummary() {
     if (rowValue) rowValue.textContent = money(amount);
     return qty > 0 ? { documentId: input.dataset.saleId, amount } : null;
   }).filter(Boolean);
-  const { returnAmount, debtReduction, replacement, customerDue } = customerSaleReturnCalculation(selectedLines, form.elements.replacementDeduction?.value);
+  const { returnAmount, debtReduction, replacement, customerDue, shippingDeduction } = customerSaleReturnCalculation(selectedLines, form.elements.replacementDeduction?.value, form.elements.returnShippingDeduction?.value);
   const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = money(value); };
   set("customer-return-gross", returnAmount);
   set("customer-return-debt", debtReduction);
-  set("customer-return-replacement", replacement);
+  set("customer-return-replacement", replacement + shippingDeduction);
   set("customer-return-due", customerDue);
   const settlement = form.elements.settlement?.value || "cash";
   const cashField = form.querySelector("[data-cash-account-field]");
@@ -13383,11 +13559,12 @@ function saleReturnByCustomerModal(customerId = "") {
       <div class="metric-strip" style="margin-bottom:14px">
         <div class="mini-metric"><span>قيمة الأصناف المرتجعة</span><strong id="customer-return-gross">${money(0)}</strong></div>
         <div class="mini-metric"><span>تخصم من المديونية</span><strong id="customer-return-debt">${money(0)}</strong></div>
-        <div class="mini-metric"><span>أصناف/قيمة بديلة تخصم</span><strong id="customer-return-replacement">${money(0)}</strong></div>
+        <div class="mini-metric"><span>بديل / شحن مرتجع يخصم</span><strong id="customer-return-replacement">${money(0)}</strong></div>
         <div class="mini-metric"><span>المطلوب رده للعميل</span><strong id="customer-return-due">${money(0)}</strong></div>
       </div>
       <div class="form-grid">
         <div class="form-field"><label>لو العميل أخذ صنف/منتج بديل</label><input name="replacementDeduction" type="number" min="0" value="0" placeholder="قيمة تخصم من المرتجع"></div>
+        <div class="form-field"><label>مصاريف شحن المرتجع على العميل</label><input name="returnShippingDeduction" type="number" min="0" step="0.01" value="0" placeholder="تخصم من المبلغ المستحق له"></div>
         <div class="form-field"><label>تسوية المبلغ المطلوب للعميل</label><select name="settlement"><option value="cash">رد نقدي من الخزنة</option><option value="customer-credit">خصم من رصيد العميل / حفظ كرصيد دائن</option><option value="no-settlement">بدون تسوية حالية، يضاف كرصيد مستحق</option><option value="debt-only">خصم من مديونية العميل فقط</option></select></div>
         <div class="form-field" data-cash-account-field><label>خزنة رد المبلغ</label><select name="account">${cashAccountOptions("الخزينة الرئيسية")}</select></div>
         <div class="form-field"><label>تاريخ المرتجع</label><input name="date" type="date" value="${today()}"></div>
@@ -13470,7 +13647,7 @@ function viewReturn(id) {
     <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge red">↶</div><div><strong>${esc(party || "—")}</strong><span>${esc(item.reason || item.notes || "بدون سبب مسجل")} — ${esc(returnSettlementLabel(item))}</span></div></div>
     <div class="metric-strip" style="margin-bottom:14px">
       <div class="mini-metric"><span>خصم مديونية</span><strong>${money(item.debtReduction || 0)}</strong></div>
-      <div class="mini-metric"><span>أصناف/قيمة بديلة</span><strong>${money(item.replacementDeduction || 0)}</strong></div>
+      <div class="mini-metric"><span>أصناف/قيمة بديلة</span><strong>${money(item.replacementDeduction || 0)}</strong></div>${item.returnShippingDeduction ? `<div class="mini-metric"><span>شحن مرتجع على العميل</span><strong>${money(item.returnShippingDeduction)}</strong></div>` : ""}${item.mode === "refusal" ? `<div class="mini-metric"><span>رفض استلام</span><strong>${esc(refusalOutcomeLabel(item.refusalOutcome))}</strong></div>` : ""}
       <div class="mini-metric"><span>المرتجع</span><strong>${esc(documentDisplayName(returnNo(item), "return"))}</strong></div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>الفاتورة الأصلية</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم ${isSale ? "الكتاب" : "الصنف"} %</th><th>خصم ${isSale ? "الكتاب" : "الصنف"} ج.م</th>${isSale ? "<th>خصم الفاتورة للنسخة</th>" : ""}<th>سعر النسخة النهائي</th><th>الإجمالي</th></tr></thead><tbody>
@@ -13499,11 +13676,12 @@ function saleReturnModal(id) {
       <div class="metric-strip" style="margin-bottom:14px">
         <div class="mini-metric"><span>قيمة الأصناف المرتجعة</span><strong id="sale-return-gross">${money(0)}</strong></div>
         <div class="mini-metric"><span>تخصم من مديونية الفاتورة</span><strong id="sale-return-debt">${money(0)}</strong></div>
-        <div class="mini-metric"><span>أصناف/قيمة بديلة تخصم</span><strong id="sale-return-replacement">${money(0)}</strong></div>
+        <div class="mini-metric"><span>بديل / شحن مرتجع يخصم</span><strong id="sale-return-replacement">${money(0)}</strong></div>
         <div class="mini-metric"><span>المطلوب رده للعميل</span><strong id="sale-return-due">${money(0)}</strong></div>
       </div>
       <div class="form-grid">
         <div class="form-field"><label>لو العميل أخذ صنف/منتج بديل</label><input name="replacementDeduction" type="number" min="0" value="0" placeholder="قيمة تخصم من المرتجع"></div>
+        <div class="form-field"><label>مصاريف شحن المرتجع على العميل</label><input name="returnShippingDeduction" type="number" min="0" step="0.01" value="0" placeholder="تخصم من المبلغ المستحق له"></div>
         <div class="form-field"><label>تسوية المبلغ المطلوب للعميل</label><select name="settlement"><option value="cash">رد نقدي من الخزنة</option><option value="customer-credit">خصم من رصيد العميل / حفظ كرصيد دائن</option><option value="no-settlement">بدون تسوية حالية، يضاف كرصيد مستحق</option><option value="debt-only">خصم من مديونية العميل فقط</option></select></div>
         <div class="form-field" data-cash-account-field><label>خزنة رد المبلغ</label><select name="account">${cashAccountOptions(sale.payment === "نقدي" || sale.payment === "آجل" ? "الخزينة الرئيسية" : sale.payment)}</select></div>
         <div class="form-field"><label>تاريخ المرتجع</label><input name="date" type="date" value="${today()}"></div>
@@ -13523,7 +13701,7 @@ function processSaleReturn(id, { account, date, reason }) {
   const formData = form ? Object.fromEntries(new FormData(form).entries()) : {};
   const selectedLines = selectedReturnLinesFromForm(formData, returnableLines, saleLineNet);
   if (!selectedLines.length) return toast("حدد كمية لصنف واحد على الأقل.", "error");
-  const { returnAmount, debtReduction, replacement, customerDue } = saleReturnCalculation(sale, selectedLines, formData.replacementDeduction);
+  const { returnAmount, debtReduction, replacement, customerDue, shippingDeduction } = saleReturnCalculation(sale, selectedLines, formData.replacementDeduction, formData.returnShippingDeduction);
   const total = Math.max(1, Number(sale.total || 0));
   const returnId = nextId("RET-", data.returns);
   const returnInvoiceId = `RINV-${returnId.replace(/\D/g, "").padStart(3, "0")}`;
@@ -13570,7 +13748,7 @@ function processSaleReturn(id, { account, date, reason }) {
   data.returns.push({
     id: returnId, returnNo: returnInvoiceId, returnInvoiceId, type: "sales_return", mode: "from_invoice", accountType: "customer", accountId: sale.customerId,
     documentId: sale.id, sourceDocuments: [sale.id], date: date || today(), partyId: sale.customerId, items,
-    subtotal: Number(returnAmount.toFixed(2)), amount: Number(returnAmount.toFixed(2)), debtReduction: Number(debtReduction.toFixed(2)), replacementDeduction: Number(replacement.toFixed(2)),
+    subtotal: Number((returnAmount - shippingDeduction).toFixed(2)), amount: Number((returnAmount - shippingDeduction).toFixed(2)), debtReduction: Number(debtReduction.toFixed(2)), replacementDeduction: Number(replacement.toFixed(2)), returnShippingDeduction: Number(shippingDeduction.toFixed(2)),
     customerDue: Number(customerDue.toFixed(2)), settlementType: settlement, settlement, paidAmount: settlement === "cash" ? Number(customerDue.toFixed(2)) : 0, balanceEffect: Number(balanceEffect.toFixed(2)), account: settlement === "cash" ? normalizeCashAccountName(account) || "الخزينة الرئيسية" : "",
     reason: reason || "", notes: "", lines: selectedLines, createdBy: currentUser?.name || currentUser?.username || "النظام", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "معتمد", deletedAt: null
   });
@@ -13580,7 +13758,7 @@ function processSaleReturn(id, { account, date, reason }) {
   toast(`تم اعتماد فاتورة المرتجع ${returnInvoiceId} وتحديث حساب العميل.`);
 }
 
-function processCustomerSaleReturn(customerId, { account, date, reason, settlement, replacementDeduction }) {
+function processCustomerSaleReturn(customerId, { account, date, reason, settlement, replacementDeduction, returnShippingDeduction }) {
   const customer = getCustomer(customerId);
   if (!customer) return toast("يجب اختيار عميل مسجل لفاتورة المرتجع.", "error");
   const returnableLines = customerReturnableSaleLines(customerId);
@@ -13588,7 +13766,8 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
   const formData = form ? Object.fromEntries(new FormData(form).entries()) : {};
   const selectedLines = selectedCustomerReturnLinesFromForm(formData, returnableLines);
   if (!selectedLines.length) return toast("حدد كمية لصنف واحد على الأقل.", "error");
-  const { returnAmount, debtReduction, replacement, customerDue } = customerSaleReturnCalculation(selectedLines, replacementDeduction);
+  const { returnAmount, debtReduction, replacement, customerDue, shippingDeduction, debtBeforeShipping } = customerSaleReturnCalculation(selectedLines, replacementDeduction, returnShippingDeduction);
+  const debtShare = debtBeforeShipping > 0 ? debtReduction / debtBeforeShipping : 1;
   const returnId = nextId("RET-", data.returns);
   const returnInvoiceId = nextReturnNo("SR-");
   const sourceSaleIds = [...new Set(selectedLines.map(line => line.documentId))];
@@ -13608,7 +13787,7 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
     if (!sale) return;
     const selectedForSale = selectedLines.filter(line => line.documentId === saleId);
     const saleReturnAmount = selectedForSale.reduce((sum, line) => sum + Number(line.amount || 0), 0);
-    const saleDebtReduction = Math.min(Number(sale.remaining || 0), (Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0)) * saleReturnAmount / Math.max(1, Number(sale.total || 0)));
+    const saleDebtReduction = debtShare * Math.min(Number(sale.remaining || 0), (Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0)) * saleReturnAmount / Math.max(1, Number(sale.total || 0)));
     const paidImpact = returnAmount > 0 ? (customerDue + replacement) * saleReturnAmount / returnAmount : 0;
     const fullyReturned = isFullyReturned(sale.lines || [], selectedForSale, returnedQuantityMap("sale", sale.id));
     sale.status = fullyReturned ? "مرتجع" : "مرتجع جزئي";
@@ -13650,8 +13829,8 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
   data.returns.push({
     id: returnId, returnNo: returnInvoiceId, returnInvoiceId, type: "sales_return", mode: "by_account", accountType: "customer", accountId: customerId,
     documentId: sourceSaleIds.length === 1 ? sourceSaleIds[0] : "متعدد", sourceDocuments: sourceSaleIds,
-    date: date || today(), partyId: customerId, items, subtotal: Number(returnAmount.toFixed(2)), amount: Number(returnAmount.toFixed(2)),
-    debtReduction: Number(debtReduction.toFixed(2)), replacementDeduction: Number(replacement.toFixed(2)), customerDue: Number(customerDue.toFixed(2)),
+    date: date || today(), partyId: customerId, items, subtotal: Number((returnAmount - shippingDeduction).toFixed(2)), amount: Number((returnAmount - shippingDeduction).toFixed(2)),
+    debtReduction: Number(debtReduction.toFixed(2)), replacementDeduction: Number(replacement.toFixed(2)), returnShippingDeduction: Number(shippingDeduction.toFixed(2)), customerDue: Number(customerDue.toFixed(2)),
     settlementType: settlement, settlement, paidAmount: settlement === "cash" ? Number(customerDue.toFixed(2)) : 0, balanceEffect: Number(balanceEffect.toFixed(2)),
     account: settlement === "cash" ? normalizeCashAccountName(account) || "الخزينة الرئيسية" : "",
     reason: reason || "", notes: "", lines: selectedLines, createdBy: currentUser?.name || currentUser?.username || "النظام", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "معتمد", deletedAt: null
