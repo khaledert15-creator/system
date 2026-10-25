@@ -4495,7 +4495,9 @@ async function editQuickOrder(id) {
   else if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
   const recordedPayments=(data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed"&&item.confirmed!==false),recordedPaid=recordedPayments.reduce((sum,item)=>sum+Number(item.amount||0),0);
   quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id,websiteOrderNumber:isWebsiteOrder(order)?String(order.websiteOrderNumber||"موقع"):"",customerEditConfirmed:false,customerEditChannel:"واتساب",customerEditNote:""};
-  quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";renderOnlineOrders();
+  quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";
+  // Editing can start from the shipping page or a dialog, so bring the orders page up first.
+  if(currentView!=="onlineOrders")navigate("onlineOrders");else renderOnlineOrders();
 }
 
 async function copyQuickOrderMessage() {
@@ -8718,6 +8720,7 @@ document.addEventListener("click", event => {
   }
   if(action==="approve-settlement")financeConfirmation({title:"اعتماد التسوية؟",description:"سيتم تسجيل المبلغ في الخزنة وإنشاء مصروفات الشحن وعمولة التحصيل تلقائيًا. تأكد من المبالغ قبل المتابعة.",confirmLabel:"اعتماد التسوية",onConfirm:()=>approveCarrierSettlement(target.dataset.id)});
   if(action==="packing-edit-open")openPackingEditor(target.dataset.id);
+  if(action==="packing-edit-full"){closeModal();editQuickOrder(target.dataset.id);}
   if(action==="packing-edit-cancel"&&packingEditDraft&&!packingEditDraft.pending){const id=packingEditDraft.id;packingEditDraft=null;openPreparationOrder(id);}
   if(action==="packing-edit-remove"&&packingEditDraft&&!packingEditDraft.pending){packingEditDraft.lines.splice(Number(target.dataset.index),1);renderPackingEditLines();}
   if(action==="packing-edit-add"&&packingEditDraft&&!packingEditDraft.pending){
@@ -9004,7 +9007,6 @@ root.addEventListener("click", async event => {
   if (action === "prepare-order-start") openPreparationOrder(target.dataset.id,true);
   if (action === "prepare-order-open") openPreparationOrder(target.dataset.id);
   if (action === "edit-quick-order") editQuickOrder(target.dataset.id);
-  if (action === "packing-edit-full") { closeModal(); editQuickOrder(target.dataset.id); }
   if (action === "take-reserved-copy") openTakeReservedCopy(target.dataset.id);
   if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
