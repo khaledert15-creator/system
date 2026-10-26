@@ -3653,22 +3653,22 @@ function quickOrderPaymentNow(totals=quickOrderTotalsNow()) {
   return OrderFinance.calculatePayment(totals.total,intended||0);
 }
 
+// Only online orders that went ahead count: wholesale/shop invoices carry their own discounts, and
+// drafts, cancelled, refused and returned orders were never sold at that price.
 function quickOrderLastBookDiscount(bookId) {
   const history=[];
-  const collect=(documents=[],kind="طلب")=>documents.forEach(document=>{
-    if(document.deletedAt||["ملغاة","ملغي"].includes(document.status))return;
-    (document.lines||[]).forEach(line=>{
-      if((line.bookId||line.productId)!==bookId)return;
-      const price=OrderFinance.normalizeNumber(line.price??line.originalPrice??line.unitOriginalPrice??getBook(bookId)?.price??0);
-      const raw=OrderFinance.normalizeNumber(line.discount??line.discountPercent??line.discountAmount??0);
-      if(!Number.isFinite(price)||price<=0||!Number.isFinite(raw)||raw<0)return;
-      const type=line.discountType==="amount"&&line.discountPercent==null?"amount":"percent";
-      const percent=type==="amount"?OrderFinance.round(Math.min(100,raw*100/price)):OrderFinance.round(Math.min(100,raw));
-      history.push({percent,date:document.updatedAt||document.confirmedAt||document.createdAt||document.date||"",reference:document.id||"",kind});
+  (data.onlineOrders||[]).forEach(order=>{
+    if(order.deletedAt||order.refusedAt||order.refusal||order.returnedAt||order.status==="مسودة"||order.workflowStage==="draft"||["ملغاة","ملغي"].includes(order.status)||onlineOrderWorkflowStage(order)==="cancelled")return;
+    (order.lines||[]).forEach(line=>{
+      if((line.bookId||line.productId)!==bookId||!(Number(line.price)>0))return;
+      // calculateOrder honours the line's scope and quantity, so a whole-line amount is not read as a per-copy one.
+      let percent;
+      try{percent=OrderFinance.calculateOrder([line]).lines[0].discountPercent;}catch(error){return;}
+      if(!Number.isFinite(percent))return;
+      // Sort by when the order was made: updatedAt moves with every tracking update and would surface old orders.
+      history.push({percent:OrderFinance.round(Math.min(100,percent)),date:order.createdAt||order.date||"",reference:order.id||"",kind:"طلب"});
     });
   });
-  collect(data.onlineOrders||[],"طلب");
-  collect(data.sales||[],"فاتورة");
   history.sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.reference).localeCompare(String(a.reference)));
   if(history.length)return {...history[0],found:true};
   const book=getBook(bookId)||{},raw=OrderFinance.normalizeNumber(book.discount??book.saleDiscount??0);

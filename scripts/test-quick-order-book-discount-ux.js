@@ -2,9 +2,9 @@
 const fs=require("fs"),path=require("path"),assert=require("assert");
 const root=path.resolve(__dirname,".."),app=fs.readFileSync(path.join(root,"app/app.js"),"utf8"),css=fs.readFileSync(path.join(root,"app/styles.css"),"utf8");
 const checks=[
-  ["latest discount helper reads orders and sales",/function quickOrderLastBookDiscount[\s\S]*data\.onlineOrders[\s\S]*data\.sales/],
+  ["latest discount helper reads online orders only",/function quickOrderLastBookDiscount[\s\S]*data\.onlineOrders/],
   ["cancelled history is ignored",/quickOrderLastBookDiscount[\s\S]*\["ملغاة","ملغي"\]/],
-  ["amount history is converted to percent",/type==="amount"\?OrderFinance\.round\(Math\.min\(100,raw\*100\/price\)\)/],
+  ["history percent comes from the order calculation",/OrderFinance\.calculateOrder\(\[line\]\)\.lines\[0\]\.discountPercent/],
   ["adding a book applies latest percent",/lastDiscount=quickOrderLastBookDiscount\(book\.id\)[\s\S]*discount:lastDiscount\.percent[\s\S]*discountType:"percent"/],
   ["search shows price and latest discount",/quick-result-price[\s\S]*السعر الأساسي[\s\S]*quick-result-discount[\s\S]*آخر خصم/],
   ["selected line shows base price",/quick-price-cell[\s\S]*السعر الأساسي/],
