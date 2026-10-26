@@ -2316,3 +2316,4 @@ button.shortage-stat.ok b{color:#1f7a45}
   .refusal-repair-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
   .refusal-repair-card footer{flex-direction:column;align-items:stretch}
 }
+.return-picker-ref{display:block;margin-top:2px;font-size:12px}

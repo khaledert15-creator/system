@@ -109,10 +109,10 @@ pass("Repair as shipping charge -> customer owes the difference",()=>{
   assert.equal(db.customers[0].balance,50);assert.equal(db.sales[0].remaining,50);
 });
 
-pass("Repair after a partial cash refund -> only refund allowed, the rest of the deposit goes out",()=>{
+pass("Repair after a cash refund that really happened -> only refunding the deposit is accepted, the rest goes out",()=>{
   const db=fixture();legacyReturn(db,"cash");
   const [row]=Refusals.repairCandidates(db);
-  assert.deepEqual(row.allowedOutcomes,["refund_deposit"]);assert.equal(row.contribution,46.96);
+  assert.equal(row.cashRefunded,86.96);assert.equal(row.contribution,46.96);
   assert.throws(()=>Refusals.applyRepair(db,"I1",{outcome:"keep_deposit",operationKey:"r3"},actor),/رد الديبوزت/);
   Refusals.applyRepair(db,"I1",{outcome:"refund_deposit",cashAccountId:"CA1",operationKey:"r4"},actor);
   assert.equal(db.customers[0].balance,0);assert.equal(db.cash.length,1);assert.equal(db.cash[0].amount,13.04);
@@ -125,6 +125,25 @@ pass("Refusal history matches the same phone or customer, never a name alone",()
   assert.deepEqual(DuplicateOrders.findRefusalHistory(db.onlineOrders,{phone:"01222222222",alternativePhone:"01111111111"}).map(o=>o.id),["O2"]);
   assert.deepEqual(DuplicateOrders.findRefusalHistory(db.onlineOrders,{customerId:"C1"}).map(o=>o.id),["O1"]);
   assert.equal(DuplicateOrders.findRefusalHistory(db.onlineOrders,{customerName:"عميل"}).length,0);
+});
+
+pass("Repair when the recorded cash refund was never paid -> the payout is reversed and the deposit kept",()=>{
+  const db=fixture();legacyReturn(db,"cash");
+  db.cash.push({id:"TX-0001",type:"صرف",account:"الخزنة",amount:86.96,category:"مرتجع مبيعات",returnId:"RET-0001"});
+  Refusals.applyRepair(db,"I1",{outcome:"keep_deposit",cashNotPaid:true,operationKey:"r5"},actor);
+  assert.equal(db.customers[0].balance,0);
+  const reversal=db.cash.find(tx=>tx.reversesId==="TX-0001");
+  assert.equal(reversal.type,"قبض");assert.equal(reversal.amount,86.96);assert.equal(db.cash[0].reversedBy,reversal.id);
+  assert.equal(db.returns[0].paidAmount,0);assert.equal(db.returns[0].cashNotPaid,86.96);
+  assert.equal(db.sales[0].paid,100);assert.equal(db.sales[0].remaining,0);
+  assert.equal(db.onlineOrders[0].workflowStage,"returned");assert.equal(db.onlineOrders[0].paidAmount,100);assert.equal(db.onlineOrders[0].remainingAmount,0);
+});
+
+pass("Refusal updates the order's paid and remaining figures shown in the orders list",()=>{
+  const db=fixture();refuse(db,{outcome:"charge_shipping",shippingCharge:130});
+  assert.equal(db.onlineOrders[0].paidAmount,100);assert.equal(db.onlineOrders[0].remainingAmount,30);
+  const refunded=fixture();refuse(refunded,{outcome:"refund_deposit",cashAccountId:"CA1"});
+  assert.equal(refunded.onlineOrders[0].paidAmount,0);assert.equal(refunded.onlineOrders[0].remainingAmount,0);
 });
 
 console.log("All order refusal tests passed.");

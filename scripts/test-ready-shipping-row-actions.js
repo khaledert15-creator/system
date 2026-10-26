@@ -10,7 +10,7 @@ assert(rowSource, "readyShippingRow is missing");
 // The row's repack and cancel now live in the shared «⋯ المزيد» menu, which is rendered with the real functions.
 const fn = name => app.match(new RegExp(`function ${name}\\(order[^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
 const phoneSource = app.slice(app.indexOf("function normalizePhone(value) {"), app.indexOf("function normalizeTrackingNumber("));
-const menuSource = ["orderEditBlockReason", "orderCancelBlockReason", "reshipShipment", "reservedCopiesFor", "onlineOrderMoreActions"].map(name => { const found = fn(name); assert(found, `${name} is missing`); return found; }).join("\n");
+const menuSource = ["orderEditBlockReason", "orderCancelBlockReason", "reshipShipment", "reservedCopiesFor", "orderCanBeRefused", "onlineOrderMoreActions"].map(name => { const found = fn(name); assert(found, `${name} is missing`); return found; }).join("\n");
 
 function renderRow(order, permissions = ["order.prepare", "order.pack", "order.shipping", "convert-order-sale"]) {
   const factory = new Function("OrderFinance", "data", "canAction", "shippingExportSelection", "esc", "money", "arabicDateTimeLabel", "canCancelOrderDirectly", "orderSearchAttr", `const onlineOrderWorkflowStage=()=>"ready",activeOrderShipment=()=>null,isWebsiteOrder=()=>false,PRE_HANDOVER_SHIPMENT_STATUSES=[];${phoneSource}\n${menuSource}\n${rowSource}; return readyShippingRow;`);

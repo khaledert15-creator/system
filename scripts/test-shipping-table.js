@@ -27,7 +27,8 @@ const shipments = [
 const sandbox = {
   esc:value => String(value), canAction:() => true, arabicDateTimeLabel:() => "اليوم", dateTimeLabel:() => "اليوم", complaintStatusLabel:() => "",
   shipmentTrackingSummary:() => ({}), shipmentComplaints:() => [], shipmentStatusOptions:() => "<option>x</option>", shipmentStatusBadge:() => "",
-  shipmentStatusCode:item => item.normalizedStatus || "in_transit"
+  shipmentStatusCode:item => item.normalizedStatus || "in_transit",
+  data:{ onlineOrders:[] }, orderCanBeRefused:() => false
 };
 vm.createContext(sandbox);
 vm.runInContext(`const SHIPMENT_LATE_DAYS = 3; const POST_DAYS_OFF = [5, 6];\n${["isTerminalShipment", "shipmentShippedAt", "shipmentDaysSinceShipped", "shipmentWorkingDaysSinceShipped", "shipmentIsOpen", "shipmentIsLate", "shipmentDaysLabel", "shipmentWorkingDaysLabel", "sortShipmentsForFollowUp", "shipmentShippedOnFilter", "shipmentsTable"].map(extract).join("\n")}`, sandbox);

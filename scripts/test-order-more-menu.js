@@ -17,7 +17,7 @@ function extract(name) {
 const allowed = new Set(["order.quick.edit", "order.prepare"]);
 const sandbox = { canAction:key => allowed.has(key), esc:value => String(value ?? ""), onlineOrderWorkflowStage:order => order.stage, activeOrderShipment:order => order.shipment || null, canCancelOrderDirectly:order => allowed.has("order.quick.edit") && !["delivered","cancelled"].includes(order.stage) && !order.shipment };
 vm.createContext(sandbox);
-vm.runInContext(`const isWebsiteOrder=order=>Boolean(order?.websiteOrderNumber||order?.source==="website");const PRE_HANDOVER_SHIPMENT_STATUSES=["","shipped","created","pending","label_created"];var data={onlineOrders:[]};\n${["orderEditBlockReason", "orderCancelBlockReason", "reshipShipment", "reservedCopiesFor", "onlineOrderMoreActions"].map(extract).join("\n")}`, sandbox);
+vm.runInContext(`const isWebsiteOrder=order=>Boolean(order?.websiteOrderNumber||order?.source==="website");const PRE_HANDOVER_SHIPMENT_STATUSES=["","shipped","created","pending","label_created"];var data={onlineOrders:[]};\n${["orderEditBlockReason", "orderCancelBlockReason", "reshipShipment", "reservedCopiesFor", "orderCanBeRefused", "onlineOrderMoreActions"].map(extract).join("\n")}`, sandbox);
 const menu = (order, options) => sandbox.onlineOrderMoreActions(order, options);
 const enabled = (html, action) => new RegExp(`data-action="${action}"`).test(html);
 const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };

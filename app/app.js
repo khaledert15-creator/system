@@ -4825,11 +4825,11 @@ async function openRefusalRepair() {
       return `<form class="refusal-repair-card" data-invoice-id="${esc(row.invoiceId)}" data-deposit="${row.deposit}" data-cash-refunded="${row.cashRefunded}" data-contribution="${row.contribution}" data-balance="${row.customerBalance}">
         <header><div><strong>${esc(row.customerName)}</strong><small>${phone?`<span dir="ltr">${esc(phone)}</span> · `:""}${esc(row.orderId)} · ${esc(documentDisplayName(row.invoiceId,"sale"))} · مرتجع ${esc(row.returnIds.join("، "))}</small></div>${badge(row.contribution<0?`مسجّل له ${money(-row.contribution)}`:`باقي عليه ${money(row.contribution)}`,row.contribution<0?"danger":"warning")}</header>
         <dl class="refusal-repair-facts"><div><dt>الديبوزت</dt><dd>${money(row.deposit)}</dd></div><div><dt>اترد كاش قبل كده</dt><dd>${money(row.cashRefunded)}</dd></div><div><dt>رصيد العميل الحالي</dt><dd>${esc(refusalBalanceLabel(row.customerBalance))}</dd></div></dl>
-        <fieldset class="refusal-repair-outcomes"><legend>اللي حصل فعلًا</legend>${outcomes.map(([value,label],index)=>`<label class="refusal-pill"><input type="radio" name="outcome" value="${value}" ${outcomes.length===1&&index===0?"checked":""}><span>${label}</span></label>`).join("")}</fieldset>
-        ${row.allowedOutcomes.length===1?`<p class="muted refusal-repair-note">اترد للعميل كاش قبل كده، فالحالة الوحيدة المتاحة هي رد الديبوزت.</p>`:""}
+        ${row.cashRefunded>0?`<fieldset class="refusal-repair-outcomes refusal-repair-cash"><legend>اتسجل «رد نقدي من الخزنة» بـ ${money(row.cashRefunded)}. المبلغ ده اتصرف للعميل فعلًا؟</legend><label class="refusal-pill"><input type="radio" name="cashPaid" value="yes"><span>أيوه اتصرف</span></label><label class="refusal-pill"><input type="radio" name="cashPaid" value="no"><span>لأ، ما اتصرفش</span></label></fieldset>`:""}
+        <fieldset class="refusal-repair-outcomes"><legend>اللي حصل فعلًا</legend>${outcomes.map(([value,label])=>`<label class="refusal-pill"><input type="radio" name="outcome" value="${value}"><span>${label}</span></label>`).join("")}</fieldset>
         <div class="refusal-repair-inputs">
           <div class="form-field" data-repair-field="charge_shipping" hidden><label>تكلفة الشحن الإجمالية</label><input name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal" placeholder="أكبر من ${money(row.deposit)}"></div>
-          <div class="form-field" data-repair-field="refund_deposit" hidden><label>يتصرف الباقي (${money(Math.max(0,row.deposit-row.cashRefunded))}) من خزنة</label><select name="cashAccountId">${refundCashAccountOptions()}</select></div>
+          <div class="form-field" data-repair-field="refund_deposit" hidden><label data-refund-label>يتصرف من خزنة</label><select name="cashAccountId">${refundCashAccountOptions()}</select></div>
         </div>
         <footer><span class="refusal-repair-preview" aria-live="polite">اختار اللي حصل عشان تشوف الرصيد بعد التصحيح.</span><button class="btn small" type="submit" disabled>تصحيح</button></footer>
       </form>`;
@@ -4853,23 +4853,31 @@ function updateRefusalRepairForm(form) {
   // A single radio comes back from form.elements as the input itself, whose value ignores whether it is checked.
   const outcome=[...form.querySelectorAll('input[name="outcome"]')].find(input=>input.checked)?.value||"";
   const deposit=Number(form.dataset.deposit||0),cashRefunded=Number(form.dataset.cashRefunded||0),contribution=Number(form.dataset.contribution||0),balance=Number(form.dataset.balance||0);
-  form.querySelectorAll("[data-repair-field]").forEach(field=>{field.hidden=field.dataset.repairField!==outcome||(outcome==="refund_deposit"&&deposit<=cashRefunded);});
+  // "Cash refund" was the old return screen's default, so a recorded payout may never have happened.
+  const cashAnswer=[...form.querySelectorAll('input[name="cashPaid"]')].find(input=>input.checked)?.value||"";
+  const cashPaid=cashAnswer==="no"?0:cashRefunded,toRefund=Math.max(0,deposit-cashPaid);
+  form.querySelectorAll("[data-repair-field]").forEach(field=>{field.hidden=field.dataset.repairField!==outcome||(outcome==="refund_deposit"&&toRefund<=0);});
+  const refundLabel=form.querySelector("[data-refund-label]");if(refundLabel)refundLabel.textContent=`يتصرف ${money(toRefund)} من خزنة`;
   const plan=refusalPlanPreview(outcome,deposit,Number(form.elements.shippingCharge.value||0));
   const preview=form.querySelector(".refusal-repair-preview"),button=form.querySelector('button[type="submit"]');
-  button.disabled=!plan.valid;
-  if(!outcome){preview.textContent="اختار اللي حصل عشان تشوف الرصيد بعد التصحيح.";return;}
-  if(!plan.valid){preview.textContent=`اكتب تكلفة شحن أكبر من الديبوزت (${money(deposit)}).`;return;}
+  const blocked=cashRefunded>0&&!cashAnswer?"جاوب الأول: مبلغ الرد النقدي اتصرف فعلًا ولا لأ؟"
+    :!outcome?"اختار اللي حصل عشان تشوف الرصيد بعد التصحيح."
+    :!plan.valid?`اكتب تكلفة شحن أكبر من الديبوزت (${money(deposit)}).`
+    :plan.refund<cashPaid?"العميل استلم المبلغ كاش فعلًا، فاللي حصل هو «رد الديبوزت للعميل».":"";
+  button.disabled=Boolean(blocked);
+  if(blocked){preview.textContent=blocked;return;}
   const after=balance+plan.extraDue-contribution;
-  preview.innerHTML=`رصيد العميل: <s>${esc(refusalBalanceLabel(balance))}</s> ← <strong>${esc(refusalBalanceLabel(after))}</strong>${outcome==="refund_deposit"&&deposit>cashRefunded?` · يتصرف ${money(deposit-cashRefunded)}`:""}`;
+  preview.innerHTML=`رصيد العميل: <s>${esc(refusalBalanceLabel(balance))}</s> ← <strong>${esc(refusalBalanceLabel(after))}</strong>${outcome==="refund_deposit"&&toRefund>0?` · يتصرف ${money(toRefund)}`:""}${cashAnswer==="no"?` · قيد عكسي ${money(cashRefunded)} يرجع للخزنة`:""}`;
 }
 
 async function submitRefusalRepair(form) {
   const button=form.querySelector('button[type="submit"]');if(button.disabled)return;
   const values=Object.fromEntries(new FormData(form)),invoiceId=form.dataset.invoiceId;
-  if(values.outcome==="refund_deposit"&&Number(form.dataset.deposit)>Number(form.dataset.cashRefunded)&&!values.cashAccountId)return toast("اختار الخزنة اللي هيتصرف منها باقي الديبوزت.","error");
+  const cashPaid=values.cashPaid==="no"?0:Number(form.dataset.cashRefunded||0);
+  if(values.outcome==="refund_deposit"&&Number(form.dataset.deposit)>cashPaid&&!values.cashAccountId)return toast("اختار الخزنة اللي هيتصرف منها الديبوزت.","error");
   button.disabled=true;button.textContent="جارٍ التصحيح...";
   try{
-    const result=await orderWorkflowRequest(`/api/refusals/repair/${encodeURIComponent(invoiceId)}`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-repair-${invoiceId}-${Date.now()}`)}});
+    const result=await orderWorkflowRequest(`/api/refusals/repair/${encodeURIComponent(invoiceId)}`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",cashNotPaid:values.cashPaid==="no",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-repair-${invoiceId}-${Date.now()}`)}});
     toast(`تم تصحيح ${documentDisplayName(invoiceId,"sale")} — تعديل رصيد العميل ${money(result.repair?.balanceDelta||0)}.`);
     render();openRefusalRepair();
   }catch(error){button.disabled=false;button.textContent="تصحيح";toast(error.message,"error");}
@@ -10455,7 +10463,12 @@ modalBody.addEventListener("input", event => {
     return;
   }
   if (event.target.id === "return-doc-search") {
-    smartFilterRows(modalBody.querySelectorAll("[data-return-doc-row]"), event.target.value);
+    const rows = [...modalBody.querySelectorAll("[data-return-doc-row]")], query = event.target.value.trim();
+    const shown = smartFilterRows(rows, query);
+    // Already returned invoices only appear when searched for.
+    if (!query) rows.forEach(row => { if (row.dataset.returned) row.hidden = true; });
+    const empty = modalBody.querySelector("[data-return-doc-empty]");
+    if (empty) empty.hidden = Boolean(shown && rows.some(row => !row.hidden));
     return;
   }
   if (event.target.id === "customer-return-line-search") {
@@ -13568,22 +13581,48 @@ function isFullyReturned(documentLines, selectedLines, previouslyReturnedMap) {
   });
 }
 
+// Search covers the invoice, its order and tracking code, the customer's name and phones, and the books. Invoices
+// already returned stay out of the list until someone searches for them, then show which return closed them.
+function returnPickerSaleRow(sale) {
+  const customer = getCustomer(sale.customerId), order = sale.onlineOrderId ? getOnlineOrder(sale.onlineOrderId) : null, shipment = shipmentForSale(sale.id) || (order ? activeOrderShipment(order) : null);
+  const lines = saleReturnableLines(sale), returned = ["مرتجع", "ملغاة"].includes(sale.status) || !lines.length;
+  const returns = (data.returns || []).filter(item => !item.deletedAt && returnKind(item.type) === "sale" && (item.documentId === sale.id || (item.sourceDocuments || []).includes(sale.id)));
+  const phones = [customer?.phone, customer?.alternativePhone, order?.phone, order?.alternativePhone].filter(Boolean);
+  const search = [sale.id, sale.onlineOrderId, customer?.name, sale.customerName, order?.customerName, ...phones, shipment?.trackingNumber, shipment?.tracking, ...returns.map(returnNo), ...(sale.lines || []).map(line => getBook(line.bookId)?.name || line.bookId)].filter(Boolean).join(" ");
+  const available = lines.reduce((sum, line) => sum + Number(line.remaining || 0), 0);
+  const cameBack = shipment && /مرتجع|returned/.test(`${shipment.status || ""} ${shipment.normalizedStatus || ""}`) && !returned;
+  const status = returned
+    ? `${badge(sale.status === "ملغاة" ? "ملغاة" : "مرتجع بالفعل", "danger")}${returns.length ? `<small class="muted return-picker-ref">${esc(returns.map(returnNo).join("، "))}</small>` : ""}`
+    : `${badge(sale.status || "معتمدة", sale.status === "مرتجع جزئي" ? "warning" : "")}${cameBack ? `<small class="return-picker-ref text-danger">الشحنة رجعت ولم يُسجل مرتجع</small>` : ""}`;
+  const action = returned
+    ? (returns.length ? `<button class="row-action" data-action="view-return" data-id="${esc(returns.at(-1).id)}">عرض المرتجع</button>` : `<span class="muted">غير متاح</span>`)
+    : `${order && orderCanBeRefused(order) ? `<button class="row-action text-danger" data-action="refuse-online-order" data-id="${esc(order.id)}">رفض استلام</button>` : ""}<button class="row-action" data-modal-action="return-sale" data-id="${esc(sale.id)}">تسجيل مرتجع</button>`;
+  return `<tr data-return-doc-row data-returned="${returned ? "1" : ""}" data-search="${esc(search)}" ${returned ? "hidden" : ""}><td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong>${sale.onlineOrderId ? `<small class="muted return-picker-ref">${esc(sale.onlineOrderId)}${shipment?.trackingNumber ? ` · <span dir="ltr">${esc(shipment.trackingNumber)}</span>` : ""}</small>` : ""}</td><td>${esc(customer?.name || sale.customerName || "—")}${phones[0] ? `<small class="muted return-picker-ref" dir="ltr">${esc(phones[0])}</small>` : ""}</td><td>${fmtDate(sale.date)}</td><td>${available}</td><td>${status}</td><td><div class="row-actions">${action}</div></td></tr>`;
+}
+
 function showReturnDocumentPicker(type) {
   const isSale = type === "sale";
-  const docs = isSale
-    ? data.sales.filter(sale => !sale.deletedAt && getCustomer(sale.customerId) && !["ملغاة","مرتجع"].includes(sale.status) && saleReturnableLines(sale).length)
-    : data.purchases.filter(purchase => !purchase.deletedAt && !["ملغاة","مرتجع"].includes(purchase.status));
-  openModal(isSale ? "اختيار فاتورة بيع للمرتجع" : "اختيار مستند شراء للمرتجع", "المرتجعات", `
-    <div class="toolbar" style="padding:0 0 15px;border-bottom:0"><div class="search"><input id="return-doc-search" autocomplete="off" placeholder="${isSale ? "ابحث برقم الفاتورة أو العميل أو الصنف..." : "ابحث برقم المستند أو فاتورة المورد أو المورد أو الصنف..."}"></div></div>
-    <div class="table-wrap"><table><thead><tr><th>${isSale ? "الفاتورة" : "المستند"}</th>${isSale ? "" : "<th>فاتورة المورد</th>"}<th>${isSale ? "العميل" : "المورد"}</th><th>التاريخ</th><th>المتاح</th><th>الحالة</th><th></th></tr></thead><tbody>
+  if (isSale) {
+    const sales = data.sales.filter(sale => !sale.deletedAt && getCustomer(sale.customerId)).sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
+    return openModal("اختيار فاتورة بيع للمرتجع", "المرتجعات", `
+      <div class="toolbar" style="padding:0 0 15px;border-bottom:0"><div class="search"><input id="return-doc-search" autocomplete="off" placeholder="ابحث برقم الفاتورة أو الطلب أو كود التتبع أو اسم العميل أو الموبايل أو الكتاب..."></div></div>
+      <div class="table-wrap"><table><thead><tr><th>الفاتورة / الطلب</th><th>العميل</th><th>التاريخ</th><th>المتاح</th><th>الحالة</th><th></th></tr></thead><tbody>
+        ${sales.map(returnPickerSaleRow).join("")}
+        <tr data-return-doc-empty hidden><td colspan="6" class="text-center muted">لا توجد فاتورة مطابقة. جرّب رقم الموبايل أو رقم الطلب أو كود التتبع.</td></tr>
+      </tbody></table></div>`);
+  }
+  const docs = data.purchases.filter(purchase => !purchase.deletedAt && !["ملغاة","مرتجع"].includes(purchase.status));
+  openModal("اختيار مستند شراء للمرتجع", "المرتجعات", `
+    <div class="toolbar" style="padding:0 0 15px;border-bottom:0"><div class="search"><input id="return-doc-search" autocomplete="off" placeholder="ابحث برقم المستند أو فاتورة المورد أو المورد أو الصنف..."></div></div>
+    <div class="table-wrap"><table><thead><tr><th>المستند</th><th>فاتورة المورد</th><th>المورد</th><th>التاريخ</th><th>المتاح</th><th>الحالة</th><th></th></tr></thead><tbody>
       ${docs.map(doc => {
-        const lines = isSale ? saleReturnableLines(doc) : purchaseReturnableLines(doc);
-        const party = isSale ? getCustomer(doc.customerId)?.name : getSupplier(doc.supplierId)?.name;
-        const searchText = normalizeReturnSearch(`${doc.id} ${doc.supplierInvoiceNumber || ""} ${party || ""} ${lines.map(line => getBook(line.bookId)?.name || line.bookId).join(" ")}`);
+        const lines = purchaseReturnableLines(doc);
+        const party = getSupplier(doc.supplierId)?.name;
+        const searchText = [doc.id, doc.supplierInvoiceNumber, party, getSupplier(doc.supplierId)?.phone, ...lines.map(line => getBook(line.bookId)?.name || line.bookId)].filter(Boolean).join(" ");
         const available = lines.reduce((sum, line) => sum + Number(line.remaining || 0), 0);
-        const unavailableReason = !isSale && doc.status === "بانتظار الفحص" ? "بانتظار الاستلام" : !lines.length ? "لا توجد بنود قابلة للمرتجع" : "";
-        return `<tr data-return-doc-row data-search="${esc(searchText)}"><td><strong>${esc(doc.id)}</strong></td>${isSale ? "" : `<td>${esc(doc.supplierInvoiceNumber || "—")}</td>`}<td>${esc(party || "—")}</td><td>${fmtDate(doc.date)}</td><td>${available}</td><td>${unavailableReason ? badge(unavailableReason, "warning") : badge(doc.status || (isSale ? "معتمدة" : "مستلمة"), doc.status === "مرتجع جزئي" ? "warning" : "")}</td><td>${lines.length ? `<button class="row-action" data-modal-action="${isSale ? "return-sale" : "return-purchase"}" data-id="${doc.id}">تسجيل مرتجع</button>` : `<span class="muted">غير متاح</span>`}</td></tr>`;
-      }).join("") || `<tr><td colspan="${isSale ? 6 : 7}" class="text-center muted">لا توجد مستندات مسجلة.</td></tr>`}
+        const unavailableReason = doc.status === "بانتظار الفحص" ? "بانتظار الاستلام" : !lines.length ? "لا توجد بنود قابلة للمرتجع" : "";
+        return `<tr data-return-doc-row data-search="${esc(searchText)}"><td><strong>${esc(doc.id)}</strong></td><td>${esc(doc.supplierInvoiceNumber || "—")}</td><td>${esc(party || "—")}</td><td>${fmtDate(doc.date)}</td><td>${available}</td><td>${unavailableReason ? badge(unavailableReason, "warning") : badge(doc.status || "مستلمة", doc.status === "مرتجع جزئي" ? "warning" : "")}</td><td>${lines.length ? `<button class="row-action" data-modal-action="return-purchase" data-id="${doc.id}">تسجيل مرتجع</button>` : `<span class="muted">غير متاح</span>`}</td></tr>`;
+      }).join("") || `<tr><td colspan="7" class="text-center muted">لا توجد مستندات مسجلة.</td></tr>`}
     </tbody></table></div>`);
 }
 
@@ -13794,7 +13833,7 @@ function processSaleReturn(id, { account, date, reason }) {
     if (shipment) { shipment.status = "مرتجع"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
     if (sale.onlineOrderId) {
       const order = data.onlineOrders.find(o => o.id === sale.onlineOrderId);
-      if (order) { order.status = "مرتجع"; order.updatedAt = new Date().toISOString(); }
+      if (order) { order.status = "مرتجع"; order.workflowStage = "returned"; order.updatedAt = new Date().toISOString(); }
     }
   }
   sale.status = fullyReturned ? "مرتجع" : "مرتجع جزئي";
@@ -13863,7 +13902,7 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
       if (shipment) { shipment.status = "مرتجع"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
       if (sale.onlineOrderId) {
         const order = data.onlineOrders.find(o => o.id === sale.onlineOrderId);
-        if (order) { order.status = "مرتجع"; order.updatedAt = new Date().toISOString(); }
+        if (order) { order.status = "مرتجع"; order.workflowStage = "returned"; order.updatedAt = new Date().toISOString(); }
       }
     }
   });

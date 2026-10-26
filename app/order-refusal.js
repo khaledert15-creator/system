@@ -169,7 +169,8 @@
     });
     const shipment = list(db, "shipments").find(item => item.id === preview.shipmentId);
     if (shipment) Object.assign(shipment, { status: "مرتجع", currentStatus: "مرتجع", refusedAt: now, returnedAt: shipment.returnedAt || now, updated: now, updatedAt: now });
-    Object.assign(order, { status: "مرتجع", workflowStage: "returned", refusal, refusedAt: now, returnedAt: order.returnedAt || now, updatedAt: now });
+    // The order list shows the order's own paid / remaining figures, so they follow the refusal too.
+    Object.assign(order, { status: "مرتجع", workflowStage: "returned", refusal, refusedAt: now, returnedAt: order.returnedAt || now, paidAmount: round(preview.deposit - plan.refund), remainingAmount: plan.extraDue, remaining: plan.extraDue, updatedAt: now });
     return { existing: false, order, sale, refusal, settlements };
   }
 
@@ -195,8 +196,9 @@
         invoiceId: sale.id, orderId: sale.onlineOrderId, customerId: sale.customerId, customerName: customer?.name || order.customerName || "—",
         customerBalance: round(customer?.balance || 0), total: round(sale.total || 0), deposit, cashRefunded, contribution,
         returnIds: returns.map(item => item.returnNo || item.id), returnedAt: sale.returnedAt || returns[0]?.date || "",
-        // Once cash already went back to the customer only "refund the deposit" is consistent with what happened.
-        allowedOutcomes: cashRefunded > 0 ? ["refund_deposit"] : Object.keys(OUTCOMES)
+        // "Cash refund" was the return screen's default, so a recorded payout may never have left the cash box; the
+        // employee says which, and only a payout that really happened limits the outcome to refunding the deposit.
+        allowedOutcomes: Object.keys(OUTCOMES)
       });
     }
     return rows.sort((a, b) => String(b.returnedAt).localeCompare(String(a.returnedAt)));
@@ -209,9 +211,11 @@
     if (already) return { existing: true, sale: already, repair: already.refusalRepair };
     const row = repairCandidates(db).find(item => item.invoiceId === invoiceId);
     if (!row) throw fail("هذه الفاتورة لا تحتاج تصحيح أو تم تصحيحها من قبل.", "REPAIR_NOT_NEEDED");
-    if (!row.allowedOutcomes.includes(payload.outcome)) throw fail("تم رد مبلغ نقدي لهذا العميل بالفعل؛ الحالة الوحيدة المتاحة هي رد الديبوزت.", "INVALID_REPAIR_OUTCOME", 400);
     const plan = settlementPlan(row.deposit, payload.outcome, payload.shippingCharge);
-    const extraRefund = round(Math.max(0, plan.refund - row.cashRefunded));
+    const cashNotPaid = row.cashRefunded > 0 && payload.cashNotPaid === true;
+    const cashPaid = cashNotPaid ? 0 : row.cashRefunded;
+    if (plan.refund < cashPaid) throw fail(`اتسجل إن العميل استلم ${cashPaid} كاش. لو ده حصل فعلًا اختار «رد الديبوزت»، ولو ما اتصرفش علّم إن المبلغ ما اتصرفش.`, "CASH_ALREADY_REFUNDED", 400);
+    const extraRefund = round(Math.max(0, plan.refund - cashPaid));
     const account = list(db, "cashAccounts").find(item => !item.deletedAt && item.active !== false && item.id === payload.cashAccountId);
     if (extraRefund > 0 && !account) throw fail("اختر الخزنة التي سيُرد منها باقي الديبوزت.", "CASH_ACCOUNT_REQUIRED", 400);
     const now = actor.now || new Date().toISOString();
@@ -224,10 +228,23 @@
       db.cash = list(db, "cash");
       db.cash.push({ id: nextNumber("TX-", db.cash), date: now.slice(0, 10), type: "صرف", direction: "out", locked: true, account: account.name, accountId: account.id, party: row.customerName, customerId: sale.customerId, amount: extraRefund, category: "مرتجع مبيعات - رفض استلام", orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}`, note: reason, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" });
     }
-    const repair = { outcome: plan.outcome, outcomeLabel: OUTCOMES[plan.outcome], deposit: row.deposit, refund: plan.refund, extraRefund, retained: plan.retained, shippingCharge: plan.fee, extraDue: plan.extraDue, previousContribution: row.contribution, balanceDelta: delta, reason, operationKey, at: now, by: actor.name || actor.username, byUsername: actor.username };
+    // A payout that never happened is cancelled by an opposite cash entry, so the cash box history stays complete.
+    let reversedCash = 0;
+    if (cashNotPaid) {
+      const returns = saleReturns(db, sale.id), returnIds = new Set(returns.map(item => item.id));
+      db.cash = list(db, "cash");
+      for (const tx of db.cash.filter(item => !item.deletedAt && item.type === "صرف" && returnIds.has(item.returnId) && !item.reversedBy)) {
+        const reversal = { id: nextNumber("TX-", db.cash), date: now.slice(0, 10), type: "قبض", direction: "in", locked: true, account: tx.account, accountId: tx.accountId || "", party: tx.party || row.customerName, customerId: sale.customerId, amount: round(tx.amount), category: "عكس مرتجع مبيعات لم يُصرف", returnId: tx.returnId, reversesId: tx.id, orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}:reverse:${tx.id}`, note: `المبلغ المسجل رد نقدي في ${tx.id} لم يُصرف للعميل — ${reason}`, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" };
+        db.cash.push(reversal);
+        tx.reversedBy = reversal.id;
+        reversedCash = round(reversedCash + Number(tx.amount || 0));
+      }
+      for (const item of returns) if (Number(item.paidAmount || 0) > 0) Object.assign(item, { cashNotPaid: round(item.paidAmount), paidAmount: 0 });
+    }
+    const repair = { outcome: plan.outcome, outcomeLabel: OUTCOMES[plan.outcome], deposit: row.deposit, refund: plan.refund, extraRefund, reversedCash, retained: plan.retained, shippingCharge: plan.fee, extraDue: plan.extraDue, previousContribution: row.contribution, balanceDelta: delta, reason, operationKey, at: now, by: actor.name || actor.username, byUsername: actor.username };
     Object.assign(sale, { refusalRepair: repair, returnedRemaining: round(Number(sale.returnedRemaining || 0) + Number(sale.remaining || 0)), remaining: plan.extraDue, remainingAmount: plan.extraDue, returnedPaid: plan.refund, paid: round(row.deposit - plan.refund), updatedAt: now });
     for (const item of saleReturns(db, sale.id)) Object.assign(item, { refusalRepaired: true, updatedAt: now });
-    if (order && !order.refusal) Object.assign(order, { refusal: { ...repair, repaired: true }, refusedAt: order.refusedAt || sale.returnedAt || now, updatedAt: now });
+    if (order) Object.assign(order, { ...(order.refusal ? {} : { refusal: { ...repair, repaired: true } }), status: "مرتجع", workflowStage: "returned", refusedAt: order.refusedAt || sale.returnedAt || now, paidAmount: round(row.deposit - plan.refund), remainingAmount: plan.extraDue, remaining: plan.extraDue, updatedAt: now });
     return { existing: false, sale, repair };
   }
 
