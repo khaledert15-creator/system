@@ -50,6 +50,7 @@
   function showContext() {
     $("login-view").hidden = true; $("context-view").hidden = false; $("logout-button").hidden = false;
     $("panel-user").textContent = state.user ? `${state.user.name || state.user.username}` : "";
+    startLive();
     $("conversation-label").textContent = state.conversationId ? `#${state.conversationId}` : "—";
     $("phone-label").textContent = state.rawPhone || state.phone || "—";
     $("manual-form").hidden = Boolean(state.phone);
@@ -59,8 +60,27 @@
 
   function logout(callServer = true) {
     if (callServer && state.token) fetch("/api/logout", { method: "POST", headers: { "X-Session-Token": state.token } }).catch(() => {});
-    state.token = ""; state.user = null; sessionStorage.removeItem(TOKEN_KEY); showLogin();
+    stopLive(); state.token = ""; state.user = null; sessionStorage.removeItem(TOKEN_KEY); showLogin();
   }
+
+  // Live refresh: the System announces every saved change on /api/events; the open customer's orders reload a moment
+  // later, unless the employee is in the order form or typing a payment or cancel reason (those reload when closed).
+  let live = null, liveRevision = "", liveTimer = 0;
+  function startLive() {
+    if (live || !state.token || typeof LiveUpdates === "undefined") return;
+    live = LiveUpdates.create({ fetch: (...args) => fetch(...args), headers: () => ({ "X-Session-Token": state.token }),
+      onRevision(revision) { if (liveRevision && revision !== liveRevision) scheduleLiveLoad(); liveRevision = revision; },
+      onUnauthorized() { logout(false); } });
+    live.start();
+  }
+  function stopLive() { live?.stop(); live = null; liveRevision = ""; clearTimeout(liveTimer); }
+  function scheduleLiveLoad() { clearTimeout(liveTimer); liveTimer = setTimeout(liveLoad, 700); }
+  function liveLoad() {
+    if (!state.user || !state.data || state.form || document.visibilityState !== "visible") return;
+    if (state.loading || $("orders-list").querySelector(".actions input, .actions select")) return scheduleLiveLoad();
+    load({ silent: true });
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.user) { startLive(); liveLoad(); } });
 
   async function restoreSession() {
     if (!state.token) return showLogin();
@@ -116,26 +136,33 @@
     $("orders-list").replaceChildren(el("div", { class: "card state error" }, el("strong", { text }), retry ? el("button", { type: "button", class: "btn ghost", onclick: load, text: "إعادة المحاولة" }) : ""));
   }
 
-  async function load() {
+  async function load({ silent = false } = {}) {
     if ((!state.phone && !state.conversationId) || state.loading) return;
-    state.loading = true; message("جارٍ التحميل…");
+    state.loading = true; if (!silent) message("جارٍ التحميل…");
+    let stale = false;
     try {
       const query = new URLSearchParams();
       if (state.phone) query.set("phone", state.phone);
       if (state.conversationId) query.set("conversationId", state.conversationId);
       if (state.contactId) query.set("contactId", state.contactId);
-      state.data = await api(`/api/integration/v1/panel/customer?${query}`);
+      const requested = `${state.phone}|${state.conversationId}`;
+      const result = await api(`/api/integration/v1/panel/customer?${query}`);
+      // The conversation changed while this was loading: load the new one instead.
+      if (requested !== `${state.phone}|${state.conversationId}`) { stale = true; return; }
+      // A live refresh never covers the form the employee opened meanwhile, and keeps the last message (e.g. «اتلغى الطلب»).
+      state.data = result;
+      if (silent) { if (!state.form) render(); return; }
       message(state.data.storeEnabled && !state.data.storeAvailable ? "تعذر الوصول إلى المتجر الآن؛ تظهر طلبات السيستم فقط، وطلبات الموقع غير المعتمدة قد تكون ناقصة." : "", state.data.storeEnabled && !state.data.storeAvailable ? "warning" : "");
       render();
     } catch (error) {
-      if (error.status === 401) return;
+      if (error.status === 401 || silent) return;
       message("");
       // Never «no orders» when the real reason is a failure or a missing permission.
       if (error.status === 403) failure("ليس لديك صلاحية عرض بيانات العملاء.", false);
       else if (error.status === 503) failure("التكامل غير مفعّل في السيستم.", false);
       else if (error.code === "CUSTOMER_NOT_IDENTIFIED" || error.code === "INVALID_PHONE") failure("تعذر التعرف على العميل من بيانات المحادثة. اكتب رقمه يدويًا.", false);
       else failure(`تعذر تحميل طلبات العميل: ${error.message}`);
-    } finally { state.loading = false; }
+    } finally { state.loading = false; if (stale) load(); }
   }
 
   const CURRENT = ["awaiting_confirmation", "awaiting_deposit", "preparing", "shipped", "preorder"];

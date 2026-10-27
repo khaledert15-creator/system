@@ -139,7 +139,7 @@ const message = (content, type = 0, extra = {}) => ({ content, message_type: typ
     pass('a delivered order says why it cannot be edited or cancelled');
 
     const html = (await (await fetch(`${system.base}/integrations/chatwood-panel`)).text());
-    for (const src of ['/order-finance.js?v=', '/integrations/chatwood-suggest.js?v=', '/integrations/chatwood-panel.js?v=']) assert.ok(html.includes(src), src);
+    for (const src of ['/order-finance.js?v=', '/live-updates.js?v=', '/integrations/chatwood-suggest.js?v=', '/integrations/chatwood-panel.js?v=']) assert.ok(html.includes(src), src);
     const suggest = await fetch(`${system.base}/integrations/chatwood-suggest.js`);
     assert.equal(suggest.status, 200);
     const finance = await fetch(`${system.base}/order-finance.js`);

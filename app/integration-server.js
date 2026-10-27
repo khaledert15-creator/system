@@ -166,6 +166,7 @@ function createIntegrationServer(deps) {
       .replace('src="/integrations/chatwood-panel.js"', `src="/integrations/chatwood-panel.js?v=${version}"`)
       .replace('src="/integrations/chatwood-suggest.js"', `src="/integrations/chatwood-suggest.js?v=${version}"`)
       .replace('src="/order-finance.js"', `src="/order-finance.js?v=${version}"`)
+      .replace('src="/live-updates.js"', `src="/live-updates.js?v=${version}"`)
       .replace('src="/egypt-cities.js"', `src="/egypt-cities.js?v=${version}"`);
     return send(res, 200, html, "text/html; charset=utf-8", { ...frameAncestorHeaders([config.chatwoodOrigin]), "Cache-Control":"no-store" });
   }
