@@ -168,7 +168,8 @@
       reason, notes: note, lines: [], createdBy: actor.name || actor.username || "النظام", createdAt: now, updatedAt: now, status: "معتمد", deletedAt: null
     });
     const shipment = list(db, "shipments").find(item => item.id === preview.shipmentId);
-    if (shipment) Object.assign(shipment, { status: "مرتجع", currentStatus: "مرتجع", refusedAt: now, returnedAt: shipment.returnedAt || now, updated: now, updatedAt: now });
+    // Tracking reads the normalized status, so it has to say returned too or the parcel keeps being tracked.
+    if (shipment) Object.assign(shipment, { status: "مرتجع", currentStatus: "مرتجع", normalizedStatus: "returned", shippingStatus: "returned", refusedAt: now, returnedAt: shipment.returnedAt || now, updated: now, updatedAt: now });
     // The order list shows the order's own paid / remaining figures, so they follow the refusal too.
     Object.assign(order, { status: "مرتجع", workflowStage: "returned", refusal, refusedAt: now, returnedAt: order.returnedAt || now, paidAmount: round(preview.deposit - plan.refund), remainingAmount: plan.extraDue, remaining: plan.extraDue, updatedAt: now });
     return { existing: false, order, sale, refusal, settlements };

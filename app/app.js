@@ -1390,7 +1390,7 @@ function shipmentShippedOnFilter(item, filter) {
 }
 
 function isTerminalShipment(item = {}) {
-  return ["delivered", "returned"].includes(shipmentStatusCode(item));
+  return Boolean(item.refusedAt) || ["delivered", "returned"].includes(shipmentStatusCode(item));
 }
 
 function shipmentStatusMeta(item = {}) {

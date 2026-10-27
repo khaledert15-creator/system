@@ -152,4 +152,19 @@ pass("The refusal button works inside dialogs too (return picker, order details)
   assert(start>0&&source.slice(start,end).includes('"refuse-online-order"'),"the dialog click handler must open the refusal dialog");
 });
 
+pass("Tracking leaves a refused parcel alone: finished, order not flipped back",()=>{
+  const db=fixture();refuse(db,{outcome:"keep_deposit"});
+  assert.equal(db.shipments[0].normalizedStatus,"returned");assert.equal(db.shipments[0].shippingStatus,"returned");
+  const vm=require("vm"),source=require("fs").readFileSync(require("path").join(__dirname,"../server-node.js"),"utf8");
+  const fn=name=>{const start=source.indexOf(`function ${name}(`);return source.slice(start,source.indexOf("\n}\n",start)+2);};
+  const context={canonicalShippingStatus:(value,text)=>value||text};vm.createContext(context);
+  vm.runInContext([fn("isCancelledShipment"),fn("isTerminalShipmentStatus"),fn("syncLinkedOrder")].join("\n"),context);
+  // An older refusal saved before normalizedStatus was set still counts as finished.
+  assert.equal(context.isTerminalShipmentStatus({refusedAt:"2026-10-27",normalizedStatus:"in_transit",status:"مرتجع"}),true);
+  assert.equal(context.isTerminalShipmentStatus({normalizedStatus:"in_transit"}),false);
+  const order=db.onlineOrders[0];context.syncLinkedOrder({onlineOrders:[order]},{onlineOrderId:order.id,normalizedStatus:"delivered"});
+  assert.equal(order.status,"مرتجع");assert.equal(order.workflowStage,"returned");
+  assert(source.includes("!shipment.refusedAt &&"),"automatic tracking must skip refused parcels");
+});
+
 console.log("All order refusal tests passed.");

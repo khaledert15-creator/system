@@ -1512,6 +1512,8 @@ function isCancelledShipment(shipment = {}) {
 
 function isTerminalShipmentStatus(shipment = {}) {
   if (isCancelledShipment(shipment)) return true;
+  // A refused delivery is settled; later carrier events must not reopen it.
+  if (shipment.refusedAt) return true;
   const status = canonicalShippingStatus(
     shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus,
     shipment.status || shipment.currentStatus
@@ -2636,7 +2638,7 @@ function applyTrackingAlerts(db, shipment) {
 
 function syncLinkedOrder(db, shipment) {
   const order = db.onlineOrders?.find(item => item.id === shipment.onlineOrderId);
-  if (!order) return;
+  if (!order || order.refusal) return;
   if (shipment.normalizedStatus === "delivered") {
     order.status = "تم التسليم";
     order.workflowStage = "delivered";
@@ -2728,7 +2730,8 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     }
     const latest = confirmedEvents.slice().sort((a, b) => new Date(b.eventAt) - new Date(a.eventAt))[0];
     const confirmedStatus = latest ? canonicalShippingStatus(latest.normalizedStatus, latest.statusText) : "";
-    if (latest && confirmedStatus) {
+    // Events of a refused parcel are kept as history, but the refusal decides its status.
+    if (latest && confirmedStatus && !shipment.refusedAt) {
       shipment.lastStatusText = latest.statusText;
       shipment.normalizedStatus = confirmedStatus;
       shipment.shippingStatus = confirmedStatus;
@@ -2855,6 +2858,7 @@ function activeTrackableShipments(db, { manual = false, aheadMs = 0 } = {}) {
     const status = canonicalShippingStatus(shipment.shippingStatus || shipment.trackingStatus || shipment.normalizedStatus, shipment.status || shipment.currentStatus);
     const intervalHours = trackingIntervalHoursForShipment(shipment);
     return !shipment.deletedAt &&
+    !shipment.refusedAt &&
     shipment.trackingEnabled !== false &&
     isEgyptPostShipment(shipment) &&
     isValidTrackingNumber(shipment.trackingNumber || shipment.tracking) &&
