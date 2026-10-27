@@ -672,13 +672,16 @@
 
   function summaryText() {
     const { order, totals: result } = state.form.done, draft = state.form.draft;
+    // Same wording as the main app's order message: a discounted book shows its price before the discount too.
     const rows = result.lines.map(line => {
       const name = String(state.catalog.byId.get(line.bookId)?.name || line.bookId).replace(/\s+/g, " ").trim();
-      return line.qty > 1 ? `• ${line.qty} * ${name} | النسخة ${amount(line.unitFinalPrice)} ج | الإجمالي ${amount(line.lineFinalAmount)} ج` : `• ${name} | ${amount(line.unitFinalPrice)} ج`;
+      const price = line.unitFinalPrice < line.unitOriginalPrice ? `${amount(line.unitFinalPrice)} بدل ${amount(line.unitOriginalPrice)} ج` : `${amount(line.unitFinalPrice)} ج`;
+      return line.qty > 1 ? `• ${line.qty} * ${name} | النسخة ${price} | الإجمالي ${amount(line.lineFinalAmount)} ج` : `• ${name} | ${price}`;
     }).join("\n");
+    const orderDiscount = result.orderDiscountAmount ? `خصم الطلب: ${amount(result.orderDiscountAmount)} ج\n` : "";
     const total = Number(order.total ?? result.total), paid = Number(order.paidAmount || 0);
     const address = [draft.governorate, draft.city, draft.address].map(value => String(value || "").replace(/\s+/g, " ").trim()).filter(Boolean).join("، ");
-    return `${order.confirmedAt ? "✅ تم تأكيد الطلب" : "📚 ملخص الطلب"}\nرقم الطلب: ${order.id}\n👤 ${draft.customerName} | 📞 ${draft.phone}\n📍 ${address}\n\n${rows}\n\nقيمة الكتب: ${amount(result.goods)} ج | الشحن: ${amount(result.shipping)} ج\nالإجمالي: ${amount(total)} ج\nالمدفوع: ${amount(paid)} ج | المتبقي عند الاستلام: ${amount(Math.max(0, total - paid))} ج`;
+    return `${order.confirmedAt ? "✅ تم تأكيد الطلب" : "📚 ملخص الطلب"}\nرقم الطلب: ${order.id}\n👤 ${draft.customerName} | 📞 ${draft.phone}\n📍 ${address}\n\n${rows}\n\n${orderDiscount}قيمة الكتب: ${amount(result.goods)} ج | الشحن: ${amount(result.shipping)} ج\nالإجمالي: ${amount(total)} ج\nالمدفوع: ${amount(paid)} ج | المتبقي عند الاستلام: ${amount(Math.max(0, total - paid))} ج`;
   }
 
   async function copySummary(button) {
