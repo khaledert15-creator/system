@@ -146,4 +146,10 @@ pass("Refusal updates the order's paid and remaining figures shown in the orders
   assert.equal(refunded.onlineOrders[0].paidAmount,0);assert.equal(refunded.onlineOrders[0].remainingAmount,0);
 });
 
+pass("The refusal button works inside dialogs too (return picker, order details)",()=>{
+  const source=require("fs").readFileSync(require("path").join(__dirname,"../app/app.js"),"utf8");
+  const start=source.indexOf('modalBody.addEventListener("click"'),end=source.indexOf("\n});",start);
+  assert(start>0&&source.slice(start,end).includes('"refuse-online-order"'),"the dialog click handler must open the refusal dialog");
+});
+
 console.log("All order refusal tests passed.");

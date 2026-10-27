@@ -10043,6 +10043,8 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "cancel-shipment-flow") { closeModal(); cancelShipmentFlowModal(appAction.dataset.id); return; }
   if (chatwoodAction === "add-order-payment") { if (requireAction("order.payment.receive")) openAddOrderPayment(appAction.dataset.id); return; }
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
+  // The return picker and the order details dialog offer «رفض استلام»; its own dialog replaces this one.
+  if (chatwoodAction === "refuse-online-order") { openOrderRefusal(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }
   if (appAction?.dataset.action === "generate-user-password") {
     const input = appAction.closest("form")?.elements.password;
