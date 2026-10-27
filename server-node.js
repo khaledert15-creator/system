@@ -880,6 +880,11 @@ function saleHasReturn(db,sale) {
   return ["مرتجع","مرتجع جزئي"].includes(sale.status)||(db.returns||[]).some(item=>!item.deletedAt&&["sale","sales_return"].includes(item.type)&&(item.documentId===sale.id||(item.sourceDocuments||[]).includes(sale.id)));
 }
 
+// What the packing edit dialog saw of an order when it opened; the save goes through only if it is unchanged.
+function packingEditStamp(order={}) {
+  return {updatedAt:String(order.updatedAt||""),stage:String(order.workflowStage||""),lines:(order.lines||[]).map(line=>[String(line.bookId||""),Number(line.qty||0),Number(line.price||0),Number(line.discount||0),String(line.discountType||""),String(line.discountScope||"")])};
+}
+
 function voidSaleRecord(db,sale,user,note) {
   const now=new Date().toISOString();
   for(const line of sale.lines||[]){
@@ -3942,10 +3947,12 @@ const server = http.createServer(async (req, res) => {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
       const payload=JSON.parse(await readBody(req)||"{}"),db=ensureTrackingDb(readDb());
       if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,message:"ليس لديك صلاحية تعديل أصناف وأسعار الطلب."});
-      const expected=Number(req.headers["x-db-revision"]);
-      if(!Number.isInteger(expected)||expected!==dbRevision()*1)return send(res,409,{ok:false,code:"STALE_REVISION",message:"تغيرت البيانات. احتفظ بتعديلاتك وراجع أحدث نسخة قبل المحاولة مرة أخرى."});
+      const expected=Number(req.headers["x-db-revision"]),revision=dataRevision(db);
       const order=(db.onlineOrders||[]).find(item=>item.id===route.split("/")[3]&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
+      // Tracking and other employees save every minute or so; only a change to this order should stop the edit.
+      const sameOrder=payload.orderStamp&&JSON.stringify(packingEditStamp(order))===JSON.stringify(payload.orderStamp);
+      if(!sameOrder&&(!Number.isInteger(expected)||expected!==revision))return send(res,409,{ok:false,code:"STALE_REVISION",message:"الطلب ده اتعدّل من مكان تاني بعد ما فتحت الشاشة. اقفلها وافتحها تاني وعدّل على أحدث نسخة."});
       if(order.saleId||(db.sales||[]).some(sale=>sale.onlineOrderId===order.id||sale.operationKey===`order-invoice:${order.id}`)||order.shipmentId)return send(res,409,{ok:false,message:"صدرت فاتورة أو شحنة لهذا الطلب؛ لا يمكن تعديل الأصناف من التغليف."});
       if(order.workflowStage!=="preparing"||order.preparedAt)return send(res,409,{ok:false,message:"يمكن تعديل الأصناف أثناء التغليف فقط."});
       if(order.preparingByUsername!==user.username)return send(res,409,{ok:false,code:"ORDER_LOCKED",message:"الطلب قيد التغليف لدى موظف آخر."});
@@ -3993,7 +4000,7 @@ const server = http.createServer(async (req, res) => {
         if(notesChanged){appendOrderAudit(db,user,order,"تعديل ملاحظات الطلب",JSON.stringify({before:order.notes||"",after:notes}));order.notes=notes;}
         Object.assign(order,{lines:totals.lines,preparationChecklist:checklist,subtotal:totals.subtotal,subtotalBeforeDiscount:totals.subtotalBeforeDiscount,productDiscountTotal:totals.productDiscountTotal,discountTotal:totals.discountTotal,subtotalAfterDiscount:totals.goods,total:totals.total,paidAmount:payment.paidAmount,paymentStatus:payment.paymentStatus,remainingAmount:payment.remainingAmount,amountDueAtDelivery:payment.remainingAmount,updatedAt:new Date().toISOString()});
         appendOrderAudit(db,user,order,"تعديل الطلب أثناء التغليف",JSON.stringify({before:beforeLines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount,discountType,discountScope})),after:lines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount,discountType,discountScope})),deliveryBefore:previousDelivery,deliveryAfter:{address:order.address,shippingFee:shipping}}));
-        writeDb(db,{expectedRevision:expected,operationType:"PACKING_ITEMS_EDIT",performedBy:user.username});
+        writeDb(db,{expectedRevision:revision,operationType:"PACKING_ITEMS_EDIT",performedBy:user.username});
         return send(res,200,{ok:true,order,revision:dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"PACKING_EDIT_FAILED",message:error.message});}
     }

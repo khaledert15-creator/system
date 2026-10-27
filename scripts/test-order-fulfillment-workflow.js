@@ -102,7 +102,12 @@ async function wait(){
   pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},authToken:accountantLogin.body.token})).status===403,"packing edit requires existing order edit permission");
   pass((await call(editRoute,{method:"PATCH",body:{lines:editLines},revision:-1})).status===409,"packing edit rejects stale revision");
   pass(fs.readFileSync(dbPath,"utf8")===beforeEdit,"unauthorized and stale edits leave snapshot unchanged");
-  const editedPacking=await call(editRoute,{method:"PATCH",body:{lines:editLines},revision:readPacking().meta?.dataRevision||0});
+  // Other saves (tracking, other employees) move the revision; the edit still goes through while this order is unchanged.
+  const stampOf=order=>({updatedAt:String(order.updatedAt||""),stage:String(order.workflowStage||""),lines:(order.lines||[]).map(line=>[String(line.bookId||""),Number(line.qty||0),Number(line.price||0),Number(line.discount||0),String(line.discountType||""),String(line.discountScope||"")])});
+  const openedStamp=stampOf(readPacking().onlineOrders.find(row=>row.id===editablePacking.id)),staleRevision=(readPacking().meta?.dataRevision||0)-1;
+  pass((await call(editRoute,{method:"PATCH",body:{lines:editLines,orderStamp:{...openedStamp,updatedAt:"changed elsewhere"}},revision:staleRevision})).status===409,"packing edit rejects a stale revision when the order itself changed");
+  pass(fs.readFileSync(dbPath,"utf8")===beforeEdit,"a rejected edit leaves the snapshot unchanged");
+  const editedPacking=await call(editRoute,{method:"PATCH",body:{lines:editLines,orderStamp:openedStamp},revision:staleRevision});
   pass(editedPacking.status===200&&editedPacking.body.order.lines.length===2&&editedPacking.body.order.total===390,"packing editor adds book and updates quantities, prices and totals");
   pass(editedPacking.body.order.preparationChecklist.every(row=>!row.done),"changed and added items need packing confirmation again");
   const afterEdit=readPacking();

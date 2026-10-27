@@ -5125,11 +5125,16 @@ function updatePackingWeightPreview(form){
 
 let packingEditDraft=null;
 
+// Same as the server's packingEditStamp: the save is accepted while this order is as the dialog saw it.
+function packingEditStamp(order={}) {
+  return {updatedAt:String(order.updatedAt||""),stage:String(order.workflowStage||""),lines:(order.lines||[]).map(line=>[String(line.bookId||""),Number(line.qty||0),Number(line.price||0),Number(line.discount||0),String(line.discountType||""),String(line.discountScope||"")])};
+}
+
 function openPackingEditor(id) {
   const order=getOnlineOrder(id);
   if(!order||!canAction("order.quick.edit"))return toast("ليس لديك صلاحية تعديل الطلب.","error");
   if(order.saleId)return toast("لا يمكن تعديل الأصناف بعد إصدار الفاتورة.","error");
-  packingEditDraft={id,revision:dbRevision,order:structuredClone(order),lines:structuredClone(order.lines||[]),pending:false};
+  packingEditDraft={id,revision:dbRevision,orderStamp:packingEditStamp(order),order:structuredClone(order),lines:structuredClone(order.lines||[]),pending:false};
   openModal(`تعديل أصناف ${order.id}`,"التغليف",`<form id="packing-edit-form"><p class="muted">التعديلات تخص هذا الطلب فقط، ولا تغيّر أسعار الكتب الأساسية. يُلغى تأكيد تغليف البنود المتغيرة بعد الحفظ.</p><label for="packing-edit-search">إضافة كتاب</label><input id="packing-edit-search" type="search" placeholder="ابحث باسم الكتاب أو الباركود" autocomplete="off"><div id="packing-edit-results" class="packing-edit-results"></div><div id="packing-edit-lines" class="packing-edit-lines"></div><div id="packing-edit-totals" class="packing-totals" aria-live="polite"></div><p id="packing-edit-error" class="text-danger" role="alert"></p><div class="form-actions"><button type="submit" class="btn">حفظ التعديلات والعودة للتغليف</button><button type="button" class="btn ghost" data-action="packing-edit-cancel">رجوع بدون حفظ</button></div></form>`);
   renderPackingEditLines();
 }
@@ -5178,7 +5183,7 @@ async function savePackingEdit(form) {
   const controls=[...form.querySelectorAll("input,textarea,button")].map(control=>({control,disabled:control.disabled}));
   draft.pending=true;controls.forEach(({control})=>{control.disabled=true;});
   try{
-    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(draft.id)}/prepare/items`,{method:"PATCH",revision:draft.revision,body:{lines:draft.lines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount:discount||0,discountType:discountType||"percent",discountScope:discountScope||"line"})),shippingFee:draft.order.shippingFee??orderShippingFee(draft.order),address:draft.order.address,notes:draft.order.notes||""}});
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(draft.id)}/prepare/items`,{method:"PATCH",revision:draft.revision,body:{orderStamp:draft.orderStamp,lines:draft.lines.map(({bookId,qty,price,discount,discountType,discountScope})=>({bookId,qty,price,discount:discount||0,discountType:discountType||"percent",discountScope:discountScope||"line"})),shippingFee:draft.order.shippingFee??orderShippingFee(draft.order),address:draft.order.address,notes:draft.order.notes||""}});
     packingEditDraft=null;await openPreparationOrder(draft.id);toast("تم حفظ الأصناف وتحديث الإجمالي وحجز المخزون. راجع علامات التغليف.");
   }catch(error){draft.pending=false;if(form.isConnected){controls.forEach(({control,disabled})=>{control.disabled=disabled;});updatePackingEditTotals();document.getElementById("packing-edit-error").textContent=error.message;}toast(error.message,"error");}
 }
