@@ -87,13 +87,24 @@
   // behind «كمّل الطلب». Saving the order, or «امسح», drops it.
   const DRAFTS_KEY = "maktabaa-chatwood-panel-drafts", DRAFT_DAYS = 3;
   const draftKey = () => state.conversationId ? `c${state.conversationId}` : state.phone ? `p${state.phone}` : "";
+  // This origin's localStorage is shared with the System pages, which may have filled it; then the drafts go to this
+  // Chatwood tab's sessionStorage (it outlives the panel reloads Chatwood does on every conversation switch).
+  const storages = () => [window.localStorage, window.sessionStorage];
   function readDrafts() {
-    try {
-      const all = JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}"), cutoff = Date.now() - DRAFT_DAYS * 864e5;
-      return Object.fromEntries(Object.entries(all).filter(([, item]) => item && Date.parse(item.savedAt) > cutoff));
-    } catch { return {}; }
+    const all = {}, cutoff = Date.now() - DRAFT_DAYS * 864e5;
+    for (const storage of storages()) {
+      try { for (const [key, item] of Object.entries(JSON.parse(storage.getItem(DRAFTS_KEY) || "{}"))) if (item && Date.parse(item.savedAt) > cutoff && !(Date.parse(all[key]?.savedAt) >= Date.parse(item.savedAt))) all[key] = item; } catch {}
+    }
+    return all;
   }
-  function writeDrafts(all) { try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch {} }
+  function writeDrafts(all) {
+    const text = JSON.stringify(all);
+    for (const storage of storages()) {
+      try { storage.setItem(DRAFTS_KEY, text); for (const other of storages()) if (other !== storage) try { other.removeItem(DRAFTS_KEY); } catch {} return true; } catch {}
+    }
+    message("المتصفح مش قادر يحفظ بيانات الطلب لو سبت المحادثة؛ سجّل الطلب قبل ما تنتقل.", "warning");
+    return false;
+  }
   function saveDraft(open = true) {
     const form = state.form;
     if (!form?.key || form.done || form.saving) return;

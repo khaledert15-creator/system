@@ -385,11 +385,16 @@ function loadFallbackData() {
 }
 
 let browserDataCacheAvailable = true;
+const BROWSER_CACHE_MAX_CHARS = 2000000;
 function cacheDataLocally(value = data) {
   // Once the browser refused the copy (the database outgrew its storage quota), trying again only costs time.
   if (!browserDataCacheAvailable) return false;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+    // A copy bigger than this would fill the browser's storage for the whole site (the Chatwood panel keeps its
+    // unsaved orders there too), so it is not kept at all.
+    const text = JSON.stringify(value);
+    if (text.length > BROWSER_CACHE_MAX_CHARS) throw new Error("Too large for the browser cache");
+    localStorage.setItem(STORAGE_KEY, text);
     browserDataCacheAvailable = true;
     return true;
   } catch {
