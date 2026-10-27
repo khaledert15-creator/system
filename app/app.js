@@ -4673,7 +4673,7 @@ async function cancelOnlineOrder(id,{courierNotPickedUp=false}={}) {
     openModal(`إلغاء الطلب ${order.id}`,"إلغاء بخطوة واحدة",`<form id="order-cancel-complete-form" data-id="${esc(order.id)}" data-outstanding="${financial.outstanding}" data-courier-not-picked-up="${courierNotPickedUp?"1":""}">
       ${courierNotPickedUp?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>الطرد لسه عندنا والمندوب ما استلمهوش</strong><span>ده إلغاء وليس رفض استلام: الشحنة بتتلغي، ولازم تلغي البوليصة من نظام شركة الشحن.</span></div></div>`:""}
       <div class="finance-callout"><strong>${esc(order.customerName||financial.customerName||"")}</strong><span>${esc(order.id)}${sale?` · ${esc(sale.id)}`:""} · الإجمالي ${money(financial.total)} · المدفوع ${money(financial.paid)}</span></div>
-      ${shipment?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>هتشحن الطلب تاني بكود جديد؟ متلغيش الطلب</strong><span>إلغاء الطلب بيرجّع كتبه للرف، والسيستم بيديها على طول لطلبات الحجز المسبق المستنية. استخدم «إلغاء الشحنة وإصدار كود جديد»: الطلب والفاتورة وكتبه بيفضلوا زي ما هم، وتدخل الكود الجديد بس.</span>${reshipShipment(order)?`<button type="button" class="btn secondary compact" data-action="cancel-shipment-flow" data-id="${esc(shipment.id)}">إلغاء الشحنة وإصدار كود جديد</button>`:""}</div></div>`:""}
+      ${shipment?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>هتشحن الطلب تاني بكود جديد؟ متلغيش الطلب</strong><span>إلغاء الطلب بيرجّع كتبه للرف، والسيستم بيديها على طول لطلبات الحجز المسبق المستنية. استخدم «إلغاء الشحنة وإصدار كود جديد»: الطلب والفاتورة وكتبه بيفضلوا زي ما هم، وتدخل الكود الجديد بس.</span>${reshipShipment(order,{courierNotPickedUp})?`<button type="button" class="btn secondary compact" data-action="cancel-shipment-flow" data-id="${esc(shipment.id)}" data-courier-not-picked-up="${courierNotPickedUp?"1":""}">إلغاء الشحنة وإصدار كود جديد</button>`:""}</div></div>`:""}
       <p class="muted">سيتم تنفيذ الآتي معًا، وإذا فشل أي جزء لن يتغير شيء:</p>
       <ol class="cancel-steps">${steps.map(step=>`<li>${step}</li>`).join("")}</ol>
       <div class="form-grid">
@@ -5399,11 +5399,16 @@ function onlineOrderPrimaryAction(order) {
 
 // A shipment that can be cancelled to issue a new tracking code (the courier did not pick the parcel up, the label
 // was wrong): the order keeps its invoice and books and goes back to «مغلف ومنتظر كود تتبع».
-function reshipShipment(order) {
+// `courierNotPickedUp`: the employee confirmed in «الطلب ما اتسلمش» that the parcel never left, so tracking that
+// already moved (Egypt Post registers the code before the courier collects it) still allows a new label.
+function reshipShipment(order, { courierNotPickedUp = false } = {}) {
   if (!(canAction("delete-shipment") || canAction("order.shipping")) || ["delivered", "cancelled"].includes(onlineOrderWorkflowStage(order))) return null;
   const shipment = activeOrderShipment(order);
+  if (!shipment || shipment.refusedAt) return null;
+  const status = String(shipment.normalizedStatus || "");
   // Only before the carrier has the parcel; after that it is a return, not a new label.
-  return shipment && PRE_HANDOVER_SHIPMENT_STATUSES.includes(String(shipment.normalizedStatus || "")) ? shipment : null;
+  if (PRE_HANDOVER_SHIPMENT_STATUSES.includes(status)) return shipment;
+  return courierNotPickedUp && !["delivered", "returned"].includes(status) ? shipment : null;
 }
 
 // Copies other customers' orders hold of the books this pre-order is missing, that can be taken by exception: only
@@ -9359,7 +9364,7 @@ root.addEventListener("click", async event => {
   if(action==="shipping-ignore-invalid"&&!shippingImportBusy){shippingFileImportRows.forEach(row=>{if(!row.ok&&!row.alreadyAdded)row.ignored=true;});renderOnlineOrders();}
   if (action === "ship-ready-order") shipReadyOrderModal(target.dataset.id);
   if (action === "packed-weight-edit") openPackingWeightModal(target.dataset.id,true);
-  if(action==="cancel-shipment-flow")cancelShipmentFlowModal(target.dataset.id);
+  if(action==="cancel-shipment-flow")cancelShipmentFlowModal(target.dataset.id,{courierNotPickedUp:target.dataset.courierNotPickedUp==="1"});
   if (action === "reopen-order-preparation") {
     const order=getOnlineOrder(target.dataset.id);
     if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
@@ -10136,7 +10141,7 @@ modalBody.addEventListener("click", event => {
   // «⋯ المزيد» in the order details dialog: the edit/cancel flows open their own screen or dialog.
   if (chatwoodAction === "edit-quick-order") { closeModal(); editQuickOrder(appAction.dataset.id); return; }
   if (chatwoodAction === "take-reserved-copy") { closeModal(); openTakeReservedCopy(appAction.dataset.id); return; }
-  if (chatwoodAction === "cancel-shipment-flow") { closeModal(); cancelShipmentFlowModal(appAction.dataset.id); return; }
+  if (chatwoodAction === "cancel-shipment-flow") { closeModal(); cancelShipmentFlowModal(appAction.dataset.id,{courierNotPickedUp:appAction.dataset.courierNotPickedUp==="1"}); return; }
   if (chatwoodAction === "add-order-payment") { if (requireAction("order.payment.receive")) openAddOrderPayment(appAction.dataset.id); return; }
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
   // The return picker and the order details dialog offer «رفض استلام»; its own dialog replaces this one.
@@ -12865,14 +12870,15 @@ function deleteShipment(id) {
 
 const SHIPMENT_CANCEL_REASONS=["تعديل العنوان","العميل طلب الإلغاء","خطأ في البوليصة","تغيير شركة الشحن"];
 
-function cancelShipmentFlowModal(id){
+function cancelShipmentFlowModal(id,{courierNotPickedUp=false}={}){
   const shipment=data.shipments.find(item=>item.id===id&&!item.deletedAt);if(!shipment)return;
   const order=getOnlineOrder(shipment.onlineOrderId),tracking=shipment.trackingNumber||shipment.tracking||"";
   const company=shipment.company||shipment.carrier||order?.shippingCompany||"";
   const postal=shipment.postalBillingManaged||/البريد المصري|egypt\s*post/i.test(String(company));
   const summary=[["كود التتبع",`<bdi dir="ltr">${esc(tracking||"—")}</bdi>`],["الطلب",esc(order?.id||shipment.onlineOrderId||"—")],["العميل",`${esc(order?.customerName||shipment.customerName||shipment.customer||"—")}<small dir="ltr">${esc(phonesText(order||shipment))}</small>`],["شركة الشحن",esc(company||"—")]];
   const postalCharge=postal?`<div class="ship-cancel-postal"><span>هل احتسب البريد تكلفة الشحنة الملغاة؟</span><div class="ship-cancel-segment"><label><input type="radio" name="postalChargeStatus" value="charged" checked><span>نعم، احتُسبت</span></label><label><input type="radio" name="postalChargeStatus" value="not_charged"><span>لا، لم تُحتسب</span></label></div><input name="postalChargeReason" hidden placeholder="سبب عدم الاحتساب، مثال: أكد البريد حذف الشحنة من الكشف"></div>`:"";
-  openModal("إلغاء الشحنة","شركة الشحن",`<form id="shipment-cancellation-form" class="ship-cancel" data-id="${esc(id)}" novalidate>
+  openModal("إلغاء الشحنة","شركة الشحن",`<form id="shipment-cancellation-form" class="ship-cancel" data-id="${esc(id)}" data-courier-not-picked-up="${courierNotPickedUp?"1":""}" novalidate>
+    ${courierNotPickedUp?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>الطرد لسه عندنا والمندوب ما استلمهوش</strong><span>التتبع اتحرك لأن البريد سجّل الكود، بس الطرد ما خرجش. ألغِ البوليصة القديمة هناك وادخل الكود الجديد بعد ما تصدّره.</span></div></div>`:""}
     <dl class="ship-cancel-summary">${summary.map(([label,value])=>`<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>
     <section class="ship-cancel-step"><header><b>١</b><div><strong>ألغِ البوليصة من نظام شركة الشحن</strong><small>النظام غير مربوط بشركة الشحن، فالإلغاء لازم يتم هناك الأول. كود التتبع هيفضل محفوظ في سجل الطلب.</small></div></header>
       <label class="ship-cancel-confirm"><input type="checkbox" name="carrierCancelled"><span class="ship-cancel-tick" aria-hidden="true"></span><span>ألغيت البوليصة <bdi dir="ltr">${esc(tracking)}</bdi> من نظام شركة الشحن</span></label>
@@ -12913,7 +12919,7 @@ function showShipmentCancelError(form,message) {
 async function submitShipmentCancellation(form) {
   const button=form.querySelector('button[type="submit"]');if(button.disabled)return;
   const values=Object.fromEntries(new FormData(form));
-  const payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:values.resolution||"revise_shipment",reason:String(values.reason||"").trim(),postalChargeStatus:values.postalChargeStatus||"charged",postalChargeReason:String(values.postalChargeReason||"").trim()};
+  const payload={carrierCancelled:Boolean(form.elements.carrierCancelled?.checked),resolution:values.resolution||"revise_shipment",reason:String(values.reason||"").trim(),postalChargeStatus:values.postalChargeStatus||"charged",postalChargeReason:String(values.postalChargeReason||"").trim(),courierNotPickedUp:form.dataset.courierNotPickedUp==="1"};
   if(!payload.carrierCancelled)return showShipmentCancelError(form,"علّم إنك ألغيت البوليصة من نظام شركة الشحن الأول.");
   if(payload.postalChargeStatus==="not_charged"&&!payload.postalChargeReason){form.elements.postalChargeReason?.focus();return showShipmentCancelError(form,"اكتب سبب عدم احتساب البريد للتكلفة.");}
   if(!payload.reason){form.elements.reason.focus();return showShipmentCancelError(form,"اختار سبب الإلغاء أو اكتبه.");}

@@ -4295,6 +4295,8 @@ const server = http.createServer(async (req, res) => {
         }
         const now=new Date().toISOString(),tracking=shipment.trackingNumber||shipment.tracking||"";
         Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:resolution,postalChargeStatus,postalChargeReason:postalChargeStatus==="not_charged"?postalChargeReason:"",postalChargeRecordedAt:postalChargeStatus?now:null,postalChargeRecordedBy:postalChargeStatus?(user.name||user.username):"",postalChargeRecordedByUsername:postalChargeStatus?user.username:"",updatedAt:now,updated:now});
+        // The employee confirmed in «الطلب ما اتسلمش» that the courier never collected the parcel (tracking had moved).
+        if(payload.courierNotPickedUp===true)Object.assign(shipment,{courierNotPickedUp:true,courierNotPickedUpConfirmedBy:user.name||user.username,courierNotPickedUpConfirmedAt:now});
         order.previousTrackingNumbers=[...(order.previousTrackingNumbers||[]),{trackingNumber:tracking,shipmentId:shipment.id,cancelledAt:now,reason}];
         if(resolution==="revise_shipment")Object.assign(order,{shipmentId:null,tracking:"",trackingNumber:"",status:"تم التجهيز",workflowStage:"awaiting_shipping",preparedAt:order.preparedAt||now,shippedAt:null,shippedBy:null,shippingExport:null,carrierExportedAt:null,updatedAt:now});
         else Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,updatedAt:now});

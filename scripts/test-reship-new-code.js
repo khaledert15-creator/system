@@ -31,8 +31,11 @@ const pass = name => console.log(`PASS ${name}`);
     const invoice = order(shipped).saleId, shipmentId = order(shipped).shipmentId;
     assert.ok(invoice && shipmentId);
 
-    let r = await system.api(`/api/shipping/shipments/${shipmentId}/cancel`, { username: 'owner', method: 'POST', body: { carrierCancelled: true, reason: 'المندوب نسي الكرتونة', resolution: 'revise_shipment', postalChargeStatus: 'not_charged', postalChargeReason: 'ما اتشحنش' } });
+    let r = await system.api(`/api/shipping/shipments/${shipmentId}/cancel`, { username: 'owner', method: 'POST', body: { carrierCancelled: true, reason: 'المندوب نسي الكرتونة', resolution: 'revise_shipment', postalChargeStatus: 'not_charged', postalChargeReason: 'ما اتشحنش', courierNotPickedUp: true } });
     assert.equal(r.status, 200, r.text);
+    const cancelledShipment = system.readDb().shipments.find(row => row.id === shipmentId);
+    assert.equal(cancelledShipment.courierNotPickedUp, true, 'the «parcel never left» confirmation is kept on the shipment');
+    assert.equal(cancelledShipment.courierNotPickedUpConfirmedBy, 'owner');
     const back = order(shipped);
     assert.equal(back.workflowStage, 'awaiting_shipping'); assert.equal(back.saleId, invoice, 'the invoice is kept'); assert.equal(back.shipmentId, null);
     assert.equal(system.readDb().sales.find(sale => sale.id === invoice).status !== 'ملغاة', true);
@@ -56,8 +59,20 @@ const pass = name => console.log(`PASS ${name}`);
     assert.equal(box.reshipShipment({ stage: 'shipped' }).id, 'SH-1');
     box.current = { id: 'SH-2', normalizedStatus: 'in_transit' };
     assert.equal(box.reshipShipment({ stage: 'shipped' }), null, 'not once the carrier has the parcel');
+    // «الطلب ما اتسلمش» ← «لأ، الطرد لسه عندنا»: tracking moved (Egypt Post registered the code) but the parcel never left.
+    assert.equal(box.reshipShipment({ stage: 'shipped' }, { courierNotPickedUp: true }).id, 'SH-2', 'offered once the employee confirms the parcel is here');
+    for (const status of ['delivered', 'returned']) {
+      box.current = { id: 'SH-X', normalizedStatus: status };
+      assert.equal(box.reshipShipment({ stage: 'shipped' }, { courierNotPickedUp: true }), null, `never once ${status}`);
+    }
+    box.current = { id: 'SH-R', normalizedStatus: 'in_transit', refusedAt: '2026-10-27T10:00:00.000Z' };
+    assert.equal(box.reshipShipment({ stage: 'shipped' }, { courierNotPickedUp: true }), null, 'never for a refused delivery');
     box.current = { id: 'SH-3', normalizedStatus: 'shipped' }; box.allowed.clear();
     assert.equal(box.reshipShipment({ stage: 'shipped' }), null, 'needs a shipping permission');
+    assert.ok(fn('cancelOnlineOrder').includes('reshipShipment(order,{courierNotPickedUp})'), 'the cancel dialog passes the confirmation on');
+    assert.ok(fn('cancelShipmentFlowModal').includes('الطرد لسه عندنا والمندوب ما استلمهوش'));
+    assert.ok(fn('submitShipmentCancellation').includes('courierNotPickedUp:form.dataset.courierNotPickedUp==="1"'));
+    pass('after «الطرد لسه عندنا» the new-code button shows even when tracking moved, never once delivered, returned or refused');
     assert.ok(fn('onlineOrderMoreActions').includes('إلغاء الشحنة وإصدار كود جديد'));
     assert.ok(fn('cancelOnlineOrder').includes('هتشحن الطلب تاني بكود جديد؟ متلغيش الطلب'));
     assert.ok(fn('saveAndConfirmQuickOrder').includes('reservedCopiesFor(confirmedOrder)'), 'after confirming a pre-order the screen offers to take a reserved copy');
