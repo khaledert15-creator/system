@@ -82,6 +82,40 @@
   }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.user) { startLive(); liveLoad(); } });
 
+  // Unsaved order forms are kept per conversation (in this browser, for 3 days): moving to another chat and back, or
+  // reloading the tab, brings back what was typed. A form left open reopens by itself; one closed with «رجوع» waits
+  // behind «كمّل الطلب». Saving the order, or «امسح», drops it.
+  const DRAFTS_KEY = "maktabaa-chatwood-panel-drafts", DRAFT_DAYS = 3;
+  const draftKey = () => state.conversationId ? `c${state.conversationId}` : state.phone ? `p${state.phone}` : "";
+  function readDrafts() {
+    try {
+      const all = JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}"), cutoff = Date.now() - DRAFT_DAYS * 864e5;
+      return Object.fromEntries(Object.entries(all).filter(([, item]) => item && Date.parse(item.savedAt) > cutoff));
+    } catch { return {}; }
+  }
+  function writeDrafts(all) { try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch {} }
+  function saveDraft(open = true) {
+    const form = state.form;
+    if (!form?.key || form.done || form.saving) return;
+    // A form opened and left untouched is not worth bringing back.
+    if (JSON.stringify(form.draft) === form.initial) return dropDraft(form.key);
+    const all = readDrafts();
+    all[form.key] = { mode: form.mode, order: form.order || null, draft: form.draft, applied: [...form.applied], open, savedAt: new Date().toISOString() };
+    writeDrafts(all);
+  }
+  function dropDraft(key = draftKey()) { const all = readDrafts(); if (key in all) { delete all[key]; writeDrafts(all); } }
+  const currentDraft = () => readDrafts()[draftKey()] || null;
+  async function resumeDraft() {
+    const saved = currentDraft(); if (!saved) return;
+    try { await loadCatalog(); } catch (error) { if (error.status !== 401) message(`تعذر فتح الفورم: ${error.message}`, "error"); return; }
+    state.form = { mode: saved.mode, order: saved.order || undefined, draft: saved.draft, search: "", applied: new Set(saved.applied || []), error: "", key: draftKey(), initial: "" };
+    message(saved.mode === "edit" ? `رجعتلك تعديل ${saved.order?.id || "الطلب"} اللي ما اتحفظش.` : "رجعتلك بيانات الطلب اللي ما اتحفظش.", "ok"); render();
+  }
+  let draftTimer = 0;
+  const saveDraftSoon = () => { clearTimeout(draftTimer); draftTimer = setTimeout(() => saveDraft(), 400); };
+  for (const type of ["input", "change", "click"]) document.addEventListener(type, () => { if (state.form && !state.form.done) saveDraftSoon(); });
+  window.addEventListener("pagehide", () => saveDraft());
+
   async function restoreSession() {
     if (!state.token) return showLogin();
     try { state.user = (await api("/api/session")).user; showContext(); }
@@ -122,7 +156,7 @@
     state.messages = Array.isArray(conversation.messages) ? conversation.messages : [];
     if (state.form && !changed) refreshSuggestions();
     if (!state.phone) $("manual-hint").textContent = rawPhone ? "رقم جهة الاتصال ليس رقم موبايل مصري. اكتب رقم العميل يدويًا." : "جهة الاتصال بدون رقم هاتف. اكتب رقم العميل يدويًا.";
-    if (changed && state.user) { state.form = null; showContext(); }
+    if (changed && state.user) { saveDraft(); state.form = null; showContext(); }
   });
   // Chatwood sends the conversation (with the messages on screen) only when asked; ask again while the form is open so
   // new customer messages turn into suggestions.
@@ -154,6 +188,7 @@
       if (silent) { if (!state.form) render(); return; }
       message(state.data.storeEnabled && !state.data.storeAvailable ? "تعذر الوصول إلى المتجر الآن؛ تظهر طلبات السيستم فقط، وطلبات الموقع غير المعتمدة قد تكون ناقصة." : "", state.data.storeEnabled && !state.data.storeAvailable ? "warning" : "");
       render();
+      if (!state.form && currentDraft()?.open) resumeDraft();
     } catch (error) {
       if (error.status === 401 || silent) return;
       message("");
@@ -201,6 +236,14 @@
   // Opens the System's quick order tied to this conversation. The link carries only a short-lived token the System
   // issued after the Store verified the conversation (no raw ids), so the order is linked automatically.
   function newOrderLink() {
+    const saved = currentDraft();
+    if (saved) {
+      const books = saved.draft?.lines?.length || 0, title = saved.mode === "edit" ? `تعديل ${saved.order?.id || ""} ما اتحفظش` : "طلب ما اتحفظش";
+      return el("div", { class: "card state small" }, el("strong", { text: `📝 ${title}` }),
+        el("div", { class: "muted", text: `${saved.draft?.customerName || "بدون اسم"} · ${books} ${books === 1 ? "كتاب" : "كتب"} · ${dateLabel(saved.savedAt)}` }),
+        el("div", { class: "actions" }, el("button", { type: "button", class: "btn", onclick: resumeDraft, text: "كمّل الطلب" }),
+          el("button", { type: "button", class: "btn ghost danger", onclick: () => { if (confirm("تمسح البيانات اللي اتكتبت للطلب ده؟")) { dropDraft(); render(); } }, text: "امسح" })));
+    }
     const context = state.data?.orderContext;
     if (!state.conversationId || !context) return "";
     if (!context.ok) return el("div", { class: "card state small" }, el("strong", { text: "مش هينفع تعمل طلب مربوط بالمحادثة دي دلوقتي" }), el("div", { class: "muted", text: context.message || "تعذر التحقق من المحادثة." }));
@@ -315,8 +358,8 @@
 
   async function openCreateForm() {
     try { await loadCatalog(); } catch (error) { if (error.status !== 401) message(error.status === 403 ? "ليس لديك صلاحية إنشاء الطلبات." : `تعذر فتح الفورم: ${error.message}`, "error"); return; }
-    state.form = { mode: "create", draft: emptyDraft(), search: "", applied: new Set(), error: "" };
-    message(""); render();
+    state.form = { mode: "create", draft: emptyDraft(), search: "", applied: new Set(), error: "", key: draftKey() };
+    message(""); render(); state.form.initial = JSON.stringify(state.form.draft);
   }
 
   async function openEditForm(orderId) {
@@ -325,11 +368,11 @@
     catch (error) { if (error.status !== 401) message(error.status === 403 ? "ليس لديك صلاحية تعديل الطلبات." : `تعذر فتح الطلب: ${error.message}`, "error"); return; }
     if (result.editBlock) return message(`${orderId}: ${result.editBlock}`, "warning");
     const order = result.order;
-    state.form = { mode: "edit", order, search: "", applied: new Set(), error: "", draft: { ...emptyDraft(), phone: order.phone, customerName: order.customerName, alternativePhone: order.alternativePhone, governorate: order.governorate, city: EgyptCities.canonicalCity(order.governorate, order.city) || order.city || "",
+    state.form = { mode: "edit", order, search: "", applied: new Set(), error: "", key: draftKey(), draft: { ...emptyDraft(), phone: order.phone, customerName: order.customerName, alternativePhone: order.alternativePhone, governorate: order.governorate, city: EgyptCities.canonicalCity(order.governorate, order.city) || order.city || "",
       address: order.address, addressMark: order.addressMark, shippingCompany: order.shippingCompany || state.catalog.defaultShippingCompany, shippingCost: order.shippingCost, notes: order.notes, orderDiscount: order.orderDiscount, orderDiscountType: order.orderDiscountType,
       paymentPlan: order.paymentPlan, paidAmount: order.paidAmount, lines: order.lines.map(line => ({ ...line })) } };
     state.form.draft.shippingManual = Math.abs(order.shippingCost - autoShipping(state.form.draft)) > 0.009;
-    message(""); render();
+    message(""); render(); state.form.initial = JSON.stringify(state.form.draft);
   }
 
   function goods(lines, draft) { return OrderFinance.calculateOrder(lines.map(line => ({ ...line, discountScope: "unit" })), { shippingCost: 0, orderDiscount: draft.orderDiscount, orderDiscountType: draft.orderDiscountType }).goods; }
@@ -685,6 +728,7 @@
         order = (await api(`/api/orders/${encodeURIComponent(current.id)}/quick`, { method: "PATCH", body: JSON.stringify(body) })).order;
       }
       form.done = { order, totals: totals(draft) };
+      dropDraft(form.key);
       renderDone();
     } catch (error) {
       if (error.status === 401) return;
@@ -733,7 +777,7 @@
         el("button", { type: "button", class: "btn ghost", onclick: closeForm, text: "رجوع للطلبات" }))));
   }
 
-  function closeForm() { state.form = null; load(); }
+  function closeForm() { if (state.form?.done) dropDraft(state.form.key); else saveDraft(false); state.form = null; load(); }
 
   // A further payment on the order, recorded like the first one (payment and cash row) by the System.
   async function startPayment(order, actions) {
