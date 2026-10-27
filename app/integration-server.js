@@ -294,6 +294,7 @@ function createIntegrationServer(deps) {
     const delivered = order.workflowStage === "delivered" || order.status === "تم التسليم";
     const website = Boolean(order.websiteOrderNumber || order.source === "website");
     const editBlock = cancelled ? "الطلب ملغي." : delivered ? "الطلب اتسلّم للعميل؛ أي تغيير بيتعمل كمرتجع." : shipment ? "الطرد اتسلّم لشركة الشحن؛ مينفعش يتعدل."
+      : order.shippingExport || order.carrierExportedAt ? "الطلب اتصدّر لشركة الشحن وممكن يكون الطرد مع البريد؛ تعديله من السيستم بس بعد ما تتأكد إن الطرد لسه عندنا."
       : order.source !== "whatsapp" && !website ? "الطلب ده اتسجّل يدويًا؛ عدّله من السيستم." : "";
     const paid = (db.orderPayments || []).filter(item => item.orderId === order.id && item.status !== "reversed" && item.confirmed !== false).reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const cancelBlock = cancelled ? "الطلب ملغي بالفعل." : delivered || shipment ? "الإلغاء بيتعمل كمرتجع." : order.saleId || paid > 0 ? "الطلب فيه فاتورة أو دفعة؛ الإلغاء مع تسوية الفلوس من السيستم." : "";

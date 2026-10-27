@@ -4585,13 +4585,37 @@ function orderCancelBlockReason(order) {
   return "الطرد مع شركة الشحن؛ الإلغاء بيتعمل كمرتجع لما يرجع.";
 }
 
-async function editQuickOrder(id) {
+// An order exported to the carrier may already be with Egypt Post before its tracking code arrives; sending it back to
+// packing then packs and ships it twice (ORD-0481, 2026-10-27). It goes back only when the employee confirms the parcel
+// is still here and says why; the server enforces the same.
+function orderExportedToCarrier(order){return Boolean(order?.shippingExport||order?.carrierExportedAt);}
+
+function openCarrierExportOverride(id,kind){
+  const order=getOnlineOrder(id);if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
+  const exportedAt=order.shippingExport?.exportedAt||order.carrierExportedAt;
+  openModal(`${order.id} اتصدّر لشركة الشحن`,"تأكيد قبل الرجوع للتغليف",`<form id="carrier-export-override-form" data-id="${esc(order.id)}" data-kind="${kind}">
+    <div class="notice danger"><strong>ممكن يكون الطرد ده اتسلّم للبريد.</strong><br><span>اتصدّر لشركة الشحن ${esc(dateTimeLabel(exportedAt))}. لو رجع للتغليف وهو مع البريد، هيتغلّف ويتشحن مرتين. اسأل عن الطرد الأول.</span></div>
+    <label class="check-row"><input type="checkbox" name="parcelNotWithCarrier" required> الطرد لسه عندنا في المكتبة: ما اترفعش على موقع البريد وما اتسلّمش للمندوب</label>
+    <div class="form-field full"><label>السبب</label><textarea name="exportOverrideReason" minlength="5" required placeholder="مثال: العميل غيّر كتاب قبل ما المندوب ييجي"></textarea></div>
+    <small>${kind==="edit"?`هيرجع «جاهز للتغليف»${order.saleId?` وفاتورته ${esc(order.saleId)} هتتلغي`:""}، وبعد التعديل والتغليف لازم يتصدّر تاني.`:"هيرجع لقائمة التغليف، وبعدها لازم يتصدّر تاني."} لو كان اترفع على موقع البريد عدّله هناك.</small>
+    <div class="form-actions"><button class="btn danger" type="submit">${kind==="edit"?"رجّعه للتغليف وافتح التعديل":"رجّعه للتغليف"}</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+  </form>`);
+}
+
+function reopenOrderPreparation(id,exportOverride,button){
+  if(button)button.disabled=true;
+  return orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/prepare/reopen`,{body:exportOverride||{}}).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast(`عاد الطلب إلى قائمة التغليف. سجّل الوزن وصدّره مجددًا بعد الانتهاء.${exportOverride?" عدّل بياناته على موقع البريد لو كان اترفع هناك.":""}`);}).catch(error=>{if(button)button.disabled=false;toast(error.message,"error");});
+}
+
+async function editQuickOrder(id,exportOverride=null) {
   let order=getOnlineOrder(id);if(!order)return;
   const blocked=orderEditBlockReason(order);
   if(blocked)return toast(blocked,"error");
   if(order.saleId||order.preparedAt){
-    if(!confirm(`الطلب ${order.id} هيرجع «جاهز للتغليف» وهتتفتح شاشة تعديله.${order.saleId?`\nالفاتورة ${order.saleId} هتتلغي، وفاتورة جديدة هتطلع لما تخلّص التغليف.`:""}${order.shippingExport?"\nالطلب اتصدّر لشركة الشحن قبل كده؛ هتصدّره تاني بعد التغليف.":""}\nالكتب هتفضل محجوزة له. متأكد؟`))return;
-    try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/reopen-for-edit`,{body:{confirm:true,operationKey:`reopen-edit-${order.id}-${order.saleId||order.preparedAt}`},reload:"background"});}
+    if(orderExportedToCarrier(order)&&!exportOverride)return openCarrierExportOverride(order.id,"edit");
+    // The export dialog already asked; it says the order goes back to packing.
+    if(!exportOverride&&!confirm(`الطلب ${order.id} هيرجع «جاهز للتغليف» وهتتفتح شاشة تعديله.${order.saleId?`\nالفاتورة ${order.saleId} هتتلغي، وفاتورة جديدة هتطلع لما تخلّص التغليف.`:""}\nالكتب هتفضل محجوزة له. متأكد؟`))return;
+    try{await orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/reopen-for-edit`,{body:{confirm:true,operationKey:`reopen-edit-${order.id}-${order.saleId||order.preparedAt}`,...(exportOverride||{})},reload:"background"});}
     catch(error){return toast(error.message,"error");}
     order=getOnlineOrder(id);if(!order)return;
     toast(`الطلب ${order.id} رجع «جاهز للتغليف»${order.reopenedForEdit?.at(-1)?.previousSaleId?` واتلغت الفاتورة ${order.reopenedForEdit.at(-1).previousSaleId}`:""}. عدّله واحفظ.`);
@@ -9340,11 +9364,8 @@ root.addEventListener("click", async event => {
     const order=getOnlineOrder(target.dataset.id);
     if(!order)return toast("الطلب غير موجود. حدّث القائمة وحاول مرة أخرى.","error");
     if(!canAction("order.prepare"))return toast("ليس لديك صلاحية إعادة الطلب للتغليف.","error");
-    const warning=order.shippingExport?"سبق تصدير هذا الطلب لشركة الشحن. بعد إعادة التغليف يجب تحديثه هناك وتصدير بياناته مجددًا. هل تريد المتابعة؟":"سيعود الطلب إلى قائمة التغليف وتُلغى علامة تأكيد الكتب والوزن المسجل. هل تريد المتابعة؟";
-    if(confirm(warning)){
-      target.disabled=true;
-      orderWorkflowRequest(`/api/orders/${encodeURIComponent(order.id)}/prepare/reopen`).then(()=>{onlineOrdersMode="preparation";renderOnlineOrders();toast("عاد الطلب إلى قائمة التغليف. سجّل الوزن وصدّره مجددًا بعد الانتهاء.");}).catch(error=>{target.disabled=false;toast(error.message,"error");});
-    }
+    if(orderExportedToCarrier(order))return openCarrierExportOverride(order.id,"prepare");
+    if(confirm("سيعود الطلب إلى قائمة التغليف وتُلغى علامة تأكيد الكتب والوزن المسجل. هل تريد المتابعة؟"))reopenOrderPreparation(order.id,null,target);
   }
   if (action === "quick-shipping-confirm") {
     const order=shippingLookupOrder(quickShippingOrderId),trackingNumber=document.getElementById("quick-shipping-tracking")?.value||"";
@@ -10636,6 +10657,12 @@ modalBody.addEventListener("change", event => {
 modalBody.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  if(form.id==="carrier-export-override-form"){
+    const exportOverride={parcelNotWithCarrier:form.elements.parcelNotWithCarrier.checked,exportOverrideReason:form.elements.exportOverrideReason.value.trim()};
+    if(!exportOverride.parcelNotWithCarrier||exportOverride.exportOverrideReason.length<5)return toast("علّم إن الطرد لسه عندنا واكتب السبب.","error");
+    closeModal();
+    return form.dataset.kind==="edit"?editQuickOrder(form.dataset.id,exportOverride):reopenOrderPreparation(form.dataset.id,exportOverride);
+  }
   if(form.id==="postal-statement-form"||form.id==="postal-payment-form"){
     const button=form.querySelector('button[type="submit"]'),payload=Object.fromEntries(new FormData(form));
     if(form.id==="postal-payment-form")payload.operationKey=form.dataset.operationKey;

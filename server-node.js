@@ -872,6 +872,23 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
 const PREPARATION_SHORTAGE_REASONS=["صنف غير متوفر","الكمية غير كافية"];
 const PRE_HANDOVER_SHIPMENT_STATUSES=new Set(["","shipped","created","pending","label_created"]);
 
+// Once its carrier file is exported the parcel may already be with the carrier: the tracking code only arrives later
+// with the Packages file. Reopening such an order (or taking its copies) put ORD-0481 back on the packing list and it
+// was packed and shipped a second time (2026-10-27). So both wait until the employee confirms, with a reason, that the
+// parcel is still here. carrierExportedAt survives a weight correction (which clears shippingExport for a new export).
+function orderExportedToCarrier(order) {
+  return Boolean(order?.shippingExport||order?.carrierExportedAt);
+}
+
+function carrierExportBlock(order,payload) {
+  if(!orderExportedToCarrier(order))return null;
+  const reason=String(payload?.exportOverrideReason||"").trim().slice(0,300);
+  if(payload?.parcelNotWithCarrier===true&&reason.length>=5)return {reason};
+  const exported=order.shippingExport||{};
+  return {error:{ok:false,code:"ORDER_EXPORTED_TO_CARRIER",exportedAt:exported.exportedAt||order.carrierExportedAt,batchId:exported.batchId||"",
+    message:`الطلب ${order.id} اتصدّر لشركة الشحن، وممكن يكون الطرد اتسلّم للبريد. مينفعش يرجع للتغليف إلا لو اتأكدت إن الطرد لسه عندنا وكتبت السبب.`}};
+}
+
 function activeOrderShipment(db,order) {
   return (db.shipments||[]).find(item=>!item.deletedAt&&!isCancelledShipment(item)&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
 }
@@ -3707,7 +3724,7 @@ const server = http.createServer(async (req, res) => {
       if(target.workflowStage!=="awaiting_stock")return send(res,409,{ok:false,code:"TARGET_NOT_PREORDER",message:"الطلب ده مش حجز مسبق مستني كتب."});
       const source=(db.onlineOrders||[]).find(item=>item.id===String(payload.sourceOrderId||"")&&!item.deletedAt);
       if(!source||source.id===target.id)return send(res,404,{ok:false,code:"SOURCE_NOT_FOUND",message:"اختار الطلب اللي هتاخد منه النسخة."});
-      if(source.saleId||source.preparedAt||!["awaiting_preparation","preparing","needs_review"].includes(source.workflowStage))return send(res,409,{ok:false,code:"SOURCE_NOT_TAKEABLE",message:`الطلب ${source.id} اتغلّف أو مش محجوز له كتب دلوقتي.`});
+      if(source.saleId||source.preparedAt||orderExportedToCarrier(source)||!["awaiting_preparation","preparing","needs_review"].includes(source.workflowStage))return send(res,409,{ok:false,code:"SOURCE_NOT_TAKEABLE",message:`الطلب ${source.id} اتغلّف أو مش محجوز له كتب دلوقتي.`});
       const bookId=String(payload.bookId||""),book=(db.books||[]).find(item=>item.id===bookId&&!item.deletedAt);
       const held=aggregateOrderLines(activeReservation(source)?.lines||[]).get(bookId)||0;
       const needed=aggregateOrderLines(target.lines||[]).get(bookId)||0;
@@ -4160,6 +4177,7 @@ const server = http.createServer(async (req, res) => {
       if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب اتسلّم؛ التعديل بيبقى مرتجع."});
       if(order.shipmentId||activeOrderShipment(db,order))return send(res,409,{ok:false,code:"ORDER_SHIPPED",message:"الطلب اتعمل له شحنة؛ ألغِ الشحنة الأول أو استخدم المرتجعات."});
       if(!order.saleId&&!order.preparedAt)return send(res,200,{ok:true,order,existing:true,revision:String(revision)});
+      const exportCheck=carrierExportBlock(order,payload);if(exportCheck?.error)return send(res,409,exportCheck.error);
       if(payload.confirm!==true)return send(res,409,{ok:false,code:"CONFIRMATION_REQUIRED",message:"أكّد إن الطلب هيرجع للتجهيز وفاتورته هتتلغي."});
       const now=new Date().toISOString(),steps=[];
       const sale=order.saleId&&(db.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
@@ -4169,10 +4187,11 @@ const server = http.createServer(async (req, res) => {
       if(sale)Object.assign(sale,{voidedForEditOfOrderId:order.id,onlineOrderId:"",operationKey:`${sale.operationKey||`order-invoice:${order.id}`}:voided-for-edit:${now}`,updatedAt:now});
       for(const payment of db.orderPayments||[])if(payment.orderId===order.id&&payment.invoiceId){payment.invoiceId="";payment.updatedAt=now;}
       const previousSaleId=order.saleId||"";
-      Object.assign(order,{saleId:"",workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      if(exportCheck)steps.push(`كان متصدّر لشركة الشحن (${order.shippingExport?.batchId||"تصدير سابق"}) · الطرد لسه عندنا: ${exportCheck.reason}`);
+      Object.assign(order,{saleId:"",workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,carrierExportedAt:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
       try{reserveOrderInventory(db,order,user,order.lines||[]);steps.push("حجز الكتب تاني للطلب");}
       catch(error){return send(res,error.status||409,{ok:false,code:error.code||"RESERVATION_FAILED",message:error.message});}
-      order.reopenedForEdit=[...(order.reopenedForEdit||[]),{at:now,by:user.name||user.username,username:user.username,operationKey,previousSaleId}];
+      order.reopenedForEdit=[...(order.reopenedForEdit||[]),{at:now,by:user.name||user.username,username:user.username,operationKey,previousSaleId,...(exportCheck?{carrierExportOverride:exportCheck.reason}:{})}];
       appendOrderAudit(db,user,order,"إعادة فتح الطلب للتعديل",steps.join(" · ")||"رجوع للتجهيز");
       try{writeDb(db,{expectedRevision:revision,operationType:"ORDER_REOPENED_FOR_EDIT",performedBy:user.username});}
       catch(error){if(error.code==="DATABASE_WRITE_BLOCKED_STALE_REVISION")return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت؛ حاول تاني."});throw error;}
@@ -4186,8 +4205,9 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});
       if(!order.preparedAt&&!["awaiting_packing","awaiting_shipping"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب لم يكتمل تجهيزه بعد."});
-      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
-      appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز","إعادة مراجعة محتويات الطرد");writeDb(db);
+      const exportCheck=carrierExportBlock(order,await readJsonBody(req,16*1024));if(exportCheck?.error)return send(res,409,exportCheck.error);
+      const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,carrierExportedAt:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+      appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز",`إعادة مراجعة محتويات الطرد${exportCheck?` · كان متصدّر لشركة الشحن · الطرد لسه عندنا: ${exportCheck.reason}`:""}`);writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()});
     }
 
@@ -4226,7 +4246,7 @@ const server = http.createServer(async (req, res) => {
         if(invalid.length)return send(res,409,{ok:false,code:"ORDERS_NOT_EXPORTABLE",message:`هذه الطلبات غير جاهزة للتصدير: ${invalid.join("، ")}`});
         const now=new Date().toISOString(),batchId=`SHIP-EXPORT-${now.replace(/\D/g,"").slice(0,14)}-${crypto.randomUUID().slice(0,8)}`;
         const rows=orders.map(order=>ShippingBatchXlsx.orderToUploadRow({...order,alternativePhone:order.alternativePhone||(db.customers||[]).find(item=>item.id===order.customerId&&!item.deletedAt)?.alternativePhone||""},{books:db.books||[],merchantName:payload.merchantName||"مكتبة دوت كوم",warehouseName:payload.warehouseName||"المخزن الرئيسي"}));
-        for(const order of orders){order.shippingExport={batchId,exportedAt:now,exportedBy:user.name||user.username,exportedByUsername:user.username};order.updatedAt=now;appendOrderAudit(db,user,order,"تصدير الطلب لشركة الشحن",batchId);}
+        for(const order of orders){order.shippingExport={batchId,exportedAt:now,exportedBy:user.name||user.username,exportedByUsername:user.username};order.carrierExportedAt=order.carrierExportedAt||now;order.updatedAt=now;appendOrderAudit(db,user,order,"تصدير الطلب لشركة الشحن",batchId);}
         writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SHIPPING_BATCH_EXPORTED",performedBy:user.username});
         return send(res,200,ShippingBatchXlsx.workbookBuffer(rows),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",{"Content-Disposition":`attachment; filename="shipping-batch-${now.slice(0,10)}.xlsx"`,"X-Shipping-Batch-Id":batchId,"X-DB-Revision":dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"SHIPPING_EXPORT_FAILED",message:error.message});}
@@ -4276,7 +4296,7 @@ const server = http.createServer(async (req, res) => {
         const now=new Date().toISOString(),tracking=shipment.trackingNumber||shipment.tracking||"";
         Object.assign(shipment,{status:"ملغاة",currentStatus:"ملغاة",normalizedStatus:"cancelled",shippingStatus:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,carrierCancellationConfirmed:true,cancellationResolution:resolution,postalChargeStatus,postalChargeReason:postalChargeStatus==="not_charged"?postalChargeReason:"",postalChargeRecordedAt:postalChargeStatus?now:null,postalChargeRecordedBy:postalChargeStatus?(user.name||user.username):"",postalChargeRecordedByUsername:postalChargeStatus?user.username:"",updatedAt:now,updated:now});
         order.previousTrackingNumbers=[...(order.previousTrackingNumbers||[]),{trackingNumber:tracking,shipmentId:shipment.id,cancelledAt:now,reason}];
-        if(resolution==="revise_shipment")Object.assign(order,{shipmentId:null,tracking:"",trackingNumber:"",status:"تم التجهيز",workflowStage:"awaiting_shipping",preparedAt:order.preparedAt||now,shippedAt:null,shippedBy:null,shippingExport:null,updatedAt:now});
+        if(resolution==="revise_shipment")Object.assign(order,{shipmentId:null,tracking:"",trackingNumber:"",status:"تم التجهيز",workflowStage:"awaiting_shipping",preparedAt:order.preparedAt||now,shippedAt:null,shippedBy:null,shippingExport:null,carrierExportedAt:null,updatedAt:now});
         else Object.assign(order,{status:"ملغي",workflowStage:"cancelled",cancelledAt:now,cancelledBy:user.name||user.username,cancelledByUsername:user.username,cancellationReason:reason,updatedAt:now});
         if(sale&&resolution==="revise_shipment"){sale.shipmentId=null;sale.updatedAt=now;}
         appendOrderAudit(db,user,order,resolution==="revise_shipment"?"إلغاء الشحنة لإعادة التعديل":"إلغاء الشحنة والطلب",`${tracking} · ${reason}`);
