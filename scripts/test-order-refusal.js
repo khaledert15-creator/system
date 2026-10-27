@@ -19,7 +19,7 @@ function fixture({deposit=100}={}){
     cashAccounts:[{id:"CA1",name:"الخزنة",active:true}]
   };
 }
-const refuse=(db,payload)=>Refusals.applyRefusal(db,"O1",{operationKey:`k${++serial}`,...payload},actor);
+const refuse=(db,payload)=>Refusals.applyRefusal(db,"O1",{operationKey:`k${++serial}`,carrierCharged:"yes",...payload},actor);
 const ledgerBalance=db=>{const rows=Refunds.customerLedger(db,"C1");return rows.length?rows[rows.length-1].balance:0;};
 
 pass("Preview shows the deposit and the cash-on-delivery amount",()=>{
@@ -67,8 +67,8 @@ pass("Order without deposit -> cash-on-delivery debt removed, customer at zero",
 });
 
 pass("Same operation key twice -> applied once",()=>{
-  const db=fixture();Refusals.applyRefusal(db,"O1",{outcome:"refund_deposit",cashAccountId:"CA1",operationKey:"same"},actor);
-  const second=Refusals.applyRefusal(db,"O1",{outcome:"refund_deposit",cashAccountId:"CA1",operationKey:"same"},actor);
+  const db=fixture();Refusals.applyRefusal(db,"O1",{outcome:"refund_deposit",cashAccountId:"CA1",carrierCharged:"yes",operationKey:"same"},actor);
+  const second=Refusals.applyRefusal(db,"O1",{outcome:"refund_deposit",cashAccountId:"CA1",carrierCharged:"yes",operationKey:"same"},actor);
   assert.equal(second.existing,true);assert.equal(db.cash.length,1);assert.equal(db.books[0].stock,7);
 });
 
@@ -165,6 +165,57 @@ pass("Tracking leaves a refused parcel alone: finished, order not flipped back",
   const order=db.onlineOrders[0];context.syncLinkedOrder({onlineOrders:[order]},{onlineOrderId:order.id,normalizedStatus:"delivered"});
   assert.equal(order.status,"مرتجع");assert.equal(order.workflowStage,"returned");
   assert(source.includes("!shipment.refusedAt &&"),"automatic tracking must skip refused parcels");
+});
+
+pass("A refusal must say whether the carrier charged the parcel",()=>{
+  const db=fixture(),before=JSON.stringify(db);
+  assert.throws(()=>Refusals.applyRefusal(db,"O1",{operationKey:"x1",outcome:"keep_deposit"},actor),/شركة الشحن/);
+  assert.equal(JSON.stringify(db),before);
+});
+
+pass("Egypt Post: waived parcel and return fee land on the shipment for the monthly statement",()=>{
+  const db=fixture();Object.assign(db.shipments[0],{carrier:"البريد المصري",postalBillingManaged:true,postalChargeStatus:"charged",shippedAt:"2026-10-20T10:00:00Z",cost:60});
+  refuse(db,{outcome:"keep_deposit",carrierCharged:"no",carrierReturnFee:15});
+  const sh=db.shipments[0];
+  assert.equal(sh.postalChargeStatus,"not_charged");assert.equal(sh.carrierReturnFee,15);assert.match(sh.carrierReturnFeeMonth,/^\d{4}-\d{2}$/);
+  assert.equal(db.onlineOrders[0].refusal.carrierCharged,false);assert.equal(db.onlineOrders[0].refusal.carrierReturnFee,15);
+});
+
+pass("Egypt Post: a closed month's statement cannot be changed afterwards",()=>{
+  const db=fixture();Object.assign(db.shipments[0],{carrier:"البريد المصري",postalBillingManaged:true,postalChargeStatus:"charged",shippedAt:"2026-09-20T10:00:00Z"});
+  db.postalStatements=[{id:"POSTAL-2026-09",month:"2026-09"}];
+  const before=JSON.stringify(db);
+  assert.throws(()=>refuse(db,{outcome:"keep_deposit",carrierCharged:"no"}),/كشف البريد لشهر 2026-09 معتمد/);
+  assert.equal(JSON.stringify(db),before,"a refused answer changes nothing");
+  refuse(db,{outcome:"keep_deposit",carrierCharged:"yes"});assert.equal(db.shipments[0].postalChargeStatus,"charged");
+});
+
+pass("Other carriers: the settlement deduction follows the answer and the return fee",()=>{
+  const db=fixture();Object.assign(db.shipments[0],{carrier:"بوسطة",carrierShippingCostExpected:45});
+  refuse(db,{outcome:"keep_deposit",carrierCharged:"yes",carrierReturnFee:20});
+  assert.equal(db.shipments[0].carrierShippingCostExpected,65);
+  Refusals.updateCarrierCharges(db,"O1",{carrierCharged:"no",carrierReturnFee:0},actor);
+  assert.equal(db.shipments[0].carrierShippingCostExpected,0);assert.equal(db.shipments[0].carrierBaseCost,45);
+  Refusals.updateCarrierCharges(db,"O1",{carrierCharged:"yes",carrierReturnFee:10},actor);
+  assert.equal(db.shipments[0].carrierShippingCostExpected,55);
+});
+
+pass("Carrier charges are corrected later only on refused orders",()=>{
+  const db=fixture();
+  assert.throws(()=>Refusals.updateCarrierCharges(db,"O1",{carrierCharged:"no"},actor),/رفض استلام/);
+});
+
+pass("The monthly Egypt Post summary includes return fees charged that month",()=>{
+  const vm=require("vm"),source=require("fs").readFileSync(require("path").join(__dirname,"../server-node.js"),"utf8");
+  const fn=name=>{const start=source.indexOf(`function ${name}(`);return source.slice(start,source.indexOf("\n}\n",start)+2);};
+  const context={PostalShipping:require("../app/postal-shipping.js")};vm.createContext(context);
+  vm.runInContext([fn("isPostalCarrier"),fn("postalMonthSummary")].join("\n"),context);
+  const db={shipments:[
+    {id:"S1",carrier:"البريد المصري",shippedAt:"2026-10-02",postalChargeStatus:"charged",cost:60},
+    {id:"S2",carrier:"البريد المصري",shippedAt:"2026-09-28",postalChargeStatus:"not_charged",cost:60,carrierReturnFee:15,carrierReturnFeeMonth:"2026-10"}]};
+  const summary=context.postalMonthSummary(db,"2026-10");
+  assert.equal(summary.expectedCost,75);assert.equal(summary.returnFeesTotal,15);assert.equal(summary.expectedCount,1);
+  assert.equal(context.postalMonthSummary(db,"2026-09").expectedCost,0);
 });
 
 console.log("All order refusal tests passed.");

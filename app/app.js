@@ -4635,9 +4635,10 @@ function canCancelOrderDirectly(order) {
   return !shipment||PRE_HANDOVER_SHIPMENT_STATUSES.includes(String(shipment.normalizedStatus||""));
 }
 
-async function cancelOnlineOrder(id) {
+// `courierNotPickedUp`: the employee confirmed in «الطلب ما اتسلمش» that the parcel never left, even if tracking moved.
+async function cancelOnlineOrder(id,{courierNotPickedUp=false}={}) {
   const order=getOnlineOrder(id);if(!order)return;
-  if(!canCancelOrderDirectly(order))return toast("الطلب لدى شركة الشحن أو مكتمل؛ استخدم المرتجعات بدل الإلغاء.","error");
+  if(!canCancelOrderDirectly(order)&&!(courierNotPickedUp&&orderCanBeRefused(order)))return toast("الطلب لدى شركة الشحن أو مكتمل؛ استخدم المرتجعات بدل الإلغاء.","error");
   try{
     const {financial}=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancellation/preview`,{method:"GET",reload:false});
     const shipment=activeOrderShipment(order),sale=order.saleId&&(data.sales||[]).find(item=>item.id===order.saleId&&item.status!=="ملغاة");
@@ -4650,7 +4651,8 @@ async function cancelOnlineOrder(id) {
       order.inventoryReservation?.status==="active"?"تحرير الكميات المحجوزة":"",
       "تحويل الطلب إلى «ملغي»"
     ].filter(Boolean);
-    openModal(`إلغاء الطلب ${order.id}`,"إلغاء بخطوة واحدة",`<form id="order-cancel-complete-form" data-id="${esc(order.id)}" data-outstanding="${financial.outstanding}">
+    openModal(`إلغاء الطلب ${order.id}`,"إلغاء بخطوة واحدة",`<form id="order-cancel-complete-form" data-id="${esc(order.id)}" data-outstanding="${financial.outstanding}" data-courier-not-picked-up="${courierNotPickedUp?"1":""}">
+      ${courierNotPickedUp?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>الطرد لسه عندنا والمندوب ما استلمهوش</strong><span>ده إلغاء وليس رفض استلام: الشحنة بتتلغي، ولازم تلغي البوليصة من نظام شركة الشحن.</span></div></div>`:""}
       <div class="finance-callout"><strong>${esc(order.customerName||financial.customerName||"")}</strong><span>${esc(order.id)}${sale?` · ${esc(sale.id)}`:""} · الإجمالي ${money(financial.total)} · المدفوع ${money(financial.paid)}</span></div>
       ${shipment?`<div class="alert-item warning"><div class="alert-badge">!</div><div><strong>هتشحن الطلب تاني بكود جديد؟ متلغيش الطلب</strong><span>إلغاء الطلب بيرجّع كتبه للرف، والسيستم بيديها على طول لطلبات الحجز المسبق المستنية. استخدم «إلغاء الشحنة وإصدار كود جديد»: الطلب والفاتورة وكتبه بيفضلوا زي ما هم، وتدخل الكود الجديد بس.</span>${reshipShipment(order)?`<button type="button" class="btn secondary compact" data-action="cancel-shipment-flow" data-id="${esc(shipment.id)}">إلغاء الشحنة وإصدار كود جديد</button>`:""}</div></div>`:""}
       <p class="muted">سيتم تنفيذ الآتي معًا، وإذا فشل أي جزء لن يتغير شيء:</p>
@@ -4662,7 +4664,7 @@ async function cancelOnlineOrder(id) {
         <div class="form-field"><label>يُرد من خزنة</label><select name="cashAccountId" required>${refundCashAccountOptions(defaultAccount)}</select></div>
         <p class="muted" id="cancel-credit-hint" hidden></p>`:""}
         ${shipment?`<label class="permission-check"><input type="checkbox" name="carrierCancelled" required><span><strong>تم إلغاء البوليصة لدى شركة الشحن</strong><small>${esc(shipment.carrier||shipment.company||"")} · ${esc(shipment.trackingNumber||shipment.tracking||"")}</small></span></label>`:""}
-        ${postal?`<div class="form-field"><label>تكلفة البريد للشحنة الملغاة</label><select name="postalChargeStatus"><option value="charged">البريد سيحتسبها</option><option value="not_charged">البريد لن يحتسبها</option></select></div>`:""}
+        ${postal?`<div class="form-field"><label>تكلفة البريد للشحنة الملغاة</label><select name="postalChargeStatus" required><option value="">اختار...</option><option value="charged">البريد سيحتسبها</option><option value="not_charged">البريد لن يحتسبها</option></select><small class="muted">${courierNotPickedUp?"لو المندوب ما استلمش الطرد، البريد غالبًا مش بيحسبه؛ اتأكد من الكشف.":"بتتحسب في كشف البريد الشهري."}</small></div>`:""}
       </div>
       <div class="form-actions"><button class="btn danger" type="submit">تأكيد الإلغاء</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
     </form>`);
@@ -4682,7 +4684,7 @@ async function submitOrderCancelComplete(form) {
   if(button){button.disabled=true;button.textContent="جارٍ الإلغاء...";}
   try{
     const reason=[values.reason,String(values.note||"").trim()].filter(Boolean).join(" — ");
-    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel-complete`,{reload:"background",body:{reason,refundAmount:values.refundAmount===undefined?undefined:Number(values.refundAmount),cashAccountId:values.cashAccountId||"",carrierCancelled:values.carrierCancelled==="on",postalChargeStatus:values.postalChargeStatus||"",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`cancel-${id}-${Date.now()}`)}});
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/cancel-complete`,{reload:"background",body:{reason,refundAmount:values.refundAmount===undefined?undefined:Number(values.refundAmount),cashAccountId:values.cashAccountId||"",carrierCancelled:values.carrierCancelled==="on",postalChargeStatus:values.postalChargeStatus||"",courierNotPickedUp:form.dataset.courierNotPickedUp==="1",operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`cancel-${id}-${Date.now()}`)}});
     closeModal();renderOnlineOrders();
     toast(result.existing?`الطلب ${id} ملغي بالفعل.`:`تم إلغاء الطلب ${id}${result.steps?.length?`: ${result.steps.join("، ")}`:""}.`);
   }catch(error){
@@ -4735,7 +4737,7 @@ async function openOrderRefusal(id) {
     if(!preview.canRefuse)return toast(preview.blocked,"error");
     const balance=Number(getCustomer(preview.customerId)?.balance||0);
     const fact=(label,value,note="")=>`<div class="refusal-fact"><span>${label}</span><strong>${value}</strong>${note?`<small>${note}</small>`:""}</div>`;
-    openModal(`رفض استلام الطلب ${preview.orderId}`,"المرتجعات",`<form id="order-refusal-form" class="refusal-dialog" data-id="${esc(preview.orderId)}" data-deposit="${preview.deposit}" data-cod="${preview.codRemaining}" data-balance="${balance}">
+    openModal(`رفض استلام الطلب ${preview.orderId}`,"المرتجعات",`<form id="order-refusal-form" class="refusal-dialog" data-id="${esc(preview.orderId)}" data-deposit="${preview.deposit}" data-cod="${preview.codRemaining}" data-balance="${balance}" data-carrier-cost="${preview.carrier?.expectedCost||0}" data-has-carrier="${preview.carrier?"1":""}">
       <div class="refusal-facts">
         ${fact("العميل",esc(preview.customerName),preview.trackingNumber?`بوليصة <span dir="ltr">${esc(preview.trackingNumber)}</span>`:"")}
         ${fact("الفاتورة",esc(documentDisplayName(preview.invoiceId,"sale")),`إجمالي ${money(preview.total)}`)}
@@ -4750,10 +4752,19 @@ async function openOrderRefusal(id) {
         <div class="refusal-options">${ORDER_REFUSAL_OUTCOMES.map(([value,label,hint,icon])=>`<label class="refusal-option"><input type="radio" name="outcome" value="${value}" required><span class="refusal-option-icon" aria-hidden="true">${icon}</span><span class="refusal-option-text"><strong>${label}</strong><small>${hint}</small></span></label>`).join("")}</div>
       </fieldset>
       <div class="refusal-details" hidden>
-        <div class="form-field" data-refusal-field="charge_shipping"><label for="refusal-shipping-charge">تكلفة الشحن اللي بلّغت بيها العميل (الإجمالي)</label><input id="refusal-shipping-charge" name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal" placeholder="مثال: ${money(Math.max(preview.deposit+50,preview.shippingFee*2))}"><small>لازم تكون أكبر من الديبوزت (${money(preview.deposit)}).</small></div>
+        <div class="form-field" data-refusal-field="charge_shipping"><label for="refusal-shipping-charge">تكلفة الشحن الكاملة اللي بلّغت بيها العميل</label><input id="refusal-shipping-charge" name="shippingCharge" type="number" min="0" step="0.01" inputmode="decimal" placeholder="مثال: ${money(Math.max(preview.deposit+50,preview.shippingFee*2))}"><small data-charge-hint>الديبوزت (${money(preview.deposit)}) بيتخصم منها لوحده.</small></div>
         <div class="form-field" data-refusal-field="refund_deposit"><label for="refusal-cash-account">يتصرف الديبوزت من خزنة</label><select id="refusal-cash-account" name="cashAccountId">${refundCashAccountOptions(preview.depositCashAccountId)}</select></div>
         <div class="form-field full"><label for="refusal-note">ملاحظة (اختياري)</label><input id="refusal-note" name="note" maxlength="200" placeholder="مثال: العميل رفض بسبب تأخير الشحنة"></div>
       </div>
+      ${preview.carrier?`<fieldset class="refusal-choice refusal-carrier">
+        <legend>شركة الشحن${preview.carrier.name?` (${esc(preview.carrier.name)})`:""} حسبت علينا الشحنة دي؟</legend>
+        <div class="refusal-carrier-options">
+          <label class="refusal-pill"><input type="radio" name="carrierCharged" value="yes" required><span>أيوه حسبتها${preview.carrier.expectedCost?` (${money(preview.carrier.expectedCost)})`:""}</span></label>
+          <label class="refusal-pill"><input type="radio" name="carrierCharged" value="no"><span>لأ، ما حسبتهاش</span></label>
+        </div>
+        <div class="form-field"><label for="refusal-return-fee">رسوم مرتجع زيادة من شركة الشحن (لو فيه)</label><input id="refusal-return-fee" name="carrierReturnFee" type="number" min="0" step="0.01" inputmode="decimal" value="0"></div>
+        <small class="muted">${preview.carrier.postal?"بتتحسب في كشف البريد الشهري. لو لسه مش متأكد، اختار «أيوه» وعدّلها من «تكلفة شركة الشحن» لما الكشف يوصل.":"بتتخصم في تسوية تحصيل شركة الشحن. وتقدر تعدّلها بعدين من «تكلفة شركة الشحن»."}</small>
+      </fieldset>`:""}
       <div class="refusal-result" id="order-refusal-result" aria-live="polite"></div>
       <div class="form-actions"><button class="btn danger" type="submit" disabled>اختار الحالة الأول</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
     </form>`);
@@ -4769,8 +4780,11 @@ function updateOrderRefusalForm(form) {
   form.querySelector(".refusal-details").hidden=!outcome;
   form.querySelectorAll("[data-refusal-field]").forEach(field=>{const active=field.dataset.refusalField===outcome&&!(outcome==="refund_deposit"&&deposit<=0);field.hidden=!active;field.querySelector("input,select").required=active;});
   const result=form.querySelector("#order-refusal-result"),button=form.querySelector('button[type="submit"]');
-  button.disabled=!plan.valid;
-  button.textContent=!outcome?"اختار الحالة الأول":plan.valid?"تأكيد رفض الاستلام":"اكتب تكلفة الشحن";
+  const carrierAnswer=form.dataset.hasCarrier?[...form.querySelectorAll('input[name="carrierCharged"]')].find(input=>input.checked)?.value||"":"yes";
+  const returnFee=Math.max(0,Number(form.elements.carrierReturnFee?.value||0));
+  const hint=form.querySelector("[data-charge-hint]");if(hint)hint.textContent=charge>deposit?`العميل هيحوّل ${money(charge-deposit)} (الديبوزت ${money(deposit)} بيتخصم لوحده).`:`لازم تكون أكبر من الديبوزت (${money(deposit)}).`;
+  button.disabled=!plan.valid||!carrierAnswer;
+  button.textContent=!outcome?"اختار الحالة الأول":!plan.valid?"اكتب تكلفة الشحن":!carrierAnswer?"جاوب سؤال شركة الشحن":"تأكيد رفض الاستلام";
   if(!outcome){result.hidden=true;return;}
   result.hidden=false;
   const after=balance-cod+plan.extraDue;
@@ -4779,6 +4793,7 @@ function updateOrderRefusalForm(form) {
     ${row("يتصرف للعميل من الخزنة",money(plan.refund),plan.refund?"out":"")}
     ${row("يتحسب تعويض شحن",money(plan.retained))}
     ${outcome==="charge_shipping"?row("يتسجل مديونية على العميل",plan.valid?money(plan.extraDue):"—",plan.extraDue?"due":""):""}
+    ${form.dataset.hasCarrier&&carrierAnswer?row("تكلفة على المكتبة لشركة الشحن",money((carrierAnswer==="yes"?Number(form.dataset.carrierCost||0):0)+returnFee),"out"):""}
     <div class="refusal-result-total"><span>رصيد العميل</span><strong><s>${esc(refusalBalanceLabel(balance))}</s> ← ${esc(refusalBalanceLabel(after))}</strong></div>`;
 }
 
@@ -4788,7 +4803,7 @@ async function submitOrderRefusal(form) {
   if(!refusalPlanPreview(values.outcome,Number(form.dataset.deposit||0),Number(values.shippingCharge||0)).valid)return toast("تكلفة الشحن لازم تكون أكبر من الديبوزت، وإلا اختار «بدون رد الديبوزت».","error");
   if(button){button.disabled=true;button.textContent="جارٍ التسجيل...";}
   try{
-    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",note:String(values.note||"").trim(),operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-${id}-${Date.now()}`)}});
+    const result=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal`,{body:{outcome:values.outcome,shippingCharge:Number(values.shippingCharge||0),cashAccountId:values.cashAccountId||"",note:String(values.note||"").trim(),carrierCharged:values.carrierCharged||"",carrierReturnFee:Number(values.carrierReturnFee||0),operationKey:form.dataset.operationKey||(form.dataset.operationKey=globalThis.crypto?.randomUUID?.()||`refusal-${id}-${Date.now()}`)}});
     closeModal();render();
     const refusal=result.refusal||{};
     toast(result.existing?`رفض استلام الطلب ${id} مسجل بالفعل.`:`تم تسجيل رفض استلام الطلب ${id} — ${refusal.outcomeLabel||""}${refusal.extraDue?` · مستحق على العميل ${money(refusal.extraDue)}`:""}.`);
@@ -4810,6 +4825,55 @@ document.addEventListener("submit", event => {
   if (event.target.id !== "order-refusal-form") return;
   event.preventDefault();
   submitOrderRefusal(event.target);
+});
+
+// One entry for an order that will not be delivered. Whether the courier collected the parcel decides the path:
+// still with us → cancel the order and its shipment; it left and came back → refused delivery.
+function openOrderNotDelivered(id) {
+  const order=getOnlineOrder(id);if(!order)return;
+  if(!orderCanBeRefused(order))return toast("الطلب ده مينفعش يتسجل «ما اتسلمش»: يا إما ملغي، يا إما متسجل له رفض أو مرتجع، يا إما ملوش شحنة.","error");
+  const shipment=activeOrderShipment(order);
+  openModal(`الطلب ${order.id} ما اتسلمش`,"المرتجعات",`<div class="not-delivered">
+    <div class="finance-callout"><strong>${esc(order.customerName||"")}</strong><span>${esc(order.id)}${shipment?.trackingNumber?` · بوليصة <span dir="ltr">${esc(shipment.trackingNumber)}</span>`:""}${shipment?.status?` · ${esc(shipment.status)}`:""}</span></div>
+    <h4>المندوب استلم الطرد من عندنا؟</h4>
+    <div class="not-delivered-options">
+      <button type="button" class="not-delivered-option" data-action="not-delivered-cancel" data-id="${esc(order.id)}"><strong>لأ، الطرد لسه عندنا</strong><small>العميل لغى قبل ما المندوب ياخده، حتى لو الكود اتعمل. الطلب والشحنة يتلغوا، والكتب ترجع المخزن.</small></button>
+      <button type="button" class="not-delivered-option" data-action="not-delivered-refused" data-id="${esc(order.id)}"><strong>أيوه، خرج مع المندوب ورجع</strong><small>العميل رفض الاستلام أو الطرد رجع من شركة الشحن. يتسجل رفض استلام.</small></button>
+    </div>
+  </div>`);
+}
+
+function openRefusalCarrierCharges(id) {
+  const order=getOnlineOrder(id),shipment=order&&activeOrderShipment(order)||(data.shipments||[]).find(item=>!item.deletedAt&&(item.id===order?.shipmentId||item.onlineOrderId===id));
+  if(!order?.refusal||!shipment)return toast("تكلفة شركة الشحن بتتعدل للطلبات المسجل عليها رفض استلام بس.","error");
+  const charged=shipment.postalBillingManaged||/البريد المصري|egypt\s*post/i.test(`${shipment.carrier||""} ${shipment.company||""}`)?shipment.postalChargeStatus!=="not_charged":shipment.carrierCharged!==false;
+  const cost=Number(shipment.postalCostQuote?.totalCost??shipment.carrierBaseCost??shipment.carrierShippingCostExpected??shipment.cost??0);
+  openModal(`تكلفة شركة الشحن · ${order.id}`,"المرتجعات",`<form id="refusal-carrier-form" class="refusal-dialog" data-id="${esc(order.id)}">
+    <div class="finance-callout"><strong>${esc(shipment.carrier||shipment.company||"شركة الشحن")}</strong><span>بوليصة <span dir="ltr">${esc(shipment.trackingNumber||shipment.tracking||"—")}</span> · تكلفة الشحنة ${money(cost)}</span></div>
+    <fieldset class="refusal-choice refusal-carrier"><legend>شركة الشحن حسبت علينا الشحنة دي؟</legend>
+      <div class="refusal-carrier-options">
+        <label class="refusal-pill"><input type="radio" name="carrierCharged" value="yes" ${charged?"checked":""}><span>أيوه حسبتها</span></label>
+        <label class="refusal-pill"><input type="radio" name="carrierCharged" value="no" ${charged?"":"checked"}><span>لأ، ما حسبتهاش</span></label>
+      </div>
+      <div class="form-field"><label for="refusal-carrier-fee">رسوم مرتجع زيادة</label><input id="refusal-carrier-fee" name="carrierReturnFee" type="number" min="0" step="0.01" inputmode="decimal" value="${Number(shipment.carrierReturnFee||0)}"></div>
+    </fieldset>
+    <div class="form-actions"><button class="btn" type="submit">حفظ</button><button class="btn ghost" type="button" data-action="close-modal">رجوع</button></div>
+  </form>`);
+}
+
+async function submitRefusalCarrierCharges(form) {
+  const values=Object.fromEntries(new FormData(form)),id=form.dataset.id,button=form.querySelector('button[type="submit"]');
+  if(button.disabled)return;button.disabled=true;
+  try{
+    await orderWorkflowRequest(`/api/orders/${encodeURIComponent(id)}/refusal/carrier`,{body:{carrierCharged:values.carrierCharged,carrierReturnFee:Number(values.carrierReturnFee||0)}});
+    closeModal();render();toast(`اتحفظت تكلفة شركة الشحن للطلب ${id}.`);
+  }catch(error){button.disabled=false;toast(error.message,"error");}
+}
+
+document.addEventListener("submit", event => {
+  if (event.target.id !== "refusal-carrier-form") return;
+  event.preventDefault();
+  submitRefusalCarrierCharges(event.target);
 });
 
 // Returns recorded with the generic return screen before refusals had their own flow left customers with credit.
@@ -5373,7 +5437,8 @@ function onlineOrderMoreActions(order,{details=true}={}) {
     ${order.saleId?`<button type="button" class="row-action" data-action="convert-order-sale" data-id="${id}">عرض الفاتورة</button>`:""}
     ${details&&order.preparedAt&&!order.shipmentId&&canAction("order.prepare")&&!canAction("order.quick.edit")?`<button type="button" class="row-action" data-action="reopen-order-preparation" data-id="${id}">إعادة للتغليف من غير تعديل</button>`:""}
     ${onlineOrderWorkflowStage(order)==="cancelled"?"":item("cancel-online-order","إلغاء الطلب",cancelReason,"text-danger")}
-    ${orderCanBeRefused(order)?`<button type="button" class="row-action text-danger" data-action="refuse-online-order" data-id="${id}">رفض استلام</button>`:""}
+    ${orderCanBeRefused(order)?`<button type="button" class="row-action text-danger" data-action="order-not-delivered" data-id="${id}">الطلب ما اتسلمش</button>`:""}
+    ${order.refusal&&canAction("order.quick.edit")?`<button type="button" class="row-action" data-action="refusal-carrier-charges" data-id="${id}">تكلفة شركة الشحن</button>`:""}
   </div></details>`;
 }
 
@@ -6552,7 +6617,7 @@ function shipmentsTable(list) {
       <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${days === null || terminal ? "" : `<span class="shipping-workdays" title="من تاني يوم الشحن، من غير الجمعة والسبت">${esc(shipmentWorkingDaysLabel(shipmentWorkingDaysSinceShipped(item)))}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
       <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td>
       <td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error" title="${esc(item.trackingError)}">تعذر آخر تحديث</span>` : item.trackingNotice ? `<span class="shipment-update-hint" title="${esc(item.trackingNotice)}">بانتظار إعادة المحاولة</span>` : ""}${complaintSummary}</td>
-      <td><div class="shipping-row-actions">${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="refuse-online-order" data-id="${esc(order.id)}">↩ رفض استلام</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
+      <td><div class="shipping-row-actions">${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="order-not-delivered" data-id="${esc(order.id)}">↩ الطلب ما اتسلمش</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
         <button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">✎ تعديل الحالة</button>
         <button class="row-action" data-action="shipment-history" data-id="${item.id}">◷ سجل التتبع</button>
         <button class="row-action" data-action="add-shipment-complaint" data-id="${item.id}">＋ إضافة شكوى</button>
@@ -6965,6 +7030,14 @@ function postalAccountMonthRows(){
     const group=groups.get(month)||{month,count:0,estimate:0,waived:0,unpriced:0};
     if(shipment.postalChargeStatus==="not_charged")group.waived++;
     else{group.count++;group.estimate+=Number(shipment.postalCostQuote?.totalCost??shipment.cost??0);if(!shipment.postalCostQuote)group.unpriced++;}
+    groups.set(month,group);
+  }
+  // Return fees of refused parcels belong to the month the post charged them.
+  for(const shipment of data.shipments||[]){
+    const month=String(shipment.carrierReturnFeeMonth||"");
+    if(shipment.deletedAt||!(Number(shipment.carrierReturnFee)>0)||!/^\d{4}-\d{2}$/.test(month)||!(/البريد المصري|egypt\s*post/i.test(String(shipment.company||shipment.carrier||""))))continue;
+    const group=groups.get(month)||{month,count:0,estimate:0,waived:0,unpriced:0};
+    group.estimate+=Number(shipment.carrierReturnFee);group.returnFees=(group.returnFees||0)+Number(shipment.carrierReturnFee);
     groups.set(month,group);
   }
   for(const statement of data.postalStatements||[])if(!groups.has(statement.month))groups.set(statement.month,{month:statement.month,count:0,estimate:0,waived:0,unpriced:0});
@@ -9320,6 +9393,8 @@ root.addEventListener("click", async event => {
   if (action === "order-next-step") openOrderNextStep(target.dataset.id);
   if (action === "cancel-online-order") cancelOnlineOrder(target.dataset.id);
   if (action === "refuse-online-order") openOrderRefusal(target.dataset.id);
+  if (action === "order-not-delivered") openOrderNotDelivered(target.dataset.id);
+  if (action === "refusal-carrier-charges") openRefusalCarrierCharges(target.dataset.id);
   if (action === "open-refusal-repair") openRefusalRepair();
   if (action === "backorder-allocate") allocateBackorder(target.dataset.id);
   if (action === "split-shipment") openSplitShipment(target.dataset.id);
@@ -10045,6 +10120,10 @@ modalBody.addEventListener("click", event => {
   if (chatwoodAction === "cancel-online-order") { closeModal(); cancelOnlineOrder(appAction.dataset.id); return; }
   // The return picker and the order details dialog offer «رفض استلام»; its own dialog replaces this one.
   if (chatwoodAction === "refuse-online-order") { openOrderRefusal(appAction.dataset.id); return; }
+  if (chatwoodAction === "order-not-delivered") { openOrderNotDelivered(appAction.dataset.id); return; }
+  if (chatwoodAction === "not-delivered-cancel") { cancelOnlineOrder(appAction.dataset.id,{courierNotPickedUp:true}); return; }
+  if (chatwoodAction === "not-delivered-refused") { openOrderRefusal(appAction.dataset.id); return; }
+  if (chatwoodAction === "refusal-carrier-charges") { openRefusalCarrierCharges(appAction.dataset.id); return; }
   if (chatwoodAction === "correct-payment") { if (requireAction("order.payment.receive")) openPaymentCorrection(appAction.dataset.payment); return; }
   if (appAction?.dataset.action === "generate-user-password") {
     const input = appAction.closest("form")?.elements.password;
@@ -13598,7 +13677,7 @@ function returnPickerSaleRow(sale) {
     : `${badge(sale.status || "معتمدة", sale.status === "مرتجع جزئي" ? "warning" : "")}${cameBack ? `<small class="return-picker-ref text-danger">الشحنة رجعت ولم يُسجل مرتجع</small>` : ""}`;
   const action = returned
     ? (returns.length ? `<button class="row-action" data-action="view-return" data-id="${esc(returns.at(-1).id)}">عرض المرتجع</button>` : `<span class="muted">غير متاح</span>`)
-    : `${order && orderCanBeRefused(order) ? `<button class="row-action text-danger" data-action="refuse-online-order" data-id="${esc(order.id)}">رفض استلام</button>` : ""}<button class="row-action" data-modal-action="return-sale" data-id="${esc(sale.id)}">تسجيل مرتجع</button>`;
+    : `${order && orderCanBeRefused(order) ? `<button class="row-action text-danger" data-action="order-not-delivered" data-id="${esc(order.id)}">الطلب ما اتسلمش</button>` : ""}<button class="row-action" data-modal-action="return-sale" data-id="${esc(sale.id)}">تسجيل مرتجع</button>`;
   return `<tr data-return-doc-row data-returned="${returned ? "1" : ""}" data-search="${esc(search)}" ${returned ? "hidden" : ""}><td><strong>${esc(documentDisplayName(sale.id, "sale"))}</strong>${sale.onlineOrderId ? `<small class="muted return-picker-ref">${esc(sale.onlineOrderId)}${shipment?.trackingNumber ? ` · <span dir="ltr">${esc(shipment.trackingNumber)}</span>` : ""}</small>` : ""}</td><td>${esc(customer?.name || sale.customerName || "—")}${phones[0] ? `<small class="muted return-picker-ref" dir="ltr">${esc(phones[0])}</small>` : ""}</td><td>${fmtDate(sale.date)}</td><td>${available}</td><td>${status}</td><td><div class="row-actions">${action}</div></td></tr>`;
 }
 

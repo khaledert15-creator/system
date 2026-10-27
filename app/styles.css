@@ -2317,3 +2317,13 @@ button.shortage-stat.ok b{color:#1f7a45}
   .refusal-repair-card footer{flex-direction:column;align-items:stretch}
 }
 .return-picker-ref{display:block;margin-top:2px;font-size:12px}
+.refusal-carrier{display:grid;gap:10px}
+.refusal-carrier-options{display:flex;flex-wrap:wrap;gap:8px}
+.not-delivered{display:grid;gap:14px}
+.not-delivered h4{margin:0;font-size:var(--text-heading-sm);font-weight:800}
+.not-delivered-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.not-delivered-option{display:grid;gap:6px;text-align:start;padding:16px;border:1.5px solid var(--line);border-radius:var(--radius-card);background:var(--surface);cursor:pointer;font:inherit;color:var(--text)}
+.not-delivered-option:hover,.not-delivered-option:focus-visible{border-color:var(--primary);background:var(--green-50)}
+.not-delivered-option strong{font-size:15px;font-weight:800}
+.not-delivered-option small{color:var(--muted);font-size:12px;line-height:1.7}
+@media (max-width:760px){.not-delivered-options{grid-template-columns:1fr}}

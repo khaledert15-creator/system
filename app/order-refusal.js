@@ -72,6 +72,7 @@
       total: round(sale?.total ?? order.total ?? 0), shippingFee: round(sale?.shippingFee ?? sale?.shipping ?? order.shippingCost ?? 0),
       deposit, codRemaining: round(sale?.remaining ?? 0),
       depositCashAccountId: (sale ? Refunds.documentPayments(db, Refunds.resolveDocument(db, { orderId: order.id, invoiceId: sale.id })) : []).find(item => item.cashAccountId)?.cashAccountId || "",
+      carrier: shipment ? { postal: isPostalShipment(shipment), name: shipment.carrier || shipment.company || "", expectedCost: round(shipment.postalCostQuote?.totalCost ?? shipment.carrierShippingCostExpected ?? shipment.cost ?? 0) } : null,
       canRefuse: !blocked, blocked, outcomes: OUTCOMES
     };
   }
@@ -86,6 +87,45 @@
     if (!(charge > 0)) throw fail("اكتب تكلفة الشحن المطلوبة من العميل.", "SHIPPING_CHARGE_REQUIRED", 400);
     if (charge <= deposit) throw fail(`تكلفة الشحن (${charge}) لا تزيد عن الديبوزت (${deposit})؛ اختر «الاحتفاظ بالديبوزت» بدلًا منها.`, "SHIPPING_CHARGE_NOT_ABOVE_DEPOSIT", 400);
     return { outcome, refund: 0, retained: round(deposit), extraDue: round(charge - deposit), fee: charge };
+  }
+
+  const isPostalShipment = shipment => Boolean(shipment?.postalBillingManaged) || /البريد المصري|egypt\s*post|EGYPT_POST/i.test(`${shipment?.carrier || ""} ${shipment?.company || ""} ${shipment?.carrierCode || ""}`);
+
+  // What the carrier bills for a parcel that came back: whether it still charges the original shipping, and any return
+  // fee. Egypt Post costs reach the books through the monthly postal statement, so they are recorded on the shipment
+  // (charge status, and the fee in the month it was charged); other carriers deduct their cost in the collection
+  // settlement, so their expected cost is adjusted. Answers can be corrected later until the month's statement closes.
+  // Throws, without changing anything, when the answer cannot be recorded.
+  function checkCarrierCharges(db, shipment, { charged, returnFee } = {}, now) {
+    const fee = round(returnFee);
+    if (!Number.isFinite(fee) || fee < 0) throw fail("رسوم المرتجع غير صالحة.", "INVALID_RETURN_FEE", 400);
+    if (!["yes", "no"].includes(charged)) throw fail("حدد هل شركة الشحن حسبت تكلفة الشحنة.", "CARRIER_CHARGE_REQUIRED", 400);
+    if (!isPostalShipment(shipment)) return fee;
+    const closed = month => list(db, "postalStatements").some(item => !item.deletedAt && item.month === month);
+    const shippedMonth = String(shipment.shippedAt || shipment.createdAt || "").slice(0, 7);
+    const feeMonth = shipment.carrierReturnFeeMonth || String(now).slice(0, 7);
+    if ((charged === "no" ? "not_charged" : "charged") !== (shipment.postalChargeStatus || "charged") && closed(shippedMonth)) throw fail(`كشف البريد لشهر ${shippedMonth} معتمد؛ تكلفة الشحنة اتحسبت فيه ومينفعش تتغير.`, "POSTAL_MONTH_CLOSED");
+    if (fee !== round(shipment.carrierReturnFee || 0) && round(shipment.carrierReturnFee || 0) > 0 && closed(feeMonth)) throw fail(`كشف البريد لشهر ${feeMonth} معتمد؛ رسوم المرتجع اتحسبت فيه ومينفعش تتغير.`, "POSTAL_MONTH_CLOSED");
+    return fee;
+  }
+
+  function applyCarrierCharges(db, shipment, { charged, returnFee, reason = "" } = {}, actor, now) {
+    if (!shipment) return null;
+    const fee = checkCarrierCharges(db, shipment, { charged, returnFee }, now);
+    const postal = isPostalShipment(shipment);
+    if (postal) {
+      const nextStatus = charged === "no" ? "not_charged" : "charged";
+      Object.assign(shipment, { postalChargeStatus: nextStatus, postalChargeReason: nextStatus === "not_charged" ? (reason || "رفض استلام") : "", postalChargeRecordedAt: now, postalChargeRecordedBy: actor.name || actor.username });
+    } else {
+      // The settlement deducts the expected cost: the original shipping (unless waived) plus the return fee.
+      const base = shipment.carrierBaseCost ?? round(shipment.carrierShippingCostExpected ?? shipment.cost ?? 0);
+      Object.assign(shipment, { carrierBaseCost: base, carrierShippingCostExpected: round((charged === "no" ? 0 : base) + fee) });
+    }
+    Object.assign(shipment, {
+      carrierCharged: charged === "yes", carrierReturnFee: fee, carrierReturnFeeMonth: fee > 0 ? (shipment.carrierReturnFeeMonth && round(shipment.carrierReturnFee || 0) > 0 ? shipment.carrierReturnFeeMonth : String(now).slice(0, 7)) : "",
+      carrierChargesRecordedAt: now, carrierChargesRecordedBy: actor.name || actor.username, updatedAt: now
+    });
+    return { postal, charged: charged === "yes", returnFee: fee };
   }
 
   function restockSale(db, sale, actor, note, now) {
@@ -132,6 +172,8 @@
     const preview = refusalPreview(db, orderId);
     if (!preview.canRefuse) throw fail(preview.blocked, "REFUSAL_NOT_ALLOWED");
     const plan = settlementPlan(preview.deposit, payload.outcome, payload.shippingCharge);
+    const refusedShipment = preview.shipmentId ? list(db, "shipments").find(item => item.id === preview.shipmentId) : null;
+    if (refusedShipment) checkCarrierCharges(db, refusedShipment, { charged: payload.carrierCharged, returnFee: payload.carrierReturnFee || 0 }, actor.now || new Date().toISOString());
     if (plan.refund > 0 && !list(db, "cashAccounts").some(item => !item.deletedAt && item.active !== false && item.id === (payload.cashAccountId || preview.depositCashAccountId))) throw fail("اختر الخزنة التي سيُرد منها الديبوزت.", "CASH_ACCOUNT_REQUIRED", 400);
     const now = actor.now || new Date().toISOString(), date = String(payload.date || now).slice(0, 10);
     const order = list(db, "onlineOrders").find(item => item.id === orderId);
@@ -168,6 +210,8 @@
       reason, notes: note, lines: [], createdBy: actor.name || actor.username || "النظام", createdAt: now, updatedAt: now, status: "معتمد", deletedAt: null
     });
     const shipment = list(db, "shipments").find(item => item.id === preview.shipmentId);
+    const carrier = shipment ? applyCarrierCharges(db, shipment, { charged: payload.carrierCharged, returnFee: payload.carrierReturnFee || 0, reason }, actor, now) : null;
+    if (carrier) Object.assign(refusal, { carrierCharged: carrier.charged, carrierReturnFee: carrier.returnFee });
     // Tracking reads the normalized status, so it has to say returned too or the parcel keeps being tracked.
     if (shipment) Object.assign(shipment, { status: "مرتجع", currentStatus: "مرتجع", normalizedStatus: "returned", shippingStatus: "returned", refusedAt: now, returnedAt: shipment.returnedAt || now, updated: now, updatedAt: now });
     // The order list shows the order's own paid / remaining figures, so they follow the refusal too.
@@ -249,5 +293,19 @@
     return { existing: false, sale, repair };
   }
 
-  return { OUTCOMES, refusalPreview, settlementPlan, applyRefusal, repairCandidates, applyRepair };
+  // Corrects the carrier charges of a refused parcel once the carrier's statement shows what it really billed.
+  function updateCarrierCharges(db, orderId, payload = {}, actor) {
+    const order = list(db, "onlineOrders").find(item => !item.deletedAt && item.id === orderId);
+    if (!order) throw fail("الطلب غير موجود.", "ORDER_NOT_FOUND", 404);
+    if (!order.refusal) throw fail("تكلفة شركة الشحن بتتعدل هنا للطلبات المسجل عليها رفض استلام بس.", "ORDER_NOT_REFUSED");
+    const shipment = list(db, "shipments").find(item => !item.deletedAt && (item.id === order.shipmentId || item.onlineOrderId === order.id));
+    if (!shipment) throw fail("الطلب ملوش شحنة.", "SHIPMENT_NOT_FOUND", 404);
+    const now = actor.now || new Date().toISOString();
+    const carrier = applyCarrierCharges(db, shipment, { charged: payload.carrierCharged, returnFee: payload.carrierReturnFee || 0, reason: String(payload.note || order.refusal.reason || "").trim() }, actor, now);
+    Object.assign(order.refusal, { carrierCharged: carrier.charged, carrierReturnFee: carrier.returnFee });
+    order.updatedAt = now;
+    return { order, shipment, carrier };
+  }
+
+  return { OUTCOMES, refusalPreview, settlementPlan, applyRefusal, repairCandidates, applyRepair, applyCarrierCharges, updateCarrierCharges, isPostalShipment };
 });

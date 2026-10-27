@@ -952,7 +952,10 @@ function postalMonthSummary(db,month) {
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month||"")))throw Object.assign(new Error("اختر شهرًا صالحًا لكشف البريد."),{status:400});
   const shipments=(db.shipments||[]).filter(item=>!item.deletedAt&&isPostalCarrier(item)&&String(item.shippedAt||item.createdAt||"").slice(0,7)===month);
   const charged=shipments.filter(item=>item.postalChargeStatus!=="not_charged");
-  return {month,shipments,charged,expectedCount:charged.length,expectedCost:PostalShipping.roundMoney(charged.reduce((sum,item)=>sum+Number(item.postalCostQuote?.totalCost??item.cost??0),0)),waivedCount:shipments.length-charged.length,unpricedCount:charged.filter(item=>!item.postalCostQuote).length};
+  // Return fees of refused parcels are billed in the month they were charged, whatever month the parcel left.
+  const returnFees=(db.shipments||[]).filter(item=>!item.deletedAt&&isPostalCarrier(item)&&Number(item.carrierReturnFee||0)>0&&String(item.carrierReturnFeeMonth||"")===month);
+  const returnFeesTotal=PostalShipping.roundMoney(returnFees.reduce((sum,item)=>sum+Number(item.carrierReturnFee||0),0));
+  return {month,shipments,charged,returnFeeCount:returnFees.length,returnFeesTotal,expectedCount:charged.length,expectedCost:PostalShipping.roundMoney(charged.reduce((sum,item)=>sum+Number(item.postalCostQuote?.totalCost??item.cost??0),0)+returnFeesTotal),waivedCount:shipments.length-charged.length,unpricedCount:charged.filter(item=>!item.postalCostQuote).length};
 }
 
 function postalOutstanding(db,month="") {
@@ -3756,7 +3759,11 @@ const server = http.createServer(async (req, res) => {
         const now=new Date().toISOString(),steps=[];
         const shipment=activeOrderShipment(db,order);
         if(shipment){
-          if(!PRE_HANDOVER_SHIPMENT_STATUSES.has(String(shipment.normalizedStatus||"")))return send(res,409,{ok:false,code:"SHIPMENT_WITH_CARRIER",message:"الشحنة بالفعل لدى شركة الشحن؛ استخدم المرتجعات بدل الإلغاء."});
+          // Egypt Post tracking can show a code as moving before the courier collects the parcel; when the employee
+          // confirms the parcel never left, the order can still be cancelled (never once it was delivered or returned).
+          const courierNotPickedUp=payload.courierNotPickedUp===true&&!["delivered","returned"].includes(String(shipment.normalizedStatus||""));
+          if(!PRE_HANDOVER_SHIPMENT_STATUSES.has(String(shipment.normalizedStatus||""))&&!courierNotPickedUp)return send(res,409,{ok:false,code:"SHIPMENT_WITH_CARRIER",message:"الشحنة بالفعل لدى شركة الشحن؛ لو المندوب ما استلمش الطرد اختار «الطلب ما اتسلمش» ← «لأ، الطرد لسه عندنا»."});
+          if(courierNotPickedUp)Object.assign(shipment,{courierNotPickedUp:true,courierNotPickedUpConfirmedBy:user.name||user.username,courierNotPickedUpConfirmedAt:now});
           if(payload.carrierCancelled!==true)return send(res,409,{ok:false,code:"CARRIER_CANCELLATION_CONFIRMATION_REQUIRED",message:"ألغِ البوليصة من نظام شركة الشحن أولًا ثم فعّل مربع التأكيد."});
           const postalChargeStatus=isPostalCarrier(shipment)?(payload.postalChargeStatus==="not_charged"?"not_charged":"charged"):null;
           const tracking=shipment.trackingNumber||shipment.tracking||"";
@@ -3797,6 +3804,17 @@ const server = http.createServer(async (req, res) => {
         }
         return send(res,200,{ok:true,existing:result.existing,order:result.order,refusal:result.refusal,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"ORDER_REFUSAL_FAILED",message:error.message});}
+    }
+
+    if (route.startsWith("/api/orders/") && route.endsWith("/refusal/carrier") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),result=OrderRefusals.updateCarrierCharges(db,decodeURIComponent(route.split("/")[3]),payload,{...user,uuid:()=>crypto.randomUUID()});
+        appendOrderAudit(db,user,result.order,"تعديل تكلفة شركة الشحن لطلب مرفوض",`${result.carrier.charged?"حسبت الشحنة":"ما حسبتش الشحنة"} · رسوم مرتجع ${result.carrier.returnFee}`);
+        writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"REFUSAL_CARRIER_CHARGES",performedBy:user.username});
+        return send(res,200,{ok:true,order:result.order,shipment:result.shipment,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"REFUSAL_CARRIER_FAILED",message:error.message});}
     }
 
     if (route === "/api/refusals/repair/preview" && req.method === "GET") {

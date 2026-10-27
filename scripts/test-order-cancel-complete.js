@@ -69,6 +69,15 @@ const order=(id,extra={})=>({id,customerId:'C1',customerName:'عميل',phone:'0
   response=await cancel('ORD3',{reason:'العميل ألغى الطلب',carrierCancelled:true,operationKey:'k3'});
   assert.equal(response.status,409);assert.equal((await response.json()).code,'SHIPMENT_WITH_CARRIER');
   console.log('PASS orders already with the carrier must go through returns');
+
+  // The post shows the code moving, but the employee confirms the courier never collected the parcel.
+  response=await cancel('ORD3',{reason:'العميل ألغى الطلب',carrierCancelled:true,courierNotPickedUp:true,postalChargeStatus:'not_charged',operationKey:'k4'});
+  assert.equal(response.status,200,await response.clone().text());
+  const afterPickup=JSON.parse(fs.readFileSync(path.join(temp,'data/database.json'),'utf8'));
+  const sh3=afterPickup.shipments.find(item=>item.id==='SH3');
+  assert.equal(sh3.normalizedStatus,'cancelled');assert.equal(sh3.courierNotPickedUp,true);assert.equal(sh3.postalChargeStatus,'not_charged');
+  assert.equal(afterPickup.onlineOrders.find(item=>item.id==='ORD3').status,'ملغي');
+  console.log('PASS a parcel the courier never collected can be cancelled even when tracking shows it moving');
  } finally {
   if(child)child.kill();
   fs.rmSync(temp,{recursive:true,force:true});
