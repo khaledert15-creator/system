@@ -18,6 +18,7 @@ const DuplicateOrders = require("./app/duplicate-orders.js");
 const OrderRefunds = require("./app/order-refund.js");
 const PaymentCorrection = require("./app/payment-correction.js");
 const OrderRefusals = require("./app/order-refusal.js");
+const Returns = require("./app/returns.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
 const { ensurePackingInvoice } = require("./app/order-packing-invoice.js");
@@ -873,6 +874,19 @@ const PRE_HANDOVER_SHIPMENT_STATUSES=new Set(["","shipped","created","pending","
 
 function activeOrderShipment(db,order) {
   return (db.shipments||[]).find(item=>!item.deletedAt&&!isCancelledShipment(item)&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
+}
+
+// Same screen permissions as the app: the returns screen per role, unless the owner customised the user or role.
+const RETURN_VIEW_ROLES=["مالك","مدير","محاسب","كاشير","مخزن"];
+function canUseReturns(db,user={}) {
+  const role=orderRole(user);
+  if(role==="مالك"||role==="مدير"||user.username==="owner")return true;
+  const views=db.settings?.permissions?.users?.[user.username]?.views||db.settings?.permissions?.roles?.[role]?.views;
+  return Array.isArray(views)?views.includes("returns"):RETURN_VIEW_ROLES.includes(role);
+}
+// Undoing a return moves money and stock back, so it is kept to the people who own the books.
+function canReverseReturns(user={}) {
+  return ["مالك","مدير","محاسب"].includes(orderRole(user))||user.username==="owner";
 }
 
 // A returned invoice already put its books back; cancelling it would restock them again.
@@ -3797,6 +3811,37 @@ const server = http.createServer(async (req, res) => {
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"ORDER_CANCELLATION_FAILED",message:error.message});}
     }
 
+    if ((route === "/api/returns/sale" || route === "/api/returns/purchase") && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),db=ensureTrackingDb(readDb()),revision=dataRevision(db);
+        if(!canUseReturns(db,user))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية تسجيل المرتجعات."});
+        const sale=route.endsWith("/sale"),actor={...user,uuid:()=>crypto.randomUUID()};
+        const result=sale?Returns.createSaleReturn(db,payload,actor):Returns.createPurchaseReturn(db,payload,actor);
+        if(!result.existing){
+          const record=result.record;db.audit=db.audit||[];const now=new Date().toISOString();
+          AuditIds.appendAuditRecord(db.audit,{date:now,createdAt:now,action:sale?"فاتورة مرتجع مبيعات":"مرتجع مشتريات",entity:"المرتجعات",entityId:record.returnNo,user:user.name||user.username,username:user.username,role:orderRole(user),details:`${record.sourceDocuments.join("، ")} · ${record.subtotal}`});
+          writeDb(db,{expectedRevision:revision,operationType:sale?"SALE_RETURN":"PURCHASE_RETURN",performedBy:user.username});
+        }
+        return send(res,200,{ok:true,existing:result.existing,return:result.record,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"RETURN_FAILED",message:error.message});}
+    }
+
+    if (/^\/api\/returns\/[^/]+\/reverse$/.test(route) && req.method === "POST") {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      if(!canReverseReturns(user))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"إلغاء المرتجع متاح للمالك والمدير والمحاسب بس."});
+      try{
+        const payload=JSON.parse(await readBody(req)||"{}"),db=ensureTrackingDb(readDb()),revision=dataRevision(db);
+        const result=Returns.reverseReturn(db,decodeURIComponent(route.split("/")[3]),payload,{...user,uuid:()=>crypto.randomUUID()});
+        if(!result.existing){
+          const record=result.record;db.audit=db.audit||[];const now=new Date().toISOString();
+          AuditIds.appendAuditRecord(db.audit,{date:now,createdAt:now,action:"إلغاء مرتجع",entity:"المرتجعات",entityId:record.returnNo,user:user.name||user.username,username:user.username,role:orderRole(user),details:record.reversalReason});
+          writeDb(db,{expectedRevision:revision,operationType:"RETURN_REVERSED",performedBy:user.username});
+        }
+        return send(res,200,{ok:true,existing:result.existing,return:result.record,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"RETURN_REVERSAL_FAILED",message:error.message});}
+    }
+
     if (route.startsWith("/api/orders/") && route.endsWith("/refusal/preview") && req.method === "GET") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.quick.edit"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
@@ -4588,6 +4633,8 @@ const server = http.createServer(async (req, res) => {
       WebsiteOrders.preserveChatwoodIdentity(currentSource, parsed);
       const repairedIds = repairClientRecordIds(parsed);
       if (repairedIds) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"CLIENT_IDS_REPAIRED", performedBy:user.username, repairedIds }));
+      // Returns are written only by /api/returns and the refusal endpoints; a whole-database save may not change them.
+      if(JSON.stringify(currentSource.returns||[])!==JSON.stringify(parsed.returns||[]))return send(res,409,{ok:false,code:"RETURNS_SERVER_ONLY",message:"المرتجعات بتتسجل من شاشة المرتجعات بس. حدّث الصفحة وأعد المحاولة."});
       // Tracking logs are written only by the tracking worker; a client save must not bring back an old copy.
       for (const key of ["trackingRuns", "trackingRunBatches"]) {
         if (Array.isArray(currentSource[key])) parsed[key] = currentSource[key];
