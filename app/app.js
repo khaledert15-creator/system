@@ -2541,13 +2541,24 @@ function saleLineCogs(line) {
   return Number((Number(line.qty || line.quantity || 0) * Number(summary.averageInventoryCost || 0)).toFixed(2));
 }
 
+// Cost of the copies of a line that came back (returns, refused deliveries): from the batches they went back to when
+// the sale recorded them, otherwise the line's cost per copy.
+function saleLineReturnedCogs(sale, line, index, lineCost) {
+  const allocations = Array.isArray(line.batchAllocations) ? line.batchAllocations : [];
+  if (allocations.some(allocation => Number(allocation.returnedQty || 0) > 0)) return allocations.reduce((sum, allocation) => sum + Number(allocation.returnedQty || 0) * Number(allocation.unitCost || 0), 0);
+  const returned = returnedQuantityMap("sale", sale.id);
+  const qty = Number(line.qty || line.quantity || 0);
+  const returnedQty = Math.min(qty, Number(returned.get(String(index)) || returned.get(String(line.bookId)) || 0));
+  return qty > 0 && returnedQty > 0 ? lineCost * returnedQty / qty : 0;
+}
+
 function salesCogsSummary(sales = activeSalesList()) {
   let cost = 0;
   let incompleteLines = 0;
-  sales.forEach(sale => (sale.lines || []).forEach(line => {
+  sales.forEach(sale => (sale.lines || []).forEach((line, index) => {
     const lineCost = saleLineCogs(line);
     if (lineCost === null) incompleteLines += 1;
-    else cost += lineCost;
+    else cost += lineCost - saleLineReturnedCogs(sale, line, index, lineCost);
   }));
   return { cost: Number(cost.toFixed(2)), incompleteLines };
 }
@@ -3146,14 +3157,16 @@ function salesDailySummary(filter = salesDateFilter) {
   const cashTotal = sales.filter(sale => salesPaymentBucket(sale) === "cash").reduce((sum, sale) => sum + Number(sale.paid || 0), 0);
   const transferTotal = sales.filter(sale => salesPaymentBucket(sale) === "transfer").reduce((sum, sale) => sum + Number(sale.paid || 0), 0);
   const codTotal = sales.filter(sale => salesPaymentBucket(sale) === "cod").reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const actualCollections = sales.reduce((sum, sale) => sum + Number(sale.paid || 0), 0);
+  // What was collected on these sales; refunds leave through cashReturns (a return lowers `paid` and raises `returnedPaid`).
+  const actualCollections = sales.reduce((sum, sale) => sum + Number(sale.paid || 0) + Number(sale.returnedPaid || 0), 0);
   const purchasesTotal = purchaseTotalForRange(range.from, range.to);
   const supplierPayments = cashOutForRange(range.from, range.to, item => /مشتريات|توريد|مورد|شراء/i.test(`${item.category || ""} ${item.note || ""}`));
   const expenses = cashOutForRange(range.from, range.to, item => !/مرتجع|مشتريات|توريد|مورد|شراء/i.test(`${item.category || ""} ${item.note || ""}`));
   const netMovement = actualCollections - supplierPayments - expenses - cashReturns;
   const cogsSummary = salesCogsSummary(sales);
   const grossProfit = cogsSummary.incompleteLines ? null : netSales - cogsSummary.cost;
-  const netProfit = grossProfit === null ? null : grossProfit - expenses - cashReturns;
+  // netSales already subtracts the returns, so a refund is not subtracted a second time here.
+  const netProfit = grossProfit === null ? null : grossProfit - expenses;
   const totalIn = actualCollections;
   const totalOut = supplierPayments + expenses + cashReturns;
   return { range, sales, salesTotal, invoiceCount, discounts, returnsTotal, cashReturns, netSales, cashTotal, transferTotal, codTotal, actualCollections, purchasesTotal, supplierPayments, expenses, netMovement, cogs: cogsSummary.cost, incompleteCostLines: cogsSummary.incompleteLines, grossProfit, netProfit, totalIn, totalOut };
@@ -12348,8 +12361,9 @@ function statementRows(id, kind) {
       reference: returnNo(item),
       description: item.mode === "refusal" ? `رفض استلام ${item.onlineOrderId || ""} — ${refusalOutcomeLabel(item.refusalOutcome)}${item.paidAmount ? ` · رد ${money(item.paidAmount)}` : ""}${item.refusalExtraDue ? ` · شحن مستحق ${money(item.refusalExtraDue)}` : ""}` : `${returnTypeLabel(item.type)} من ${item.sourceDocuments?.join("، ") || item.documentId || "—"} — ${returnSettlementLabel(item)}`,
       debit: 0,
-      // A refused delivery lowers the invoice's own remaining amount instead, so its return row adds nothing here.
-      credit: item.mode === "refusal" || item.refusalRepaired ? 0 : Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))),
+      // The document row already shows its remaining amount after the return lowered it, so the return row credits
+      // only the rest of its effect on the balance (a refused delivery has no rest).
+      credit: item.mode === "refusal" || item.refusalRepaired ? 0 : Math.max(0, Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))) - Number(item.debtReduction ?? item.remainingReduction ?? 0)),
       status: item.status || "معتمد",user:item.createdBy||item.user||"—",links:{invoiceId:item.documentId||""}
     })),
     ...vouchers.map(receipt => ({
@@ -13396,7 +13410,8 @@ async function cancelSale(id) {
   const sale = data.sales.find(item => item.id === id);
   if (!saleCanBeModified(sale)) return toast("هذه اليومية مقفولة. الإلغاء يحتاج صلاحية مدير.", "error");
   if (sale && shipmentForSale(id)) return toast("لا يمكن إلغاء فاتورة مرتبطة بشحنة. ألغِ الشحنة أولًا.", "error");
-  if (sale?.status === "مرتجع جزئي") return toast("لا يمكن إلغاء فاتورة عليها مرتجع جزئي. أكمل المرتجع من شاشة المرتجعات أو راجع السجل.", "error");
+  // Cancelling would restock the returned books a second time and leave the return orphaned.
+  if (["مرتجع", "مرتجع جزئي"].includes(sale?.status) || (data.returns || []).some(item => !item.deletedAt && returnKind(item.type) === "sale" && (item.documentId === id || (item.sourceDocuments || []).includes(id)))) return toast("لا يمكن إلغاء فاتورة عليها مرتجع. الكتب رجعت المخزن بالمرتجع بالفعل.", "error");
   if (!sale || sale.status === "ملغاة") return;
   try{const result=await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancellation/preview"),{method:"GET",reload:false});if(result.financial.paid>0)return openCancellationSettlement("sale",id,result.financial);if(!confirm(`سيتم إبطال الفاتورة ${id} وإرجاع الكميات للمخزون. هل أنت متأكد؟`))return;await orderWorkflowRequest(cancellationEndpoint("sale",id,"cancel"),{body:{reason:"إبطال فاتورة بيع"}});if(currentView==="sales")renderSales();else showSalesList();toast("تم إبطال الفاتورة وإرجاع المخزون دون حذف المستند.");}catch(error){toast(error.message,"error");}
 }
@@ -13911,7 +13926,8 @@ function processSaleReturn(id, { account, date, reason }) {
   const fullyReturned = isFullyReturned(sale.lines || [], selectedLines, returnedQuantityMap("sale", sale.id));
   if (fullyReturned) {
     const shipment = shipmentForSale(sale.id);
-    if (shipment) { shipment.status = "مرتجع"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
+    // Tracking reads the normalized status: without it the parcel keeps being tracked and can flip the order back.
+    if (shipment) { shipment.status = "مرتجع"; shipment.currentStatus = "مرتجع"; shipment.normalizedStatus = "returned"; shipment.shippingStatus = "returned"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
     if (sale.onlineOrderId) {
       const order = data.onlineOrders.find(o => o.id === sale.onlineOrderId);
       if (order) { order.status = "مرتجع"; order.workflowStage = "returned"; order.updatedAt = new Date().toISOString(); }
@@ -13971,6 +13987,9 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
     const saleDebtReduction = debtShare * Math.min(Number(sale.remaining || 0), (Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0)) * saleReturnAmount / Math.max(1, Number(sale.total || 0)));
     const paidImpact = returnAmount > 0 ? (customerDue + replacement) * saleReturnAmount / returnAmount : 0;
     const fullyReturned = isFullyReturned(sale.lines || [], selectedForSale, returnedQuantityMap("sale", sale.id));
+    // Loyalty points earned on the returned part go back, as in a return from a single invoice.
+    const points = Math.floor(Number(sale.pointsAwarded || 0) * saleReturnAmount / Math.max(1, Number(sale.total || 0)));
+    if (points) customer.points = Math.max(0, Number(customer.points || 0) - points);
     sale.status = fullyReturned ? "مرتجع" : "مرتجع جزئي";
     sale.remaining = Math.max(0, Number(sale.remaining || 0) - saleDebtReduction);
     sale.paid = Math.max(0, Number(sale.paid || 0) - paidImpact);
@@ -13980,7 +13999,7 @@ function processCustomerSaleReturn(customerId, { account, date, reason, settleme
     sale.returnReason = reason || "";
     if (fullyReturned) {
       const shipment = shipmentForSale(sale.id);
-      if (shipment) { shipment.status = "مرتجع"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
+      if (shipment) { shipment.status = "مرتجع"; shipment.currentStatus = "مرتجع"; shipment.normalizedStatus = "returned"; shipment.shippingStatus = "returned"; shipment.updated = new Date().toISOString(); shipment.updatedAt = shipment.updated; }
       if (sale.onlineOrderId) {
         const order = data.onlineOrders.find(o => o.id === sale.onlineOrderId);
         if (order) { order.status = "مرتجع"; order.workflowStage = "returned"; order.updatedAt = new Date().toISOString(); }
@@ -14036,12 +14055,20 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     const book = getBook(line.bookId);
     if (book && Number(book.stock || 0) < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
+  const linesByPurchase = [...new Set(selectedLines.map(line => line.documentId))].map(purchaseId => [data.purchases.find(item => item.id === purchaseId), selectedLines.filter(line => line.documentId === purchaseId)]);
+  const batchCheck = { inventoryBatches:structuredClone(data.inventoryBatches || []) };
+  try { linesByPurchase.forEach(([purchase, lines]) => purchase && consumeReturnedPurchaseBatches(batchCheck, purchase, lines)); }
+  catch { return toast("كميات الدفعات في المخزن أقل من المرتجع؛ راجع جرد الصنف قبل تسجيل مرتجع المورد.", "error"); }
+  linesByPurchase.forEach(([purchase, lines]) => purchase && consumeReturnedPurchaseBatches(data, purchase, lines));
   const subtotal = selectedLines.reduce((sum, line) => sum + Number(line.amount || line.total || 0), 0);
+  // Consignment (أمانة) stock never raised what we owe the supplier, so returning it moves no money.
+  const isConsignment = purchaseId => data.purchases.find(item => item.id === purchaseId)?.type === "أمانة";
+  const moneySubtotal = selectedLines.filter(line => !isConsignment(line.documentId)).reduce((sum, line) => sum + Number(line.amount || line.total || 0), 0);
   const returnId = nextId("RET-", data.returns);
   const returnNo = nextReturnNo("PR-");
   const settledByCash = settlement === "cash";
-  const balanceEffect = settledByCash ? 0 : -subtotal;
-  const paidAmount = settledByCash ? subtotal : 0;
+  const balanceEffect = settledByCash ? 0 : -moneySubtotal;
+  const paidAmount = settledByCash ? moneySubtotal : 0;
   const now = new Date().toISOString();
   selectedLines.forEach(line => {
     const book = getBook(line.bookId);
@@ -14052,6 +14079,7 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     }
   });
   const sourcePurchaseIds = [...new Set(selectedLines.map(line => line.documentId))];
+  let totalRemainingReduction = 0;
   sourcePurchaseIds.forEach(purchaseId => {
     const purchase = data.purchases.find(item => item.id === purchaseId);
     if (!purchase) return;
@@ -14061,11 +14089,12 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     const purchaseAmount = selectedForPurchase.reduce((sum, line) => sum + Number(line.amount || 0), 0);
     const total = Math.max(1, Number(purchase.total || 0));
     const remainingReduction = Math.min(Number(purchase.remaining || 0), (Number(purchase.remaining || 0) + Number(purchase.returnedRemaining || 0)) * purchaseAmount / total);
-    const paidImpact = subtotal > 0 ? paidAmount * purchaseAmount / subtotal : 0;
+    const paidImpact = moneySubtotal > 0 && !isConsignment(purchaseId) ? paidAmount * purchaseAmount / moneySubtotal : 0;
     purchase.remaining = Math.max(0, Number(purchase.remaining || 0) - remainingReduction);
     purchase.paid = Math.max(0, Number(purchase.paid || 0) - paidImpact);
     purchase.returnedRemaining = Number(purchase.returnedRemaining || 0) + remainingReduction;
     purchase.returnedPaid = Number(purchase.returnedPaid || 0) + paidImpact;
+    totalRemainingReduction += remainingReduction;
     purchase.returnedAt = now;
     purchase.returnReason = reason || "";
   });
@@ -14103,7 +14132,8 @@ function processSupplierPurchaseReturn(supplierId, { account, date, reason, sett
     settlement,
     paidAmount: Number(paidAmount.toFixed(2)),
     balanceEffect: Number(balanceEffect.toFixed(2)),
-    supplierDue: Number((settledByCash ? 0 : subtotal).toFixed(2)),
+    remainingReduction: Number(totalRemainingReduction.toFixed(2)),
+    supplierDue: Number((settledByCash ? 0 : moneySubtotal).toFixed(2)),
     notes: notes || "",
     reason: reason || "",
     account: settledByCash ? normalizeCashAccountName(account) || "الخزينة الرئيسية" : "",
@@ -14203,6 +14233,31 @@ function purchaseReturnModal(id) {
     </form>`);
 }
 
+// Books returned to a supplier leave the inventory batches too, or stock and batches drift apart (and online invoicing
+// and stock counts then refuse the book): the purchase's own batch first, the oldest batches for anything left.
+// Books never tracked in batches only change their stock.
+function consumeReturnedPurchaseBatches(target, purchase, lines) {
+  for (const line of lines) {
+    let qty = Number(line.qty || 0);
+    const productId = String(line.bookId || "");
+    if (!(qty > 0) || !(target.inventoryBatches || []).some(batch => !batch.deletedAt && String(batch.productId || batch.bookId) === productId)) continue;
+    const batchId = (purchase.lines || [])[Number(line.lineIndex)]?.batchId;
+    const own = batchId && (target.inventoryBatches || []).find(batch => !batch.deletedAt && (batch.batchId || batch.id) === batchId);
+    if (own) {
+      const take = Math.min(qty, Number(own.remainingQty || 0));
+      own.remainingQty = Number((Number(own.remainingQty || 0) - take).toFixed(6));
+      own.updatedAt = new Date().toISOString();
+      qty -= take;
+    }
+    if (qty > 0) PurchaseInventoryIntegrity.consumeBatchesFIFO(target, productId, qty);
+  }
+}
+
+function purchaseReturnBatchProblem(purchase, lines) {
+  try { consumeReturnedPurchaseBatches({ inventoryBatches:structuredClone(data.inventoryBatches || []) }, purchase, lines); return ""; }
+  catch { return "كميات الدفعات في المخزن أقل من المرتجع؛ راجع جرد الصنف قبل تسجيل مرتجع المورد."; }
+}
+
 function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumber, supplierReturnInvoiceNumber }) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase || ["ملغاة","مرتجع"].includes(purchase.status)) return toast("المستند غير متاح كمرتجع.", "error");
@@ -14215,6 +14270,9 @@ function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumbe
     const book = getBook(line.bookId);
     if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "error");
   }
+  const batchProblem = purchaseReturnBatchProblem(purchase, selectedLines);
+  if (batchProblem) return toast(batchProblem, "error");
+  consumeReturnedPurchaseBatches(data, purchase, selectedLines);
   selectedLines.forEach(line => {
     const book = getBook(line.bookId);
     if (book) {
@@ -14264,6 +14322,7 @@ function processPurchaseReturn(id, { account, date, reason, supplierInvoiceNumbe
     settlement: paidRefund > 0 ? "cash" : "account-credit",
     paidAmount: Number(paidRefund.toFixed(2)),
     balanceEffect: Number((-remainingReduction).toFixed(2)),
+    remainingReduction: Number(remainingReduction.toFixed(2)),
     reason: reason || "",
     lines: selectedLines,
     createdBy: currentUser?.name || currentUser?.username || "النظام",

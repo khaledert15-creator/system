@@ -24,7 +24,11 @@ const order=(id,extra={})=>({id,customerId:'C1',customerName:'عميل',phone:'0
    onlineOrders:[
     order('ORD1',{saleId:'INV1',paidAmount:100,inventoryReservation:{status:'consumed',lines:[{bookId:'B1',qty:2}]}}),
     order('ORD2',{shipmentId:'SH2',workflowStage:'shipped',status:'تم الشحن',inventoryReservation:{status:'active',lines:[{bookId:'B1',qty:2}]}}),
-    order('ORD3',{shipmentId:'SH3',workflowStage:'shipped',status:'تم الشحن'})]};
+    order('ORD3',{shipmentId:'SH3',workflowStage:'shipped',status:'تم الشحن'}),
+    order('ORD5',{saleId:'INV5',status:'تم التجهيز'})]};
+  // An invoice already returned (its books went back with the return): neither the order nor the invoice may be cancelled.
+  db.sales.push({id:'INV5',onlineOrderId:'ORD5',customerId:'C1',lines:[{bookId:'B1',qty:1,price:150}],total:150,paid:0,remaining:0,status:'مرتجع جزئي',date:now,createdAt:now});
+  db.returns=[{id:'RET-0001',returnNo:'SR-1001',type:'sales_return',documentId:'INV5',sourceDocuments:['INV5'],items:[{bookId:'B1',qty:1,lineIndex:0}],status:'معتمد'}];
   fs.writeFileSync(path.join(temp,'data/database.json'),JSON.stringify(db));
   const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
   const base=`http://127.0.0.1:${port}`;
@@ -78,6 +82,14 @@ const order=(id,extra={})=>({id,customerId:'C1',customerName:'عميل',phone:'0
   assert.equal(sh3.normalizedStatus,'cancelled');assert.equal(sh3.courierNotPickedUp,true);assert.equal(sh3.postalChargeStatus,'not_charged');
   assert.equal(afterPickup.onlineOrders.find(item=>item.id==='ORD3').status,'ملغي');
   console.log('PASS a parcel the courier never collected can be cancelled even when tracking shows it moving');
+
+  const stockBefore=JSON.parse(fs.readFileSync(path.join(temp,'data/database.json'),'utf8')).books[0].stock;
+  response=await cancel('ORD5',{reason:'العميل ألغى الطلب',operationKey:'k5'});
+  assert.equal(response.status,409);assert.equal((await response.json()).code,'SALE_HAS_RETURN');
+  response=await fetch(`${base}/api/sales/INV5/cancel`,{method:'POST',headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:JSON.stringify({reason:'خطأ',operationKey:'k6'})});
+  assert.equal(response.status,409);assert.equal((await response.json()).code,'SALE_HAS_RETURN');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(temp,'data/database.json'),'utf8')).books[0].stock,stockBefore,'stock untouched');
+  console.log('PASS an invoice with a return cannot be cancelled (would restock twice)');
  } finally {
   if(child)child.kill();
   fs.rmSync(temp,{recursive:true,force:true});

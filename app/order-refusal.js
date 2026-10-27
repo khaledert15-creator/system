@@ -288,7 +288,10 @@
     }
     const repair = { outcome: plan.outcome, outcomeLabel: OUTCOMES[plan.outcome], deposit: row.deposit, refund: plan.refund, extraRefund, reversedCash, retained: plan.retained, shippingCharge: plan.fee, extraDue: plan.extraDue, previousContribution: row.contribution, balanceDelta: delta, reason, operationKey, at: now, by: actor.name || actor.username, byUsername: actor.username };
     Object.assign(sale, { refusalRepair: repair, returnedRemaining: round(Number(sale.returnedRemaining || 0) + Number(sale.remaining || 0)), remaining: plan.extraDue, remainingAmount: plan.extraDue, returnedPaid: plan.refund, paid: round(row.deposit - plan.refund), updatedAt: now });
-    for (const item of saleReturns(db, sale.id)) Object.assign(item, { refusalRepaired: true, updatedAt: now });
+    const repairedReturns = saleReturns(db, sale.id);
+    for (const item of repairedReturns) Object.assign(item, { refusalRepaired: true, updatedAt: now });
+    // Reports count cash refunds from the return records, so the deposit paid out now belongs to them too.
+    if (extraRefund > 0 && repairedReturns.length) { const last = repairedReturns.at(-1); last.paidAmount = round(Number(last.paidAmount || 0) + extraRefund); }
     if (order) Object.assign(order, { ...(order.refusal ? {} : { refusal: { ...repair, repaired: true } }), status: "مرتجع", workflowStage: "returned", refusedAt: order.refusedAt || sale.returnedAt || now, paidAmount: round(row.deposit - plan.refund), remainingAmount: plan.extraDue, remaining: plan.extraDue, updatedAt: now });
     return { existing: false, sale, repair };
   }

@@ -875,6 +875,11 @@ function activeOrderShipment(db,order) {
   return (db.shipments||[]).find(item=>!item.deletedAt&&!isCancelledShipment(item)&&!["cancelled","ملغاة"].includes(String(item.normalizedStatus||item.status||""))&&(item.id===order.shipmentId||item.onlineOrderId===order.id))||null;
 }
 
+// A returned invoice already put its books back; cancelling it would restock them again.
+function saleHasReturn(db,sale) {
+  return ["مرتجع","مرتجع جزئي"].includes(sale.status)||(db.returns||[]).some(item=>!item.deletedAt&&["sale","sales_return"].includes(item.type)&&(item.documentId===sale.id||(item.sourceDocuments||[]).includes(sale.id)));
+}
+
 function voidSaleRecord(db,sale,user,note) {
   const now=new Date().toISOString();
   for(const line of sale.lines||[]){
@@ -3751,6 +3756,8 @@ const server = http.createServer(async (req, res) => {
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.cancelledAt||order.workflowStage==="cancelled"||["ملغي","cancelled","canceled"].includes(String(order.status||"").toLowerCase()))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       if(order.refusal)return send(res,409,{ok:false,code:"ORDER_REFUSED",message:"تم تسجيل رفض استلام لهذا الطلب؛ لا يمكن إلغاؤه."});
+      const orderSale=order.saleId&&(db.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
+      if(orderSale&&saleHasReturn(db,orderSale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"فاتورة الطلب عليها مرتجع؛ لا يمكن إلغاء الطلب."});
       if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب تم تسليمه؛ استخدم المرتجعات بدل الإلغاء."});
       try{
         const payload=JSON.parse(await readBody(req)||"{}"),reason=String(payload.reason||"").trim(),operationKey=String(payload.operationKey||"").trim();
@@ -3912,6 +3919,7 @@ const server = http.createServer(async (req, res) => {
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"cancel-sale"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
       const invoiceId=route.split("/")[3],sale=(db.sales||[]).find(item=>item.id===invoiceId&&!item.deletedAt);if(!sale)return send(res,404,{ok:false,message:"الفاتورة غير موجودة."});
       if(sale.status==="ملغاة")return send(res,200,{ok:true,sale,existing:true,revision:dbRevision()});
+      if(saleHasReturn(db,sale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"لا يمكن إلغاء فاتورة عليها مرتجع. الكتب رجعت المخزن بالمرتجع بالفعل."});
       if((db.shipments||[]).some(item=>!item.deletedAt&&(item.invoiceId===sale.id||item.orderId===sale.id)))return send(res,409,{ok:false,code:"SHIPMENT_CANCELLATION_REQUIRED",message:"ألغِ الشحنة المرتبطة أولًا."});
       const financial=OrderRefunds.cancellationPreview(db,{invoiceId});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الفاتورة قبل تسوية المبلغ المدفوع.",financial});
       const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إبطال الفاتورة دون حذف",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}
