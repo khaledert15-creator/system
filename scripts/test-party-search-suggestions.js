@@ -10,6 +10,7 @@ const nodes={'party-search':el('party-search'),'party-search-suggestions':el('pa
 const customers=[
  {id:'C001',name:'عبير مصطفى',phone:'01116340734',type:'تجزئة',balance:520,creditLimit:0},
  {id:'C002',name:'عمر ماجد سعدالدين مصطفى',phone:'01091380820',type:'تجزئة',balance:135,creditLimit:0,governorate:'القاهرة'},
+ {id:'C004',name:'عبير محذوفة',phone:'01200000000',type:'تجزئة',balance:0,creditLimit:0,deletedAt:'2026-10-29T10:00:00Z'},
  {id:'C003',name:'محمد ابراهيم السيد',phone:'01144696287',type:'تجزئة',balance:130,creditLimit:0},
  ...Array.from({length:12},(_,i)=>({id:`C1${String(i).padStart(2,'0')}`,name:`احمد مصطفى ${i}`,phone:`0100000000${i}`,type:'جملة',balance:0,creditLimit:0})),
 ];
@@ -17,14 +18,15 @@ const c={data:{customers,suppliers:[]},partyTab:'customers',partySearchTerm:'',i
  document:{getElementById:id=>nodes[id],activeElement:nodes['party-search']},
  esc:v=>String(v??''),money:v=>`${v} ج.م`,badge:v=>v,partyRow:item=>`<tr>${item.id}</tr>`,scheduleStickyTableScrollbar(){}};
 vm.createContext(c);
-vm.runInContext([source.slice(blockStart,blockEnd),fn('normalizeArabicDigits'),fn('normalizePhone'),fn('recordPhones'),fn('phonesText'),fn('customerSearchFields'),fn('filterParties'),fn('renderPartySearchSuggestions'),fn('closePartySearchSuggestions')].join('\n'),c);
+vm.runInContext([source.slice(blockStart,blockEnd),fn('normalizeArabicDigits'),fn('normalizePhone'),fn('recordPhones'),fn('phonesText'),fn('customerSearchFields'),fn('activeParties'),fn('filterParties'),fn('renderPartySearchSuggestions'),fn('closePartySearchSuggestions')].join('\n'),c);
 const search=q=>{nodes['party-search'].value=q;c.filterParties();return nodes['party-search-suggestions'].innerHTML;};
 
 let html=search('عبير');
 assert.match(html,/data-action="party-search-pick" data-id="C001" data-kind="customer"/);
 assert.match(html,/01116340734/);assert.match(html,/520 ج\.م/);
 assert.equal(nodes['party-search'].attrs['aria-expanded'],'true');
-console.log('PASS typing a name lists the matching customer with code, phone and balance');
+assert.doesNotMatch(html,/C004/);assert.doesNotMatch(nodes['party-table-body'].innerHTML,/C004/);
+console.log('PASS typing a name lists the matching customer with code, phone and balance; deleted ones are not listed');
 
 html=search('0109 138 0820');
 assert.match(html,/data-id="C002"/);assert.doesNotMatch(html,/data-id="C001"/);

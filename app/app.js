@@ -6257,7 +6257,7 @@ function updateSaleSummary() {
 }
 
 function renderPurchases() {
-  const supplierOptions = data.suppliers.map(s => `<option value="${s.id}" ${draftPurchase.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+  const supplierOptions = data.suppliers.filter(s => !s.deletedAt || s.id === draftPurchase.supplierId).map(s => `<option value="${s.id}" ${draftPurchase.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
   const totals = purchaseTotals();
   const lines = draftPurchase.lines.map((line, index) => {
     const book = getBook(line.bookId);
@@ -6610,7 +6610,7 @@ function filterParties() {
   const input = document.getElementById("party-search");
   partySearchTerm = input?.value || "";
   const isCustomers = partyTab === "customers";
-  const list = isCustomers ? data.customers : data.suppliers;
+  const list = activeParties(isCustomers);
   const partyKind = isCustomers ? "customer" : "supplier";
   const term = partySearchTerm.trim();
   const matches = smartFilter(list, term, customerSearchFields);
@@ -6641,9 +6641,14 @@ function closePartySearchSuggestions() {
   if (list?.innerHTML) { list.innerHTML = ""; document.getElementById("party-search")?.setAttribute("aria-expanded", "false"); }
 }
 
+// Deleted customers and suppliers stay in the data (with deletedAt) for old documents, but are not listed.
+function activeParties(isCustomers) {
+  return (isCustomers ? data.customers : data.suppliers).filter(item => !item.deletedAt);
+}
+
 function renderParties() {
   const isCustomers = partyTab === "customers";
-  const list = isCustomers ? data.customers : data.suppliers;
+  const list = activeParties(isCustomers);
   const partyKind = isCustomers ? "customer" : "supplier";
   const partyLabel = isCustomers ? "عميل" : "مورد";
   root.innerHTML = `
@@ -6656,8 +6661,8 @@ function renderParties() {
       </div>
     </div>
     <div class="tabs" style="margin-bottom:16px">
-      <button class="tab ${isCustomers ? "active" : ""}" data-party-tab="customers">العملاء (${data.customers.length})</button>
-      <button class="tab ${!isCustomers ? "active" : ""}" data-party-tab="suppliers">الموردون (${data.suppliers.length})</button>
+      <button class="tab ${isCustomers ? "active" : ""}" data-party-tab="customers">العملاء (${activeParties(true).length})</button>
+      <button class="tab ${!isCustomers ? "active" : ""}" data-party-tab="suppliers">الموردون (${activeParties(false).length})</button>
     </div>
     <article class="card">
       <div class="metric-strip">
@@ -8737,7 +8742,7 @@ function addBookModal(book = null) {
         <div class="form-field"><label>الرف / الموقع</label><input name="shelf" value="${esc(book?.shelf || "")}" placeholder="A-01"></div>
         <div class="form-field"><label>الباركود الداخلي</label><input name="barcode" value="${esc(book?.barcode || `DC${Date.now().toString().slice(-6)}`)}"></div>
         <div class="form-field"><label>باركود إضافي / ISBN / كود مورد</label><input name="extraBarcode" value="${esc(book?.extraBarcode || "")}"></div>
-        <div class="form-field"><label class="required">المورد الأساسي</label><select name="supplierId" required>${data.suppliers.map(s => `<option value="${s.id}" ${book?.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
+        <div class="form-field"><label class="required">المورد الأساسي</label><select name="supplierId" required>${data.suppliers.filter(s => !s.deletedAt || s.id === book?.supplierId).map(s => `<option value="${s.id}" ${book?.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
         <div class="form-field"><label class="required">سعر الغلاف</label><input name="coverPrice" type="number" min="0" step="0.01" required value="${coverPrice || ""}" placeholder="السعر المطبوع على المنتج"></div>
         <div class="form-field"><label class="required">سعر البيع الافتراضي</label><input name="defaultSellingPrice" type="number" min="0" step="0.01" required value="${defaultSellingPrice || ""}"></div>
         <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" readonly value="${lastPurchaseCost === null || lastPurchaseCost === undefined ? "غير متاح" : lastPurchaseCost}"><small>مشتق من آخر فاتورة شراء أو استلام معتمدة، ولا يمكن تعديله يدويًا.</small></div>
@@ -8970,7 +8975,7 @@ function openStatementRecord(reference = "") {
 function partyVoucherModal(type = "استلام", kind = "", partyId = "") {
   const kinds = kind ? [kind] : ["customer", "supplier"];
   const selectedKind = kind || "customer";
-  const parties = selectedKind === "customer" ? data.customers : data.suppliers;
+  const parties = activeParties(selectedKind === "customer").concat((selectedKind === "customer" ? data.customers : data.suppliers).filter(row => row.deletedAt && row.id === partyId));
   const selectedParty = parties.find(item => item.id === partyId) || parties[0];
   openModal(`إيصال ${type}`, "إيصالات العملاء والموردين", `
     <form id="party-voucher-form" data-voucher-type="${type}">
