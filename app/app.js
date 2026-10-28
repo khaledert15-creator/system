@@ -677,6 +677,7 @@ async function login(username, password, quiet = false) {
 
 async function logout() {
   try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch {}
+  await clearServerCopy();
   sessionStorage.removeItem(SESSION_KEY);
   sessionToken = "";
   currentUser = null;
@@ -926,10 +927,56 @@ async function refreshDashboardShipments({ silent = false } = {}) {
 // `drift` is how much longer the page's lists are than the server's after normalizeData() adds its defaults.
 let syncedState = null;
 
-function rememberServerState(raw, revision) {
+function rememberServerState(raw, revision, { keepCopy = true } = {}) {
   const next = normalizeData(raw);
   syncedState = { data:next, revision:String(revision || raw?.meta?.dataRevision || ""), drift:DbDelta.countDrift(raw, next) };
+  if (keepCopy) storeServerCopy(raw, syncedState.revision);
   return syncedState;
+}
+
+// The last full server state is kept in this browser (IndexedDB has room for the whole database, localStorage does
+// not), so opening the System downloads only what changed since then. Only states exactly as the server sent them
+// are stored, never the page's own edits, and the copy is removed at sign-out.
+const SERVER_COPY_DB = "maktabaa-server-copy", SERVER_COPY_STORE = "state";
+function openServerCopyDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") return reject(new Error("IndexedDB unavailable"));
+    const request = indexedDB.open(SERVER_COPY_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(SERVER_COPY_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function serverCopyRequest(mode, action) {
+  const db = await openServerCopyDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction(SERVER_COPY_STORE, mode), request = action(transaction.objectStore(SERVER_COPY_STORE));
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onerror = transaction.onabort = () => reject(transaction.error);
+    });
+  } finally { db.close(); }
+}
+let serverCopyTimer = null;
+function storeServerCopy(raw, revision) {
+  if (!revision || !currentUser?.username) return;
+  const username = currentUser.username;
+  // The server's object is never changed after it arrives (normalizeData works on a copy), so it can be written a
+  // moment later, after the screen has been drawn.
+  clearTimeout(serverCopyTimer);
+  serverCopyTimer = setTimeout(() => {
+    serverCopyRequest("readwrite", store => store.put({ username, build:CLIENT_BUILD || "", revision:String(revision), raw, savedAt:new Date().toISOString() }, "latest")).catch(() => {});
+  }, 1500);
+}
+async function readServerCopy() {
+  try {
+    const copy = await serverCopyRequest("readonly", store => store.get("latest"));
+    return copy && copy.username === currentUser?.username && copy.revision && copy.raw ? copy : null;
+  } catch { return null; }
+}
+function clearServerCopy() {
+  clearTimeout(serverCopyTimer);
+  return serverCopyRequest("readwrite", store => store.delete("latest")).catch(() => {});
 }
 
 async function loadServerState(timeoutMs = 45000) {
@@ -1134,8 +1181,48 @@ function startShipmentAutoRefresh() {
   shipmentRefreshTimer = setInterval(() => refreshDashboardShipments({ silent: true }), SHIPMENT_REFRESH_INTERVAL);
 }
 
+// After loading the server's data: draw the screen and start live updates.
+async function finishServerStart(needsMigration = false) {
+  serverConnected = true;
+  cacheDataLocally();
+  setStorageStatus("البيانات محفوظة", true);
+  render();
+  if (needsMigration) await persistToServer();
+  lastShipmentRefresh = new Date();
+  updateDashboardShipmentCard(false);
+  startShipmentAutoRefresh();
+  startLiveUpdates();
+  openRequestedDialog();
+  scheduleSelfTest();
+}
+
 async function initializeDatabase() {
   const retryDelays = [0, 350, 900];
+  // With a copy from the last visit, only the changes since then are downloaded. Anything unexpected falls back to
+  // the full download below.
+  const copy = await readServerCopy();
+  if (copy) {
+    try {
+      setStorageStatus("جارٍ تحميل التغييرات منذ آخر زيارة...", true);
+      const cachedState = rememberServerState(copy.raw, copy.revision, { keepCopy:false });
+      data = cachedState.data;
+      dbRevision = cachedState.revision;
+      const state = await loadServerState(45000);
+      data = state.data;
+      dbRevision = state.revision || dbRevision;
+      return finishServerStart(false);
+    } catch (error) {
+      syncedState = null;
+      if (error.status === 401) {
+        sessionStorage.removeItem(SESSION_KEY);
+        sessionToken = "";
+        currentUser = null;
+        serverConnected = false;
+        showLogin("تم تحديث النظام وانتهت جلسة الدخول. سجّل الدخول مرة أخرى للمتابعة بأمان.");
+        return;
+      }
+    }
+  }
   try {
     let response;
     let lastError;
@@ -1163,18 +1250,7 @@ async function initializeDatabase() {
       const remote = await response.json();
       const needsMigration = Number(remote.version || 0) < 3 || !Array.isArray(remote.users) || !Array.isArray(remote.stockMovements) || !Array.isArray(remote.onlineOrders) || !Array.isArray(remote.governorates) || !Array.isArray(remote.shippingCompanies);
       data = rememberServerState(remote, dbRevision).data;
-      serverConnected = true;
-      cacheDataLocally();
-      setStorageStatus("البيانات محفوظة", true);
-      render();
-      if (needsMigration) await persistToServer();
-      lastShipmentRefresh = new Date();
-      updateDashboardShipmentCard(false);
-      startShipmentAutoRefresh();
-      startLiveUpdates();
-      openRequestedDialog();
-      scheduleSelfTest();
-      return;
+      return finishServerStart(needsMigration);
     }
 
     if (response.status === 404) {
@@ -14547,7 +14623,7 @@ async function restoreBackup(file) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.message);
     dbRevision = result.revision || "";
-    closeModal(); await initializeDatabase(); toast("تمت استعادة النسخة الاحتياطية.");
+    closeModal(); await clearServerCopy(); await initializeDatabase(); toast("تمت استعادة النسخة الاحتياطية.");
   } catch (error) { toast(error.message || "تعذر الاستعادة.", "error"); }
 }
 

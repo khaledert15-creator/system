@@ -204,7 +204,8 @@ function verifyPassword(user, password) {
 
 // Pages get the latest tracking run of each shipment (all they show); the full log stays on the server and a save
 // never replaces it. Every state sent to a page is fingerprinted so its later refreshes can fetch only the changes.
-const clientDbTracker = DbDelta.createTracker({ hash:value => crypto.createHash("sha1").update(value).digest("base64").slice(0, 20) });
+// Pages keep a copy between visits, so the history covers about a working week of saves (tracking saves often).
+const clientDbTracker = DbDelta.createTracker({ hash:value => crypto.createHash("sha1").update(value).digest("base64").slice(0, 20), historyLimit:5000 });
 
 function latestTrackingRunsForClient(runs = []) {
   const latest = new Map();
