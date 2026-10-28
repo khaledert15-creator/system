@@ -257,6 +257,67 @@ function readDb() {
 // The DB plus the revision it was read at. A handler that mutates reads the request body FIRST, then does
 // read → validate → mutate → writeDb(db, { expectedRevision:revision }) with no await in between, so a save that
 // lands while a slow body is still uploading can never be silently overwritten (lost update).
+// The parsed database for paths that only read it (page loads, live-update deltas, season linking). It is parsed again
+// only after the file changes, so one save no longer costs a full parse for every open page. Never mutate it.
+let sharedDb = null;
+function databaseFileKey() {
+  const stat = fs.statSync(DB_PATH);
+  return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+}
+function readDbShared() {
+  const key = databaseFileKey();
+  if (!sharedDb || sharedDb.key !== key) sharedDb = { key, db:readDb() };
+  return sharedDb.db;
+}
+
+// What pages receive for the current database state, built once per state: the view, its JSON, a gzip copy and the
+// deltas already asked for. Every open page refreshes right after a save, and they now share the same answer.
+let clientStateCache = null;
+const staticFileCache = new Map();
+const CLIENT_DELTA_CACHE_LIMIT = 50;
+function clientState() {
+  const db = readDbShared();
+  if (clientStateCache?.db === db) return clientStateCache;
+  const revision = String(dataRevision(db)), view = clientDbView(db);
+  clientDbTracker.observe(revision, view);
+  clientStateCache = { db, revision, view, json:null, deltas:new Map() };
+  return clientStateCache;
+}
+function clientStateJson(state) {
+  if (state.json === null) state.json = JSON.stringify(state.view);
+  return state.json;
+}
+function clientDelta(state, since) {
+  if (!state.deltas.has(since)) {
+    const delta = clientDbTracker.changesSince(since, state.view);
+    if (state.deltas.size >= CLIENT_DELTA_CACHE_LIMIT) state.deltas.delete(state.deltas.keys().next().value);
+    state.deltas.set(since, { body:delta ? JSON.stringify({ mode:"delta", ...delta }) : `{"mode":"full","revision":${JSON.stringify(state.revision)},"data":${clientStateJson(state)}}` });
+  }
+  return state.deltas.get(since);
+}
+
+// Large answers are gzip-compressed here, off the main thread, so the slow link between Cloudflare and this server
+// carries about a tenth of the bytes. `cache` (an object) keeps the compressed copy for the next request.
+function acceptsGzip(req) {
+  return /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
+}
+function sendMaybeCompressed(req, res, status, body, type, headers = {}, cache = null) {
+  const payload = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
+  if (payload.length < 2048 || !acceptsGzip(req)) return send(res, status, payload, type, headers);
+  const finish = compressed => {
+    if (res.destroyed || res.writableEnded) return;
+    if (!compressed) return send(res, status, payload, type, headers);
+    send(res, status, compressed, type, { ...headers, "Content-Encoding":"gzip", "Vary":"Accept-Encoding" });
+  };
+  if (cache?.gzip) return finish(cache.gzip);
+  const pending = cache?.gzipPending || new Promise(resolve => zlib.gzip(payload, { level:6 }, (error, result) => resolve(error ? null : result)));
+  if (cache && !cache.gzipPending) {
+    cache.gzipPending = pending;
+    pending.then(result => { cache.gzip = result; delete cache.gzipPending; });
+  }
+  pending.then(finish);
+}
+
 function readDbForWrite() {
   const db = readDb();
   return { db, revision:dataRevision(db) };
@@ -266,7 +327,7 @@ const liveClients = new Set();
 
 function writeDb(db, options = {}) {
   // A restore stores the backup exactly as it was (linkSeason:false); every other write links new records to the active season.
-  if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDb() : {}, db);
+  if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDbShared() : {}, db);
   const result = databasePersistence.write(db, options);
   for (const client of liveClients) { try { client.publish(result.revision); } catch { liveClients.delete(client); } }
   // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
@@ -324,6 +385,8 @@ function scheduleBackorderAllocation(delayMs = 1500) {
 function runBackorderAllocation() {
   try {
     if (!fs.existsSync(DB_PATH)) return;
+    // Runs after every save; with no pre-order waiting there is nothing to do, so skip parsing a private copy.
+    if (!(readDbShared().onlineOrders || []).some(order => !order.deletedAt && order.workflowStage === "awaiting_stock")) return;
     const revision = databasePersistence.revision();
     const db = ensureTrackingDb(readDb());
     const { moved, changed } = autoAllocateBackorders(db);
@@ -4578,19 +4641,17 @@ const server = http.createServer(async (req, res) => {
     if (route === "/api/db" && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
-      const db = readDb(), revision = String(dataRevision(db)), view = clientDbView(db);
-      clientDbTracker.observe(revision, view);
-      return send(res, 200, view, "application/json; charset=utf-8", { "X-DB-Revision": revision });
+      const state = clientState();
+      return sendMaybeCompressed(req, res, 200, clientStateJson(state), "application/json; charset=utf-8", { "X-DB-Revision": state.revision }, state);
     }
 
     // Only what changed since a state this server sent to the page; a page holding an unknown state gets everything.
     if (route === "/api/db/delta" && req.method === "GET") {
       if (!sessionUser(req)) return send(res, 401, { ok:false, message:"Authentication required." });
       if (!fs.existsSync(DB_PATH)) return send(res, 404, { ok:false, message:"Database has not been initialized." });
-      const db = readDb(), revision = String(dataRevision(db)), view = clientDbView(db);
-      clientDbTracker.observe(revision, view);
-      const delta = clientDbTracker.changesSince(url.searchParams.get("since") || "", view);
-      return send(res, 200, delta ? { mode:"delta", ...delta } : { mode:"full", revision, data:view }, "application/json; charset=utf-8", { "X-DB-Revision": revision, "Cache-Control":"no-store" });
+      const state = clientState(), since = String(url.searchParams.get("since") || "");
+      const delta = clientDelta(state, since);
+      return sendMaybeCompressed(req, res, 200, delta.body, "application/json; charset=utf-8", { "X-DB-Revision": state.revision, "Cache-Control":"no-store" }, delta);
     }
 
     const supplierDeleteMatch = route.match(/^\/api\/suppliers\/([^/]+)$/);
@@ -4907,7 +4968,12 @@ const server = http.createServer(async (req, res) => {
       : isLegacyMainAsset || rel === "service-worker.js"
         ? { "Cache-Control":"no-cache, max-age=0, must-revalidate", "X-App-Build":APP_BUILD_ID }
         : { "Cache-Control":"public, max-age=300" };
-    return send(res, 200, fs.readFileSync(file), contentType(file), cacheHeaders);
+    const type = contentType(file);
+    if (!/^(text\/|application\/(javascript|json|manifest\+json)|image\/svg)/i.test(type)) return send(res, 200, fs.readFileSync(file), type, cacheHeaders);
+    const stat = fs.statSync(file), cacheKey = `${file}:${stat.size}:${stat.mtimeMs}`;
+    let cached = staticFileCache.get(file);
+    if (cached?.key !== cacheKey) { cached = { key:cacheKey, body:fs.readFileSync(file) }; staticFileCache.set(file, cached); }
+    return sendMaybeCompressed(req, res, 200, cached.body, type, cacheHeaders, cached);
   } catch (error) {
     if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision ?? "") });
     if (["PAYLOAD_TOO_LARGE", "INVALID_JSON"].includes(error.code)) return send(res, error.status, { ok:false, code:error.code, message:error.message });

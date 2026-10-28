@@ -5,7 +5,6 @@ const path = require("path");
 const crypto = require("crypto");
 
 const sha256 = body => crypto.createHash("sha256").update(body).digest("hex");
-const clone = value => JSON.parse(JSON.stringify(value));
 
 function dataRevision(db) {
   return Math.max(0, Number(db?.meta?.dataRevision || 0));
@@ -37,32 +36,42 @@ function createDatabasePersistence({ filePath, logger = () => {} }) {
     return read().revision;
   }
 
+  function currentState() {
+    const raw = fs.readFileSync(filePath);
+    try { if (known && known.key === fileKey()) return { revision:known.revision, sha256:sha256(raw) }; } catch {}
+    const state = read();
+    return { revision:state.revision, sha256:state.sha256 };
+  }
+
   function write(nextValue, { expectedRevision, minimumRevision = 0, operationType = "DATABASE_WRITE", performedBy = "system" } = {}) {
     if (writing) throw Object.assign(new Error("Database write already in progress."), { code:"DATABASE_WRITE_LOCKED" });
     writing = true;
     let tempPath = "", fd;
     try {
-      const current = fs.existsSync(filePath) ? read() : { db:{}, raw:Buffer.from("{}"), revision:0, sha256:sha256("{}") };
+      // Only the current revision and checksum are needed, so the file is parsed only when its revision is not known.
+      const current = fs.existsSync(filePath) ? currentState() : { revision:0, sha256:sha256("{}") };
       if (expectedRevision !== undefined && expectedRevision !== null && Number(expectedRevision) !== current.revision) {
         logger({ operationType:"DATABASE_WRITE_BLOCKED_STALE_REVISION", expectedRevision:Number(expectedRevision), currentRevision:current.revision, performedBy });
         throw Object.assign(new Error("Data was modified after this operation started. Reload and retry."), { code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", expectedRevision:Number(expectedRevision), currentRevision:current.revision });
       }
-      const next = clone(nextValue || {});
-      next.meta = next.meta && typeof next.meta === "object" ? next.meta : {};
+      // The caller's object is serialized as is; only meta is copied so its revision is never changed under the caller.
+      const source = nextValue && typeof nextValue === "object" ? nextValue : {};
+      const next = { ...source, meta:{ ...(source.meta && typeof source.meta === "object" ? source.meta : {}) } };
       next.meta.dataRevision = Math.max(current.revision, Number(minimumRevision) || 0) + 1;
-      const body = `${JSON.stringify(next, null, 2)}\n`;
-      JSON.parse(body);
+      const body = Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+      const bodySha256 = sha256(body);
       tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
       fd = fs.openSync(tempPath, "wx", 0o600);
-      fs.writeFileSync(fd, body, "utf8");
+      fs.writeFileSync(fd, body);
       fs.fsyncSync(fd);
       fs.closeSync(fd); fd = undefined;
-      JSON.parse(fs.readFileSync(tempPath, "utf8"));
+      // JSON.stringify always yields valid JSON, so comparing the bytes on disk proves the file is complete without
+      // parsing the whole database again.
+      if (sha256(fs.readFileSync(tempPath)) !== bodySha256) throw Object.assign(new Error("Database file was not written completely."), { code:"DATABASE_WRITE_VERIFY_FAILED" });
       fs.renameSync(tempPath, filePath); tempPath = "";
       const dirFd = fs.openSync(path.dirname(filePath), "r");
       try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
-      const after = fs.readFileSync(filePath);
-      const result = { revision:next.meta.dataRevision, beforeSha256:current.sha256, afterSha256:sha256(after), size:after.length };
+      const result = { revision:next.meta.dataRevision, beforeSha256:current.sha256, afterSha256:bodySha256, size:body.length };
       highestRevision = Math.max(highestRevision, result.revision);
       try { known = { key:fileKey(), revision:result.revision }; } catch { known = null; }
       logger({ operationType:"DATABASE_WRITE", sourceOperationType:operationType, performedBy, ...result });
