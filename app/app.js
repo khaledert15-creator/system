@@ -5045,8 +5045,9 @@ async function openPreparationOrder(id,start=false) {
         ${order.notes?`<div class="preparation-source-note"><strong>ملاحظات الطلب:</strong> <span style="white-space:pre-wrap">${esc(order.notes)}</span></div>`:""}
         ${canAction("order.quick.edit")?order.saleId?`<button type="button" class="btn secondary" data-action="packing-edit-full" data-id="${esc(order.id)}">تعديل الطلب — الفاتورة ${esc(order.saleId)} هتتلغي وتطلع جديدة بعد التغليف</button>`:`<button type="button" class="btn secondary" data-action="packing-edit-open" data-id="${esc(order.id)}">تعديل الأصناف والكميات والأسعار</button>`:""}
         <div class="packing-progress"><b data-packing-progress>تم تأكيد ${checklist.filter(item=>item.done).length} من ${checklist.length} صنف · ${checklist.reduce((sum,item)=>sum+Number(item.qty||0),0)} نسخة</b> <span>علّم كل كتاب بعد تغليف الكمية كاملة</span></div>
+        ${checklist.some(item=>Number(item.qty)>1)?`<div class="packing-multi-alert" role="alert"><strong>انتبه: في الطلب ده كتب مطلوب منها أكتر من نسخة</strong><span>${checklist.filter(item=>Number(item.qty)>1).map(item=>`${esc(getBook(item.bookId)?.name||item.bookId)} × ${item.qty}`).join(" · ")}</span><small>اضغط على الكتاب مرة لكل نسخة تحطها في الطرد.</small></div>`:""}
         <div class="packing-columns" aria-hidden="true"><span>تم</span><span>الكمية</span><span>الكتاب</span><span>إجمالي الصنف</span></div>
-        <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" aria-label="تأكيد تغليف ${item.qty} × ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-qty-badge ${Number(item.qty)>1?"multi":""}" aria-hidden="true"><b>${item.qty}</b><small>${Number(item.qty)>1?"نسخ":"نسخة"}</small></span><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
+        <div class="preparation-checklist packing-lines">${checklist.map((item,index)=>{const book=getBook(item.bookId);return `<label class="packing-line ${item.done?"is-packed":""} ${Number(item.qty)>1?"is-multi":""}"><input type="checkbox" data-preparation-book="${esc(item.bookId)}" data-qty="${Number(item.qty)}" data-counted="${item.done?Number(item.qty):0}" aria-label="تأكيد تغليف ${item.qty} × ${esc(book?.name||item.bookId)}" ${item.done?"checked":""}><span class="packing-qty-badge ${Number(item.qty)>1?"multi":""}" aria-hidden="true"><b>${item.qty}</b><small>${Number(item.qty)>1?"نسخ":"نسخة"}</small>${Number(item.qty)>1?`<em data-packing-count>${item.done?item.qty:0} من ${item.qty}</em>`:""}</span><span class="packing-book"><strong>${esc(book?.name||item.bookId)}</strong><small dir="auto">${esc(book?.barcode||book?.sku||item.bookId)}</small></span><span class="packing-price"><small>بعد الخصم</small><b>${money(totals.lines[index].finalNet)}</b></span></label>`;}).join("")}</div>
         <div class="packing-totals"><span>الشحن <b>${money(totals.shipping)}</b></span><span>الإجمالي <b>${money(totals.total)}</b></span><span>المدفوع <b>${money(order.paidAmount||0)}</b></span><span>المتبقي <b>${money(Math.max(0,totals.total-Number(order.paidAmount||0)))}</b></span></div>
         ${orderIssueNote(order,{full:true})}
         ${order.workflowStage==="needs_review"?`<div class="review-resolution"><strong>الطلب متوقف للمراجعة؛ اختر طريقة الحل قبل إتمام التغليف:</strong><div class="form-actions"><button type="button" class="btn" data-action="prepare-order-resume" data-id="${esc(order.id)}">استئناف التجهيز — كل الكتب موجودة الآن</button><button type="button" class="btn secondary" data-action="prepare-order-issue" data-id="${esc(order.id)}">نقل الناقص للحجز المسبق</button></div><small>لحذف الكتاب الناقص من الطلب استخدم «تعديل الأصناف والكميات والأسعار» بالأعلى.</small></div>`:""}
@@ -10445,6 +10446,15 @@ modalBody.addEventListener("change", event => {
   if(event.target.matches("[data-preparation-book]")){
     const sheet=event.target.closest("[data-packing-order]"),orderId=sheet?.dataset.packingOrder;
     if(!orderId)return;
+    // A book ordered in several copies needs one tap per copy before it counts as packed.
+    const qty=Number(event.target.dataset.qty||1);
+    if(qty>1){
+      const counted=event.target.checked?Math.min(qty,Number(event.target.dataset.counted||0)+1):0;
+      event.target.dataset.counted=String(counted);
+      const label=event.target.closest(".packing-line"),count=label?.querySelector("[data-packing-count]");
+      if(count)count.textContent=`${counted} من ${qty}`;
+      if(event.target.checked&&counted<qty){event.target.checked=false;label?.classList.remove("count-bump");void label?.offsetWidth;label?.classList.add("count-bump");return;}
+    }
     event.target.closest(".packing-line")?.classList.toggle("is-packed",event.target.checked);
     refreshPackingSheet(sheet);
     schedulePackingChecklistSync(orderId,sheet);
