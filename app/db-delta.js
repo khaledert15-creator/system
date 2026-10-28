@@ -87,10 +87,11 @@
     }
 
     // Returns null when the page's revision is unknown (server restarted, too old): it must load everything.
-    function changesSince(since, db) {
+    // Which keys and record ids changed after `since`, merged over every step; null when `since` is unknown.
+    function changedSince(since) {
       since = String(since);
       if (!current) return null;
-      if (since === current.revision) return { revision:current.revision, since, changes:{}, counts:countsOf(db) };
+      if (since === current.revision) return new Map();
       const start = history.findIndex(step => step.from === since);
       if (start < 0) return null;
       const merged = new Map();
@@ -104,6 +105,14 @@
           target.reordered = target.reordered || change.reordered;
         }
       }
+      return merged;
+    }
+
+    function changesSince(since, db) {
+      since = String(since);
+      const merged = changedSince(since);
+      if (!merged) return null;
+      if (since === current.revision) return { revision:current.revision, since, changes:{}, counts:countsOf(db) };
       const changes = {};
       for (const [key, change] of merged) {
         const value = db[key];
@@ -120,7 +129,7 @@
       return { revision:current.revision, since, changes, counts:countsOf(db) };
     }
 
-    return { observe, changesSince, revision:() => current?.revision ?? null };
+    return { observe, changesSince, changedSince, revision:() => current?.revision ?? null };
   }
 
   function countsOf(db) {

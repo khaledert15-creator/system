@@ -1940,7 +1940,58 @@ async function persistToServer() {
   lastSaveError = null;
 }
 
-function saveData(action = "", entity = "", entityId = "") {
+// What `after` changed compared with `before`: lists of records by id, anything else as a whole value.
+function buildDataPatch(before, after) {
+  const patch = { collections:{}, values:{} };
+  const hasIds = list => Array.isArray(list) && list.every(row => row && typeof row === "object" && (typeof row.id === "string" || typeof row.id === "number") && row.id !== "");
+  for (const key of new Set([...Object.keys(before || {}), ...Object.keys(after || {})])) {
+    const previous = before?.[key], next = after?.[key];
+    if (hasIds(previous) && hasIds(next)) {
+      const old = new Map(previous.map(row => [String(row.id), JSON.stringify(row)]));
+      const upsert = next.filter(row => old.get(String(row.id)) !== JSON.stringify(row));
+      const ids = new Set(next.map(row => String(row.id)));
+      const remove = [...old.keys()].filter(id => !ids.has(id));
+      if (upsert.length || remove.length) patch.collections[key] = { upsert, remove };
+    } else if (JSON.stringify(previous ?? null) !== JSON.stringify(next ?? null)) patch.values[key] = next ?? null;
+  }
+  return patch;
+}
+
+// Sends only what changed since `base` (the data as it was before this action). Other people's changes made in the
+// meantime no longer block the save; only a change to the same records does. The page then fetches what others
+// changed, so it holds the server's full state again.
+async function persistPatchToServer(base) {
+  const baseRevision = dbRevision, patch = { baseRevision, ...buildDataPatch(base, data) };
+  const response = await fetch("/api/db/patch", {
+    method:"POST",
+    headers:authHeaders({ "Content-Type":"application/json; charset=utf-8" }),
+    body:JSON.stringify(patch),
+    signal:AbortSignal.timeout(20000)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    // The server no longer knows this page's revision: fall back to saving the whole database.
+    if (result.code === "PATCH_BASE_UNKNOWN") return persistToServer();
+    if (response.status === 409) saveConflict = true;
+    if (result.code === "CLIENT_OUTDATED") showAppUpdateBanner();
+    if (response.status === 401) showLogin("انتهت جلسة الدخول. سجّل الدخول مرة أخرى.");
+    throw Object.assign(new Error(result.message || "تعذر حفظ قاعدة البيانات."), { code:result.code || (response.status === 409 ? "DATABASE_WRITE_BLOCKED_STALE_REVISION" : "DATABASE_WRITE_FAILED"), revision:result.revision || "" });
+  }
+  lastSuccessfulSaveAt = new Date().toISOString();
+  saveConflict = false;
+  lastSaveError = null;
+  // The page holds its base revision plus its own changes; the delta from that revision brings it up to date.
+  syncedState = { data, revision:String(baseRevision), drift:syncedState?.drift || {} };
+  dbRevision = String(baseRevision);
+  // If that refresh fails the page keeps the old revision, so a later whole-database save is refused instead of
+  // overwriting what others changed; the next refresh downloads everything.
+  try { await reloadRemoteData(); }
+  catch { syncedState = null; }
+}
+
+// With `base` (a copy of the data before this action) only the changed records are sent; without it the whole
+// database is saved as before.
+function saveData(action = "", entity = "", entityId = "", { base = null } = {}) {
   lastSaveError = null;
   stampCashMovements();
   if (action) {
@@ -1960,7 +2011,7 @@ function saveData(action = "", entity = "", entityId = "") {
   setStorageStatus("جارٍ حفظ البيانات...", true);
   saveQueue = saveQueue
     .catch(() => {})
-    .then(() => persistToServer())
+    .then(() => base ? persistPatchToServer(base) : persistToServer())
     .then(() => {
       setStorageStatus("البيانات محفوظة", true);
       return true;
@@ -12065,7 +12116,7 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
   if (paid > 0) {
     data.cash.push({ id: nextId("TX-", data.cash), date: today(), type: "صرف", locked: true, account: "الخزينة الرئيسية", party: getSupplier(supplierId).name, amount: paid, category: type === "أمانة" ? "دفعة توريد أمانة" : "مشتريات", note: `فاتورة ${purchase.id}` });
   }
-  const saved = await saveData("PURCHASE_CREATED", "المشتريات", purchase.id);
+  const saved = await saveData("PURCHASE_CREATED", "المشتريات", purchase.id, { base:dataBeforePurchase });
   if (!saved) {
     data = dataBeforePurchase;
     cacheDataLocally();

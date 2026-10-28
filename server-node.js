@@ -318,6 +318,47 @@ function sendMaybeCompressed(req, res, status, body, type, headers = {}, cache =
   pending.then(finish);
 }
 
+// A page's save as only the records it changed, applied onto the current database. The page names the revision its
+// data was at; a record it changed that someone else changed after that revision is a conflict, while everything
+// else changed meanwhile (tracking, other screens) is kept instead of blocking the save.
+const PATCH_SERVER_ONLY_KEYS = new Set(["users", "trackingRuns", "trackingRunBatches", "meta"]);
+function patchConflict(code, message, key, id) {
+  return Object.assign(new Error(message), { status:409, code, key, id });
+}
+function applyClientPatch(currentSource, patch) {
+  if (!patch || typeof patch !== "object") throw Object.assign(new Error("Invalid save."), { status:400, code:"INVALID_PATCH" });
+  clientState();
+  const changed = clientDbTracker.changedSince(String(patch.baseRevision || ""));
+  if (!changed) throw patchConflict("PATCH_BASE_UNKNOWN", "حدّث البيانات ثم أعد المحاولة.");
+  const next = { ...currentSource };
+  for (const [key, value] of Object.entries(patch.values || {})) {
+    if (PATCH_SERVER_ONLY_KEYS.has(key)) continue;
+    if (changed.has(key)) throw patchConflict("DATABASE_WRITE_BLOCKED_STALE_REVISION", "تم تحديث نفس البيانات من شاشة أخرى. حدّث البيانات ثم أعد المحاولة.", key);
+    next[key] = value;
+  }
+  for (const [key, change] of Object.entries(patch.collections || {})) {
+    if (PATCH_SERVER_ONLY_KEYS.has(key)) continue;
+    const rows = Array.isArray(currentSource[key]) ? currentSource[key] : [];
+    const otherChange = changed.get(key);
+    const touchedByOthers = id => otherChange && (otherChange.kind === "value" || otherChange.changed.has(id) || otherChange.removed.has(id));
+    const upsert = Array.isArray(change?.upsert) ? change.upsert : [], remove = new Set((change?.remove || []).map(String));
+    const byId = new Map(upsert.map(row => [String(row?.id ?? ""), row]));
+    if (byId.has("")) throw Object.assign(new Error("Invalid save."), { status:400, code:"INVALID_PATCH" });
+    for (const id of [...byId.keys(), ...remove]) {
+      if (touchedByOthers(id)) throw patchConflict("DATABASE_WRITE_BLOCKED_STALE_REVISION", "تم تحديث نفس البيانات من شاشة أخرى. حدّث البيانات ثم أعد المحاولة.", key, id);
+    }
+    const kept = rows.filter(row => !remove.has(String(row?.id))).map(row => {
+      const id = String(row?.id);
+      if (!byId.has(id)) return row;
+      const replacement = byId.get(id);
+      byId.delete(id);
+      return replacement;
+    });
+    next[key] = [...kept, ...byId.values()];
+  }
+  return next;
+}
+
 function readDbForWrite() {
   const db = readDb();
   return { db, revision:dataRevision(db) };
@@ -329,6 +370,8 @@ function writeDb(db, options = {}) {
   // A restore stores the backup exactly as it was (linkSeason:false); every other write links new records to the active season.
   if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDbShared() : {}, db);
   const result = databasePersistence.write(db, options);
+  // Fingerprint the new state right away so the page that saved can send its next save as a patch from it.
+  setImmediate(() => { try { clientState(); } catch {} });
   for (const client of liveClients) { try { client.publish(result.revision); } catch { liveClients.delete(client); } }
   // Any save may have added stock (purchase, count, cancellation, return): look for pre-orders that can ship now.
   // Stock that just arrived should reach waiting pre-orders at once; other saves can wait a moment.
@@ -4685,18 +4728,20 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    if (route === "/api/db" && req.method === "PUT") {
+    const isDbPatch = route === "/api/db/patch" && req.method === "POST";
+    if ((route === "/api/db" && req.method === "PUT") || isDbPatch) {
       const user = sessionUser(req);
       if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
       // A page still running an older build would save with its old rules; it must reload first.
       if (APP_ENVIRONMENT === "production" && String(req.headers["x-app-build"] || "") !== APP_BUILD_ID) {
         return send(res, 409, { ok:false, code:"CLIENT_OUTDATED", build:APP_BUILD_ID, message:"تم تحديث النظام إلى نسخة جديدة. حدّث الصفحة (F5 أو Cmd+R) ثم أعد المحاولة." });
       }
-      const expected = req.headers["if-match"];
+      const expected = isDbPatch ? undefined : req.headers["if-match"];
       // A whole-database save must say which revision it was built on. Only the very first save that creates a missing
       // database.json (new install: the first browser bootstraps it) may come without one.
       const databaseExists = fs.existsSync(DB_PATH);
-      if (!expected && databaseExists) return send(res, 428, { ok:false, code:"PRECONDITION_REQUIRED", message:"حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات (If-Match)." });
+      if (isDbPatch && !databaseExists) return send(res, 404, { ok:false, message:"Database has not been initialized." });
+      if (!isDbPatch && !expected && databaseExists) return send(res, 428, { ok:false, code:"PRECONDITION_REQUIRED", message:"حدّث الصفحة ثم أعد المحاولة: الحفظ يحتاج رقم نسخة البيانات (If-Match)." });
       const current = dbRevision();
       if (expected && expected !== current) return send(res, 409, { ok:false, code:"DATABASE_WRITE_BLOCKED_STALE_REVISION", message:"Data was modified in another window. Reload before saving.", revision: current });
       const saveStartedAt = Date.now();
@@ -4704,7 +4749,15 @@ const server = http.createServer(async (req, res) => {
       try { received = await readDatabaseBody(req); }
       catch (error) { return send(res, error.status || 400, { ok:false, code:error.code, message:error.message }); }
       const body = received.text;
-      const parsedSource=JSON.parse(body);
+      // Everything from here to writeDb runs without awaiting, so the patch base and the write see the same file.
+      let parsedSource;
+      if (isDbPatch) {
+        try { parsedSource = applyClientPatch(readDb(), JSON.parse(body)); }
+        catch (error) {
+          if (!error.status) throw error;
+          return send(res, error.status, { ok:false, code:error.code, message:error.message, key:error.key, id:error.id, revision:dbRevision() });
+        }
+      } else parsedSource = JSON.parse(body);
       const parsed = ensureTrackingDb(parsedSource);
       if (!parsed.books || !parsed.sales || !parsed.settings) return send(res, 400, { ok:false, message:"Invalid database structure." });
       const currentSource = fs.existsSync(DB_PATH) ? readDb() : { books:[], sales:[], settings:{} };
@@ -4784,9 +4837,9 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         // Bootstrap (no If-Match) only succeeds while the file is still missing (revision 0); a parallel first save loses with 409.
-        const saved = writeDb(parsed, { expectedRevision:expected ? Number(expected) : 0, operationType:"CLIENT_SAVE", performedBy:user.username });
+        const saved = writeDb(parsed, { expectedRevision:isDbPatch ? dataRevision(currentSource) : expected ? Number(expected) : 0, operationType:isDbPatch ? "CLIENT_PATCH" : "CLIENT_SAVE", performedBy:user.username });
         // How big the save was on the wire and how long the server took, to follow save speed in the logs.
-        console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"DB_SAVE_TIMING", user:user.username, bytes:received.bytes, compressed:received.compressed, serverMs:Date.now() - saveStartedAt }));
+        console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"DB_SAVE_TIMING", patch:isDbPatch, user:user.username, bytes:received.bytes, compressed:received.compressed, serverMs:Date.now() - saveStartedAt }));
         return send(res, 200, { ok:true, revision:String(saved.revision), sha256:saved.afterSha256 }, "application/json; charset=utf-8", { "X-DB-Revision":String(saved.revision) });
       } catch (error) {
         if (error.code === "DATABASE_WRITE_BLOCKED_STALE_REVISION") return send(res, 409, { ok:false, code:error.code, message:error.message, revision:String(error.currentRevision) });
