@@ -2432,7 +2432,7 @@ function isIntegerNumericInput(input) {
     ".sale-qty", ".purchase-qty", ".ool-qty", ".count-actual-stock",
     ".customer-return-qty", ".supplier-return-qty", ".sale-return-qty",
     "#sale-quick-qty", "#purchase-quick-qty", "#tracking-min-delay",
-    "#tracking-max-attempts", "#tracking-no-movement", "#tracking-complaint-hours",
+    "#tracking-max-attempts", "#tracking-no-movement", "#tracking-lower-hours", "#tracking-upper-hours", "#tracking-followup-hours",
     "[name^='qty-']", "[name^='returnQty-']", "[name^='actual-']",
     "[name='stock']", "[name='reorder']", "[name='terms']"
   ].join(","));
@@ -6688,6 +6688,8 @@ function shippingQuickFilterLabel(filter = shippingQuickFilter) {
     "no-movement": "الشحنات بدون حركة",
     call: "تحتاج اتصال عميل",
     complaint: "تحتاج شكوى",
+    "complaint-follow-up": "شكاوى محتاجة متابعة",
+    "warehouse-return": "اتسلمت في المخزن (مرتجع)",
     "return-risk": "خطر مرتجع",
     returned: "الشحنات المرتجعة",
     error: "أخطاء التتبع",
@@ -6733,11 +6735,23 @@ function renderShipping() {
   const active = rows.filter(item => !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status));
   const noMovement = rows.filter(item => item.lastMovementAt && (Date.now() - new Date(item.lastMovementAt).getTime()) / 3600000 >= data.settings.tracking.noMovementHours && !["تم التسليم", "مرتجع"].includes(item.status));
   const quickLabel = shippingQuickFilterLabel();
+  const tasks = [...shipmentFollowUpTasks().values()];
+  const taskCount = kind => tasks.filter(task => task.kind === kind).length;
+  const escalated = tasks.filter(task => task.kind === "complaint-follow-up" && task.escalated).length;
+  const followUpTile = (filter, count, title, note, tone) => `<button type="button" class="followup-tile ${tone} ${count ? "" : "done"} ${shippingQuickFilter === filter ? "active" : ""}" data-action="shipping-stat" data-stat="shipping:${filter}"><b>${count}</b><strong>${title}</strong><small>${count ? note : "مفيش حاجة هنا ✓"}</small></button>`;
   root.innerHTML = `
     <div class="section-title shipping-page-title">
       <div><h2>الشحن والتتبع</h2><p>تابع حالة الطلبات وحدّثها إلكترونيًا أو يدويًا من مكان واحد.</p></div>
       <div class="actions"><button class="btn" data-action="update-all-tracking">تحديث إلكتروني للكل</button><button class="btn secondary" data-action="shipping-companies">شركات الشحن</button></div>
     </div>
+    <section class="followup-panel">
+      <div class="followup-head"><h3>شغل المتابعة النهارده</h3><p>خلّص كل رقم لحد ما يبقى صفر. الشحنة بتخرج من هنا لوحدها لما تتسجل الشكوى أو المتابعة أو الطرد يتسلم.</p></div>
+      <div class="followup-tiles">
+        ${followUpTile("complaint", taskCount("complaint-due"), "تحتاج شكوى", "محاولة تسليم أو تأخير عن 48/72 ساعة", "due")}
+        ${followUpTile("complaint-follow-up", taskCount("complaint-follow-up"), "متابعة شكوى", escalated ? `منها ${escalated} محتاجة تصعيد` : "شكوى مفتوحة والطرد ما اتسلمش", "follow")}
+        ${followUpTile("warehouse-return", taskCount("warehouse-return"), "اتسلمت في المخزن", "البريد كاتب تسليم في المخزن: سجّلها مرتجع", "warehouse")}
+      </div>
+    </section>
     <div class="stats-grid">
       ${statCard("شحنات نشطة", active.length, "قابلة للمتابعة", "▣", "", "", "shipping:active")}
       ${statCard("متأخرة", rows.filter(shipmentIsLate).length, `${SHIPMENT_LATE_DAYS} أيام شغل أو أكتر (من غير الجمعة والسبت)`, "!", "red", "", "shipping:delayed")}
@@ -6746,12 +6760,13 @@ function renderShipping() {
     </div>
     <div id="shipping-filter-summary">${quickLabel ? `<div class="alert-item" style="margin:14px 0"><div class="alert-badge blue">i</div><div><strong>الفلتر الحالي: ${esc(quickLabel)}</strong><span>الجدول بالأسفل يعرض الشحنات المطابقة، ويمكنك فتح أو تعديل أي شحنة مباشرة.</span></div><button class="row-action" data-action="shipping-stat" data-stat="shipping:all">عرض كل الشحنات</button></div>` : ""}</div>
     <article class="card shipping-card">
-      <div class="toolbar shipping-toolbar"><div class="search shipping-search"><input autocomplete="off" id="shipment-search" placeholder="ابحث برقم الطلب، العميل، كود التتبع أو رقم الشكوى"></div><div class="shipping-filter-fields"><select class="filter-select" id="shipment-status" aria-label="فلتر حالة الشحنة"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter" aria-label="فلتر مجموعة الشحنات"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option></select><select class="filter-select" id="shipment-date-filter" aria-label="فلتر تاريخ الشحن"><option value="">كل تواريخ الشحن</option><option value="today">اتشحن النهارده</option><option value="yesterday">اتشحن امبارح</option><option value="week">آخر 7 أيام</option><option value="older">أقدم من 7 أيام</option></select><button class="btn ghost shipping-reset-filters" data-action="reset-shipping-filters" type="button"><span aria-hidden="true">↺</span> إعادة الضبط</button></div></div>
+      <div class="toolbar shipping-toolbar"><div class="search shipping-search"><input autocomplete="off" id="shipment-search" placeholder="ابحث برقم الطلب، العميل، كود التتبع أو رقم الشكوى"></div><div class="shipping-filter-fields"><select class="filter-select" id="shipment-status" aria-label="فلتر حالة الشحنة"><option value="">كل الحالات</option>${statuses.map(([code, meta]) => `<option value="${code}">${meta.label}</option>`).join("")}</select><select class="filter-select" id="shipment-tracking-filter" aria-label="فلتر مجموعة الشحنات"><option value="">كل الشحنات</option><option value="active">نشطة</option><option value="delayed">متأخرة</option><option value="delivered">تم التسليم</option><option value="returned">مرتجع</option><option value="error">تحتاج متابعة</option><option value="complaint">تحتاج شكوى</option><option value="complaint-follow-up">متابعة شكوى</option><option value="warehouse-return">رجعت للمخزن</option></select><select class="filter-select" id="shipment-date-filter" aria-label="فلتر تاريخ الشحن"><option value="">كل تواريخ الشحن</option><option value="today">اتشحن النهارده</option><option value="yesterday">اتشحن امبارح</option><option value="week">آخر 7 أيام</option><option value="older">أقدم من 7 أيام</option></select><button class="btn ghost shipping-reset-filters" data-action="reset-shipping-filters" type="button"><span aria-hidden="true">↺</span> إعادة الضبط</button></div></div>
       <div class="table-wrap" id="shipments-table">${shipmentsTable(rows)}</div>
     </article>`;
 }
 
 function shipmentsTable(list) {
+  const tasks = shipmentFollowUpTasks();
   return `<table class="shipping-table"><thead><tr><th>الطلب والعميل</th><th>كود التتبع</th><th>اتشحن من عندنا</th><th>الحالة الحالية</th><th>آخر تحديث</th><th>الإجراءات</th></tr></thead>
   <tbody>${sortShipmentsForFollowUp(list).map(item => {
     const tracking = shipmentTrackingSummary(item);
@@ -6777,9 +6792,9 @@ function shipmentsTable(list) {
       <td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><span class="muted">${esc(item.invoiceId || item.id)}</span><span class="shipping-customer">${esc(item.customerName || item.customer || "—")}</span><span class="muted" dir="ltr">${esc(item.customerPhone || item.phone || "")}</span></td>
       <td><button type="button" class="shipping-code" data-action="copy-tracking-code" data-id="${item.id}" title="نسخ كود التتبع"><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong><span aria-hidden="true">⧉</span></button><span class="muted">${esc(item.carrier || item.company || "—")}</span></td>
       <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${days === null || terminal ? "" : `<span class="shipping-workdays" title="من تاني يوم الشحن، من غير الجمعة والسبت">${esc(shipmentWorkingDaysLabel(shipmentWorkingDaysSinceShipped(item)))}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
-      <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div></td>
+      <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div>${followUpFlag(tasks.get(item.id))}</td>
       <td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error" title="${esc(item.trackingError)}">تعذر آخر تحديث</span>` : item.trackingNotice ? `<span class="shipment-update-hint" title="${esc(item.trackingNotice)}">بانتظار إعادة المحاولة</span>` : ""}${complaintSummary}</td>
-      <td><div class="shipping-row-actions">${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="order-not-delivered" data-id="${esc(order.id)}">↩ الطلب ما اتسلمش</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
+      <td><div class="shipping-row-actions">${followUpActions(item, tasks.get(item.id))}${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="order-not-delivered" data-id="${esc(order.id)}">↩ الطلب ما اتسلمش</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
         <button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">✎ تعديل الحالة</button>
         <button class="row-action" data-action="shipment-history" data-id="${item.id}">◷ سجل التتبع</button>
         <button class="row-action" data-action="add-shipment-complaint" data-id="${item.id}">＋ إضافة شكوى</button>
@@ -8113,7 +8128,10 @@ function renderSettings() {
         <div class="form-field"><label>أقصى محاولات</label><input id="tracking-max-attempts" type="number" min="1" value="${data.settings.tracking.maxAttempts || 5}"></div>
         <div class="form-field"><label>فترة التحديث التلقائي</label><select id="tracking-interval">${[1,3,6,12,24].map(h => `<option value="${h}" ${Number(data.settings.tracking.intervalHours) === h ? "selected" : ""}>كل ${h} ساعة</option>`).join("")}</select></div>
         <div class="form-field"><label>بدون حركة بعد</label><input id="tracking-no-movement" type="number" min="1" value="${data.settings.tracking.noMovementHours}"></div>
-        <div class="form-field"><label>مرشحة لشكوى بعد</label><input id="tracking-complaint-hours" type="number" min="1" value="${data.settings.tracking.complaintNoMovementHours}"></div>
+        <div class="form-field"><label>شكوى بعد (وجه بحري)</label><input id="tracking-lower-hours" type="number" min="1" value="${followUpSettings().lowerEgyptHours}"><small>ساعة من الشحن، من غير الجمعة.</small></div>
+        <div class="form-field"><label>شكوى بعد (وجه قبلي)</label><input id="tracking-upper-hours" type="number" min="1" value="${followUpSettings().upperEgyptHours}"><small>${esc(ShipmentFollowUp.UPPER_EGYPT.join("، "))}.</small></div>
+        <div class="form-field"><label>متابعة الشكوى كل</label><input id="tracking-followup-hours" type="number" min="1" value="${followUpSettings().followUpHours}"><small>ساعة لحد ما الطرد يتسلم.</small></div>
+        <div class="form-field"><label>أماكن المخزن</label><input id="tracking-warehouse-places" value="${esc(followUpSettings().warehousePlaces.join("، "))}"><small>«تم التسليم» في المكان ده يتحسب مرتجع.</small></div>
         <div class="form-field"><label>نوع التكامل</label><select id="tracking-provider-type"><option ${data.settings.tracking.providerType === "Not Available" ? "selected" : ""}>Not Available</option><option ${data.settings.tracking.providerType === "Official API" ? "selected" : ""}>Official API</option><option ${data.settings.tracking.providerType === "Official Endpoint" ? "selected" : ""}>Official Endpoint</option><option ${data.settings.tracking.providerType === "Third-party API" ? "selected" : ""}>Third-party API</option></select></div>
         <div class="form-field full"><label>Provider Endpoint اختياري</label><input id="tracking-provider-endpoint" value="${esc(data.settings.tracking.providerEndpoint || "")}" placeholder="مثال: https://provider.example/track/{trackingNumber}"><small>اتركه فارغًا إذا لا يوجد API رسمي. لن يتم إنشاء تتبع وهمي.</small></div>
         <div class="form-field"><label>اختبار رقم تتبع</label><input id="tracking-test-number" value="ENO33289190EG"></div>
@@ -9792,6 +9810,9 @@ root.addEventListener("click", async event => {
   if (action === "edit-shipment-status") shipmentStatusQuickModal(target.dataset.id);
   if (action === "shipment-history") shipmentHistoryModal(target.dataset.id);
   if (action === "add-shipment-complaint") addShipmentComplaintModal(target.dataset.id);
+  if (action === "complaint-follow-up") complaintFollowUpModal(target.dataset.id);
+  if (action === "complaint-waive") complaintWaiveModal(target.dataset.id);
+  if (action === "warehouse-return" || action === "warehouse-delivered") resolveWarehouseDelivery(target.dataset.id, action === "warehouse-return");
   if (action === "shipment-complaints") shipmentComplaintsModal(target.dataset.id);
   if (action === "edit-shipment-complaint") editShipmentComplaintModal(target.dataset.id);
   if (action === "update-tracking-now") updateShipmentTrackingNow(target.dataset.id);
@@ -11386,6 +11407,25 @@ modalBody.addEventListener("submit", async event => {
     await createShipmentComplaint(form.dataset.shipmentId, formData);
     return;
   }
+  if (form.id === "complaint-follow-up-form") {
+    try {
+      await complaintRequest(`/api/shipping/complaints/${encodeURIComponent(form.dataset.id)}/follow-up`, { method:"POST", body:JSON.stringify({ note:String(formData.note || "").trim() }) });
+      closeModal();
+      if (currentView === "shipping") renderShipping();
+      toast("اتسجلت المتابعة. هتظهر تاني بكرة لو الطرد ما اتسلمش.");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
+  if (form.id === "complaint-waive-form") {
+    try {
+      const reason = [formData.reason, String(formData.details || "").trim()].filter(Boolean).join(" · ");
+      await complaintRequest("/api/shipping/complaint-waive", { method:"POST", body:JSON.stringify({ shipmentId:form.dataset.id, reason }) });
+      closeModal();
+      if (currentView === "shipping") renderShipping();
+      toast("اتسجل السبب، والعداد بدأ من الأول.");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
   if (form.id === "edit-shipment-complaint-form") {
     await updateShipmentComplaint(form.dataset.id, formData);
     return;
@@ -11652,13 +11692,16 @@ function filterShipments() {
   document.querySelectorAll('.stat-card.interactive[data-action="shipping-stat"]').forEach(card => {
     card.classList.toggle("active", Boolean(shippingQuickFilter) && card.dataset.stat === `shipping:${shippingQuickFilter}`);
   });
+  const tasks = shipmentFollowUpTasks();
   const list = smartFilter(data.shipments.filter(s => {
     const byFilter =
       !trackingFilter ||
       (trackingFilter === "active" && !["تم التسليم","مرتجع","ملغاة"].includes(s.status)) ||
       (trackingFilter === "delayed" && shipmentIsLate(s)) ||
       (trackingFilter === "no-movement" && s.lastMovementAt && (Date.now() - new Date(s.lastMovementAt).getTime()) / 3600000 >= data.settings.tracking.noMovementHours) ||
-      (trackingFilter === "complaint" && s.requiresComplaint) ||
+      (trackingFilter === "complaint" && tasks.get(s.id)?.kind === "complaint-due") ||
+      (trackingFilter === "complaint-follow-up" && tasks.get(s.id)?.kind === "complaint-follow-up") ||
+      (trackingFilter === "warehouse-return" && tasks.get(s.id)?.kind === "warehouse-return") ||
       (trackingFilter === "call" && s.requiresCustomerCall) ||
       (trackingFilter === "return-risk" && s.returnRisk) ||
       (trackingFilter === "delivered" && s.status === "تم التسليم") ||
@@ -13127,6 +13170,87 @@ const COMPLAINT_STATUSES = {
 function complaintStatusLabel(value = "open") {
   const aliases = { ready_to_submit:"open", draft:"open", submitted:"in_progress", under_follow_up:"in_progress", resolved:"closed" };
   return COMPLAINT_STATUSES[aliases[value] || value] || COMPLAINT_STATUSES.open;
+}
+
+function followUpSettings() { return ShipmentFollowUp.settingsFrom(data.settings?.tracking || {}); }
+
+// Every open parcel's follow-up task, worked out in one pass. The clock starts at the post's first tracking event
+// (when it really took the parcel), or at our shipping time before tracking has run.
+function shipmentFollowUpTasks() {
+  const settings = followUpSettings(), now = Date.now(), complaints = data.complaints || [], firstEvent = new Map();
+  for (const event of data.trackingHistory || []) {
+    const at = new Date(event.eventAt || "").getTime();
+    if (event.source === "manual" || !Number.isFinite(at)) continue;
+    if (!firstEvent.has(event.shipmentId) || at < firstEvent.get(event.shipmentId)) firstEvent.set(event.shipmentId, at);
+  }
+  const tasks = new Map();
+  for (const shipment of data.shipments || []) {
+    if (shipment.deletedAt || shipment.status === "ملغاة" || shipment.normalizedStatus === "cancelled") continue;
+    const started = firstEvent.get(shipment.id);
+    const task = ShipmentFollowUp.followUpTask(shipment, { statusCode:shipmentStatusCode(shipment), complaints, now, settings, startedAt:started ? new Date(started).toISOString() : "" });
+    if (task) tasks.set(shipment.id, task);
+  }
+  return tasks;
+}
+
+function followUpFlag(task) {
+  if (!task) return "";
+  const title = { "complaint-due":"قدّم شكوى", "complaint-follow-up":task.escalated ? "صعّد الشكوى" : "تابع الشكوى", "complaint-waiting":"شكوى مفتوحة", "warehouse-return":"رجعت للمخزن" }[task.kind];
+  const note = task.kind === "complaint-waiting" ? `المتابعة الجاية ${dateTimeLabel(new Date(task.dueAt).toISOString())}` : task.reason;
+  return `<div class="followup-flag ${task.kind}${task.escalated ? " escalated" : ""}"><strong>${title}</strong><span>${esc(note)}</span>${task.collected ? `<span class="text-danger">متسجل عليها تحصيل: راجع المالية.</span>` : ""}</div>`;
+}
+
+function followUpActions(shipment, task) {
+  if (!task) return "";
+  const id = esc(shipment.id);
+  if (task.kind === "complaint-due") return `<button class="row-action primary" data-action="add-shipment-complaint" data-id="${id}">＋ سجّلت الشكوى</button><button class="row-action" data-action="complaint-waive" data-id="${id}">${task.trigger === "attempt" ? "العميل ما كانش موجود" : "مش محتاجة شكوى"}</button>`;
+  if (task.kind === "complaint-follow-up") return `<button class="row-action primary" data-action="complaint-follow-up" data-id="${esc(task.complaint.id)}">✎ سجّل متابعة الشكوى</button>`;
+  if (task.kind === "warehouse-return") return `<button class="row-action primary" data-action="warehouse-return" data-id="${id}">↩ سجّلها مرتجع</button><button class="row-action" data-action="warehouse-delivered" data-id="${id}">اتسلمت للعميل فعلًا</button>`;
+  return "";
+}
+
+function complaintFollowUpModal(complaintId) {
+  if (!requireAction("manage-shipment-complaints")) return;
+  const complaint = (data.complaints || []).find(item => item.id === complaintId);
+  if (!complaint) return toast("لم يتم العثور على الشكوى.", "error");
+  const history = (complaint.followUps || []).slice().reverse();
+  openModal(`متابعة شكوى ${complaint.complaintNumber || complaint.complaintReference || ""}`, `${complaint.trackingNumber || ""} · اتقدمت ${arabicDateTimeLabel(complaint.createdAt || complaint.openedAt)}`, `
+    <form id="complaint-follow-up-form" class="shipping-modal-form" data-id="${esc(complaint.id)}">
+      <div class="form-field full"><label class="required">نتيجة المتابعة</label><textarea name="note" required placeholder="مثال: كلمت خدمة عملاء البريد، وعدوا بالتسليم بكرة"></textarea><small>بعد الحفظ الشحنة تختفي من «متابعة شكوى» لحد بكرة، ولو الطرد اتسلم الشكوى تتقفل لوحدها.</small></div>
+      ${history.length ? `<div class="complaint-followups"><strong>المتابعات السابقة (${history.length})</strong>${history.map(item => `<p><span>${arabicDateTimeLabel(item.at)} · ${esc(item.byName || item.by || "")}</span>${esc(item.note)}</p>`).join("")}</div>` : ""}
+      <div class="form-actions"><button class="btn" type="submit">حفظ المتابعة</button><button class="btn ghost" type="button" data-action="shipment-complaints" data-id="${esc(complaint.shipmentId)}">قفل الشكوى أو تعديلها</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+}
+
+function complaintWaiveModal(shipmentId) {
+  if (!requireAction("manage-shipment-complaints")) return;
+  const shipment = data.shipments.find(row => row.id === shipmentId);
+  if (!shipment) return toast("لم يتم العثور على الشحنة.", "error");
+  openModal("من غير شكوى", shipment.onlineOrderId || shipment.orderId || shipment.id, `
+    <form id="complaint-waive-form" class="shipping-modal-form" data-id="${esc(shipment.id)}">
+      <div class="form-field full"><label class="required">السبب</label><select name="reason"><option>العميل قال إنه ما كانش موجود</option><option>العميل طلب ميعاد تسليم تاني</option><option>البريد رد وحدد ميعاد التسليم</option><option>سبب تاني</option></select></div>
+      <div class="form-field full"><label>تفاصيل <span class="muted">(اختيارية)</span></label><input name="details" autocomplete="off"></div>
+      <p class="muted">العداد هيبدأ من الأول: لو الطرد ما اتسلمش في المدة المحددة، أو حصلت محاولة تسليم جديدة، هيطلب شكوى تاني.</p>
+      <div class="form-actions"><button class="btn" type="submit">حفظ</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+}
+
+// The post wrote "delivered" at our warehouse: either it is a return, or (customer in the same town) a real delivery.
+async function resolveWarehouseDelivery(shipmentId, returned) {
+  const shipment = data.shipments.find(row => row.id === shipmentId);
+  if (!shipment) return toast("لم يتم العثور على الشحنة.", "error");
+  const question = returned ? "تسجيل الشحنة مرتجع؟ الطلب هيتعلّم مرتجع، وبعدها سجّل رفض الاستلام من «الطلب ما اتسلمش»." : "تأكيد إن العميل استلم الطرد فعلًا؟";
+  if (!confirm(question)) return;
+  try {
+    await complaintRequest(`/api/shipping/shipments/${encodeURIComponent(shipmentId)}/status`, {
+      method:"PATCH",
+      body:JSON.stringify(returned
+        ? { shippingStatus:"returned", warehouseReturn:true, notes:"البريد كتب «تم التسليم» في المخزن: الطرد رجع لنا." }
+        : { shippingStatus:"delivered", warehouseDelivered:true, notes:"اتأكدنا إن العميل استلم (التسليم مكتوب في مكان المخزن)." })
+    });
+    if (currentView === "shipping") renderShipping();
+    toast(returned ? "اتسجلت الشحنة مرتجع." : "اتأكد التسليم.");
+  } catch (error) { toast(error.message, "error"); }
 }
 
 function shipmentComplaints(shipmentId) {
@@ -14742,7 +14866,13 @@ async function saveSettings() {
   data.settings.tracking.activeShipmentMaxAgeDays = Math.max(1, Number(data.settings.tracking.activeShipmentMaxAgeDays || 45));
   data.settings.tracking.maxAttempts = Math.max(1, Number(document.getElementById("tracking-max-attempts")?.value || 5));
   data.settings.tracking.noMovementHours = Number(document.getElementById("tracking-no-movement")?.value || data.settings.tracking.noMovementHours || 48);
-  data.settings.tracking.complaintNoMovementHours = Number(document.getElementById("tracking-complaint-hours")?.value || data.settings.tracking.complaintNoMovementHours || 72);
+  const positiveHours = (id, fallback) => Number(document.getElementById(id)?.value) > 0 ? Number(document.getElementById(id).value) : fallback;
+  const followUp = followUpSettings();
+  data.settings.tracking.lowerEgyptComplaintHours = positiveHours("tracking-lower-hours", followUp.lowerEgyptHours);
+  data.settings.tracking.upperEgyptComplaintHours = positiveHours("tracking-upper-hours", followUp.upperEgyptHours);
+  data.settings.tracking.complaintFollowUpHours = positiveHours("tracking-followup-hours", followUp.followUpHours);
+  const places = ShipmentFollowUp.placesList(document.getElementById("tracking-warehouse-places")?.value ?? followUp.warehousePlaces);
+  data.settings.tracking.warehousePlaces = places.length ? places : followUp.warehousePlaces;
   data.settings.tracking.manualPause = document.getElementById("tracking-manual-pause")?.value === "true";
   data.settings.tracking.providerName = TRACKING_PROVIDER_NAME;
   data.settings.tracking.providerType = "Browser Automation";

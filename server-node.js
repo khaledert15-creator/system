@@ -18,6 +18,7 @@ const DuplicateOrders = require("./app/duplicate-orders.js");
 const OrderRefunds = require("./app/order-refund.js");
 const PaymentCorrection = require("./app/payment-correction.js");
 const OrderRefusals = require("./app/order-refusal.js");
+const ShipmentFollowUp = require("./app/shipment-followup.js");
 const Returns = require("./app/returns.js");
 const ShippingBatchXlsx = require("./app/shipping-batch-xlsx.js");
 const PostalShipping = require("./app/postal-shipping.js");
@@ -45,7 +46,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "db-delta.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "db-delta.js", "shipment-followup.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -1551,6 +1552,10 @@ function defaultTrackingSettings(settings = {}) {
     retryCount: Number(tracking.retryCount || 1),
     noMovementHours: Number(tracking.noMovementHours || 48),
     complaintNoMovementHours: Number(tracking.complaintNoMovementHours || 72),
+    lowerEgyptComplaintHours: Number(tracking.lowerEgyptComplaintHours) > 0 ? Number(tracking.lowerEgyptComplaintHours) : ShipmentFollowUp.DEFAULTS.lowerEgyptHours,
+    upperEgyptComplaintHours: Number(tracking.upperEgyptComplaintHours) > 0 ? Number(tracking.upperEgyptComplaintHours) : ShipmentFollowUp.DEFAULTS.upperEgyptHours,
+    complaintFollowUpHours: Number(tracking.complaintFollowUpHours) > 0 ? Number(tracking.complaintFollowUpHours) : ShipmentFollowUp.DEFAULTS.followUpHours,
+    warehousePlaces: ShipmentFollowUp.placesList(tracking.warehousePlaces).length ? ShipmentFollowUp.placesList(tracking.warehousePlaces) : ShipmentFollowUp.DEFAULTS.warehousePlaces.slice(),
     rateLimitMs: Math.max(10000, Number(tracking.rateLimitMs || 15000)),
     slaRules: tracking.slaRules || { defaultDays: 4, byGovernorate: {}, weekends: ["Friday"] },
     statusMapping: tracking.statusMapping || {},
@@ -2685,7 +2690,21 @@ function addNotification(db, alert = {}) {
   return item;
 }
 
+// Once a parcel is delivered or back with us there is nothing left to chase, so its open complaints are closed.
+function closeComplaintsOfFinishedShipment(db, shipment) {
+  const status = canonicalShippingStatus(shipment.normalizedStatus || shipment.shippingStatus, shipment.status);
+  if (!["delivered", "returned"].includes(status)) return 0;
+  const now = new Date().toISOString();
+  const open = (db.complaints || []).filter(item => item.shipmentId === shipment.id && ShipmentFollowUp.isOpenComplaint(item));
+  for (const complaint of open) Object.assign(complaint, {
+    status:"closed", complaintStatus:"closed", closedAt:now, closedBy:"system", closedByName:"النظام", autoClosed:true, updatedAt:now,
+    resolutionNotes:complaint.resolutionNotes || (status === "delivered" ? "اتقفلت تلقائيًا: الشحنة اتسلمت." : "اتقفلت تلقائيًا: الشحنة رجعت.")
+  });
+  return open.length;
+}
+
 function applyTrackingAlerts(db, shipment) {
+  closeComplaintsOfFinishedShipment(db, shipment);
   const settings = defaultTrackingSettings(db.settings || {});
   const now = Date.now();
   const lastMovementAt = shipment.lastMovementAt || shipment.shippedAt || shipment.createdAt;
@@ -2854,13 +2873,17 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     db.trackingHistory = db.trackingHistory || [];
     const confirmedEvents = (result.events || []).map(event => {
       const sourceNormalizedStatus = event.normalizedStatus || normalizeTrackingStatus(event.statusText, settings.statusMapping);
-      const canonicalStatus = canonicalShippingStatus(sourceNormalizedStatus, event.statusText);
+      let canonicalStatus = canonicalShippingStatus(sourceNormalizedStatus, event.statusText);
+      // "Delivered" at our own warehouse means the parcel came back to us, not that the customer took it.
+      const warehouse = canonicalStatus === "delivered" ? ShipmentFollowUp.warehouseDelivery(event, shipment, settings.warehousePlaces) : null;
+      if (warehouse && !warehouse.ambiguous) canonicalStatus = "returned";
       return {
         ...event,
         statusText: cleanTrackingText(event.statusText),
         location: cleanTrackingText(event.location),
         sourceNormalizedStatus,
-        normalizedStatus: canonicalStatus || "unknown"
+        normalizedStatus: canonicalStatus || "unknown",
+        ...(warehouse && !warehouse.ambiguous ? { returnedToWarehouse:true, warehousePlace:warehouse.place } : {})
       };
     }).filter(event => event.statusText || event.location);
     shipment.lastTrackingEventCount = confirmedEvents.length;
@@ -2894,6 +2917,7 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
       shipment.lastEvent = latest;
       shipment.lastTrackedAt = started;
       if (confirmedStatus === "delivered") shipment.deliveredAt = shipment.deliveredAt || latest.eventAt || started;
+      if (latest.returnedToWarehouse) shipment.returnedToWarehouseAt = shipment.returnedToWarehouseAt || latest.eventAt || started;
       if (changed) shipment.lastMovementAt = latest.eventAt;
     } else if (latest) {
       shipment.trackingMessage = latest.statusText;
@@ -4471,6 +4495,12 @@ const server = http.createServer(async (req, res) => {
       });
       if (statusCode === "delivered") shipment.deliveredAt = shipment.deliveredAt || now;
       if (statusCode === "returned") shipment.returnedAt = shipment.returnedAt || now;
+      if (payload.warehouseReturn === true && statusCode === "returned") {
+        shipment.returnedToWarehouseAt = shipment.returnedToWarehouseAt || now;
+        syncLinkedOrder(db, shipment);
+      }
+      if (payload.warehouseDelivered === true && statusCode === "delivered") shipment.warehouseDeliveryConfirmedAt = now;
+      closeComplaintsOfFinishedShipment(db, shipment);
       appendManualShipmentStatusAudit(db, user, shipment, statusCode, notes);
       writeDb(db);
       const persisted = ensureTrackingDb(readDb());
@@ -4533,6 +4563,46 @@ const server = http.createServer(async (req, res) => {
       appendShipmentComplaintAudit(db, user, complaint, "إضافة شكوى شحنة", `رقم الشكوى: ${complaintNumber}`);
       writeDb(db);
       return send(res, 201, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
+    }
+
+    if (/^\/api\/shipping\/complaints\/[^/]+\/follow-up$/.test(route) && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageShippingComplaints(user)) return send(res, 403, { ok:false, message:"ليس لديك صلاحية لإدارة شكاوى الشحن." });
+      const id = decodeURIComponent(route.split("/")[4] || "");
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const note = String(payload.note || "").trim();
+      if (!note) return send(res, 400, { ok:false, message:"اكتب نتيجة المتابعة." });
+      const db = ensureTrackingDb(readDb());
+      const complaint = (db.complaints || []).find(item => item.id === id);
+      if (!complaint) return send(res, 404, { ok:false, message:"لم يتم العثور على الشكوى." });
+      if (!ShipmentFollowUp.isOpenComplaint(complaint)) return send(res, 409, { ok:false, message:"الشكوى مقفولة بالفعل." });
+      const now = new Date().toISOString();
+      complaint.followUps = Array.isArray(complaint.followUps) ? complaint.followUps : [];
+      complaint.followUps.push({ id:`CFU-${crypto.randomUUID()}`, at:now, note, by:user.username, byName:user.name || user.username });
+      if ((complaint.status || complaint.complaintStatus) === "open") { complaint.status = "in_progress"; complaint.complaintStatus = "in_progress"; }
+      complaint.updatedAt = now;
+      appendShipmentComplaintAudit(db, user, complaint, "متابعة شكوى شحنة", note);
+      writeDb(db);
+      return send(res, 200, { ok:true, complaint, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
+    }
+
+    if (route === "/api/shipping/complaint-waive" && req.method === "POST") {
+      const user = sessionUser(req);
+      if (!user) return send(res, 401, { ok:false, message:"Authentication required." });
+      if (!canManageShippingComplaints(user)) return send(res, 403, { ok:false, message:"ليس لديك صلاحية لإدارة شكاوى الشحن." });
+      const payload = JSON.parse(await readBody(req) || "{}");
+      const reason = String(payload.reason || "").trim();
+      if (!reason) return send(res, 400, { ok:false, message:"اكتب سبب عدم تقديم الشكوى." });
+      const db = ensureTrackingDb(readDb());
+      const shipment = (db.shipments || []).find(item => item.id === payload.shipmentId && !item.deletedAt);
+      if (!shipment) return send(res, 404, { ok:false, message:"لم يتم العثور على الشحنة." });
+      const now = new Date().toISOString();
+      Object.assign(shipment, { complaintWaivedAt:now, complaintWaiveReason:reason, complaintWaivedBy:user.name || user.username, updatedAt:now });
+      db.audit = Array.isArray(db.audit) ? db.audit : [];
+      AuditIds.appendAuditRecord(db.audit, { date:now, createdAt:now, action:"شحنة من غير شكوى", entity:"الشحن", entityId:shipment.id, user:user.name || user.username, username:user.username, role:user.role, details:reason });
+      writeDb(db);
+      return send(res, 200, { ok:true, shipment, revision:dbRevision() }, "application/json; charset=utf-8", { "X-DB-Revision":dbRevision() });
     }
 
     if (route.startsWith("/api/shipping/complaints/") && req.method === "PATCH") {

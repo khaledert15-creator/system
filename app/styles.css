@@ -2363,3 +2363,26 @@ button.shortage-stat.ok b{color:#1f7a45}
 .report-group{margin-bottom:16px}.report-group h3{margin:0 0 8px;font-size:15px}
 .finance-page .report-grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
 @media(max-width:900px){.ledger-filters{grid-template-columns:1fr 1fr}.ledger-filters input[type=search]{grid-column:1/-1}.carrier-strip .btn{margin-inline-start:0}}
+
+/* Shipping: the employee's follow-up work for today, and the flag on each parcel that needs action. */
+.followup-panel{margin:0 0 16px;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+.followup-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}.followup-head h3{margin:0;font-size:16px}.followup-head p{margin:0;color:var(--muted);font-size:12px}
+.followup-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.followup-tile{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:12px;align-items:center;text-align:start;padding:12px 14px;border:1px solid var(--line);border-inline-start-width:5px;border-radius:12px;background:#fafbfd;font:inherit;color:var(--text);cursor:pointer}
+.followup-tile b{grid-row:span 2;font-size:28px;line-height:1}.followup-tile strong{font-size:14px}.followup-tile small{color:var(--muted);font-size:12px}
+.followup-tile.due{border-inline-start-color:var(--danger)}.followup-tile.due b{color:var(--danger)}
+.followup-tile.follow{border-inline-start-color:var(--warning)}.followup-tile.follow b{color:var(--warning)}
+.followup-tile.warehouse{border-inline-start-color:var(--blue)}.followup-tile.warehouse b{color:var(--blue)}
+.followup-tile.done{opacity:.6;border-inline-start-color:var(--line)}.followup-tile.done b{color:var(--muted)}
+.followup-tile.active{box-shadow:0 0 0 2px var(--blue)}
+.followup-flag{display:grid;gap:2px;margin-top:6px;padding:6px 8px;border-radius:8px;font-size:12px;line-height:1.5}
+.followup-flag strong{font-size:12px}.followup-flag span{color:var(--text)}
+.followup-flag.complaint-due{background:#fff1ef;border:1px solid #f3b4ae}.followup-flag.complaint-due strong{color:var(--danger)}
+.followup-flag.complaint-follow-up{background:#fff8ec;border:1px solid #f1c27d}.followup-flag.complaint-follow-up strong{color:#8a5700}
+.followup-flag.escalated{background:#ffe9e6;border-color:var(--danger)}
+.followup-flag.complaint-waiting{background:#f5f7fa;border:1px solid var(--line)}.followup-flag.complaint-waiting strong{color:var(--muted)}
+.followup-flag.warehouse-return{background:#eef5ff;border:1px solid #c7dcf5}.followup-flag.warehouse-return strong{color:var(--blue)}
+tr:has(.followup-flag.complaint-due)>td:first-child{box-shadow:inset -4px 0 0 var(--danger)}
+.complaint-followups{display:grid;gap:6px;margin:10px 0;padding:10px;border-radius:10px;background:#f7f9fc}
+.complaint-followups p{margin:0;display:grid;gap:2px;font-size:13px}.complaint-followups p span{color:var(--muted);font-size:11px}
+@media(max-width:900px){.followup-tiles{grid-template-columns:1fr}}

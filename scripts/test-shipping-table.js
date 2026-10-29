@@ -28,10 +28,11 @@ const sandbox = {
   esc:value => String(value), canAction:() => true, arabicDateTimeLabel:() => "اليوم", dateTimeLabel:() => "اليوم", complaintStatusLabel:() => "",
   shipmentTrackingSummary:() => ({}), shipmentComplaints:() => [], shipmentStatusOptions:() => "<option>x</option>", shipmentStatusBadge:() => "",
   shipmentStatusCode:item => item.normalizedStatus || "in_transit",
-  data:{ onlineOrders:[] }, orderCanBeRefused:() => false
+  data:{ onlineOrders:[], shipments, complaints:[], trackingHistory:[], settings:{ tracking:{} } }, orderCanBeRefused:() => false,
+  ShipmentFollowUp:require("../app/shipment-followup.js")
 };
 vm.createContext(sandbox);
-vm.runInContext(`const SHIPMENT_LATE_DAYS = 3; const POST_DAYS_OFF = [5, 6];\n${["isTerminalShipment", "shipmentShippedAt", "shipmentDaysSinceShipped", "shipmentWorkingDaysSinceShipped", "shipmentIsOpen", "shipmentIsLate", "shipmentDaysLabel", "shipmentWorkingDaysLabel", "sortShipmentsForFollowUp", "shipmentShippedOnFilter", "shipmentsTable"].map(extract).join("\n")}`, sandbox);
+vm.runInContext(`const SHIPMENT_LATE_DAYS = 3; const POST_DAYS_OFF = [5, 6];\n${["isTerminalShipment", "shipmentShippedAt", "shipmentDaysSinceShipped", "shipmentWorkingDaysSinceShipped", "shipmentIsOpen", "shipmentIsLate", "shipmentDaysLabel", "shipmentWorkingDaysLabel", "sortShipmentsForFollowUp", "shipmentShippedOnFilter", "followUpSettings", "shipmentFollowUpTasks", "followUpFlag", "followUpActions", "shipmentsTable"].map(extract).join("\n")}`, sandbox);
 const pass = (name, fn) => { fn(); console.log(`PASS ${name}`); };
 
 pass("Egypt Post working days start the day after shipping and skip Friday and Saturday", () => {
@@ -74,5 +75,13 @@ pass("the table shows the shipping day, marks the late row, and has manual track
   assert.ok(!row("SH-3").includes("open-egypt-post-with-code"), "no manual tracking on a delivered parcel");
   assert.ok(row("SH-1").includes('data-action="shipment-history"') && row("SH-1").includes('data-action="add-shipment-complaint"'), "the other actions stay under «المزيد»");
   assert.ok(row("SH-1").includes("أحمد"), "who shipped it");
+});
+pass("a parcel 10 days on the road is flagged for a complaint, a fresh one is not", () => {
+  const html = sandbox.shipmentsTable(shipments);
+  const row = id => html.slice(html.indexOf(`data-record-id="${id}"`), html.indexOf("</tr>", html.indexOf(`data-record-id="${id}"`)));
+  assert.ok(row("SH-2").includes("followup-flag complaint-due") && row("SH-2").includes("قدّم شكوى"));
+  assert.ok(row("SH-2").includes('data-action="complaint-waive"'));
+  assert.ok(!row("SH-4").includes("followup-flag"), "shipped today");
+  assert.ok(!row("SH-3").includes("followup-flag"), "delivered");
 });
 console.log("Shipping table tests completed.");
