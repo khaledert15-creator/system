@@ -2386,3 +2386,29 @@ tr:has(.followup-flag.complaint-due)>td:first-child{box-shadow:inset -4px 0 0 va
 .complaint-followups{display:grid;gap:6px;margin:10px 0;padding:10px;border-radius:10px;background:#f7f9fc}
 .complaint-followups p{margin:0;display:grid;gap:2px;font-size:13px}.complaint-followups p span{color:var(--muted);font-size:11px}
 @media(max-width:900px){.followup-tiles{grid-template-columns:1fr}}
+
+/* Shipping table fits the page: no sideways scrolling; columns share the width and button text wraps. */
+.shipping-table { min-width:0; width:100%; }
+.shipping-table th:nth-child(1) { width:16%; }
+.shipping-table th:nth-child(2) { width:14%; }
+.shipping-table th:nth-child(3) { width:14%; }
+.shipping-table th:nth-child(4) { width:21%; }
+.shipping-table th:nth-child(5) { width:12%; }
+.shipping-table th:nth-child(6) { width:23%; }
+.shipping-table th,.shipping-table td { padding-right:9px; padding-left:9px; overflow-wrap:anywhere; }
+.shipment-status-select { min-width:0; }
+.shipping-last-update,.shipping-tracking-complete,.shipment-status-badge { white-space:normal; }
+.shipping-row-actions { min-width:0; gap:6px; }
+.shipping-row-actions .row-action { white-space:normal; text-align:center; line-height:1.35; min-width:0; font-size:11px; }
+.shipping-row-actions .followup-action { grid-column:1 / -1; min-height:36px; font-size:12px; }
+.shipping-row-actions .shipping-more > div { left:auto; right:0; }
+@media (max-width: 1100px) {
+  .shipping-table, .shipping-table tbody, .shipping-table tr, .shipping-table td { display:block; width:100%; }
+  .shipping-table thead { display:none; }
+  .shipping-table tbody tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 12px; padding:12px; border-bottom:1px solid var(--line); }
+  .shipping-table td { padding:4px 0; border:0; }
+  .shipping-table td.shipping-status-cell, .shipping-table td:last-child { grid-column:1 / -1; }
+}
+@media (max-width: 560px) {
+  .shipping-table tbody tr { grid-template-columns:1fr; }
+}

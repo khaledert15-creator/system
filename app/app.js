@@ -6778,7 +6778,7 @@ function shipmentsTable(list) {
     const complaintSummary = latestComplaint ? `<div class="complaint-latest"><strong>آخر شكوى: ${esc(latestComplaint.complaintNumber || latestComplaint.complaintReference)}</strong><span>${complaintStatusLabel(latestComplaint.status || latestComplaint.complaintStatus)} · ${arabicDateTimeLabel(latestComplaint.createdAt)}</span></div>` : "";
     const terminal = isTerminalShipment(item), days = shipmentDaysSinceShipped(item), late = shipmentIsLate(item), shippedAt = shipmentShippedAt(item);
     const trackingAction = terminal
-      ? `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span>`
+      ? (tasks.has(item.id) ? "" : `<span class="shipping-tracking-complete">انتهى تتبع هذه الشحنة</span>`)
       : `<button class="row-action primary action-update" data-action="update-tracking-now" data-id="${item.id}"><span aria-hidden="true">↻</span> تحديث إلكتروني</button>`;
     const manual = terminal ? "" : `<details class="shipping-more shipping-manual"><summary><span aria-hidden="true">🔎</span> تتبع يدوي</summary><div>
         <button class="row-action" data-action="open-egypt-post-with-code" data-id="${item.id}">فتح موقع البريد بالكود</button>
@@ -13204,9 +13204,10 @@ function followUpFlag(task) {
 function followUpActions(shipment, task) {
   if (!task) return "";
   const id = esc(shipment.id);
-  if (task.kind === "complaint-due") return `<button class="row-action primary" data-action="add-shipment-complaint" data-id="${id}">＋ سجّلت الشكوى</button><button class="row-action" data-action="complaint-waive" data-id="${id}">${task.trigger === "attempt" ? "العميل ما كانش موجود" : "مش محتاجة شكوى"}</button>`;
-  if (task.kind === "complaint-follow-up") return `<button class="row-action primary" data-action="complaint-follow-up" data-id="${esc(task.complaint.id)}">✎ سجّل متابعة الشكوى</button>`;
-  if (task.kind === "warehouse-return") return `<button class="row-action primary" data-action="warehouse-return" data-id="${id}">↩ سجّلها مرتجع</button><button class="row-action" data-action="warehouse-delivered" data-id="${id}">اتسلمت للعميل فعلًا</button>${task.checkStage ? `<button class="row-action" data-action="open-egypt-post-with-code" data-id="${id}">فتح صفحة البريد</button><button class="row-action" data-action="warehouse-reopen" data-id="${id}">«اكتمال الطلب» لسه ما حصلش: كمّل التتبع</button>` : ""}`;
+  const button = (action, label, primary = false, dataId = id) => `<button class="row-action followup-action${primary ? " primary" : ""}" data-action="${action}" data-id="${dataId}">${label}</button>`;
+  if (task.kind === "complaint-due") return button("add-shipment-complaint", "＋ سجّلت الشكوى", true) + button("complaint-waive", task.trigger === "attempt" ? "العميل ما كانش موجود" : "مش محتاجة شكوى");
+  if (task.kind === "complaint-follow-up") return button("complaint-follow-up", "✎ سجّل متابعة الشكوى", true, esc(task.complaint.id));
+  if (task.kind === "warehouse-return") return (task.checkStage ? button("open-egypt-post-with-code", "🔎 افتح صفحة البريد واتأكد", true) + button("warehouse-reopen", "لسه ما اكتملتش: كمّل التتبع") : "") + button("warehouse-return", "↩ سجّلها مرتجع", !task.checkStage) + button("warehouse-delivered", "اتسلمت للعميل فعلًا");
   return "";
 }
 
