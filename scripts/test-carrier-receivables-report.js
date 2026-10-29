@@ -39,7 +39,7 @@ assert.equal(rows.find(row=>row.shipment.id==="delivered").kind,"delivered","del
 assert.equal(rows.find(row=>row.shipment.id==="transit").kind,"in_transit","in-transit amount is only potential");
 assert.equal(rows.find(row=>row.shipment.id==="reversed").kind,"delivered","reversed proof is not counted as collected");
 assert.equal(rows.reduce((sum,row)=>sum+row.net,0),1350,"open amounts are not duplicated by direct receipt or settlement");
-assert(app.includes('["carrier-receivables","مستحقات شركات الشحن",["view-financial-reports"]]'),"report is permission-gated in finance tabs");
+assert(app.includes('["carrier-receivables","المستحق لدى الشركات",["view-financial-reports"]]'),"report is permission-gated in finance tabs");
 assert(app.includes('financeTab==="carrier-receivables"'),"report is reachable from finance navigation");
 const renderEnd=app.indexOf("\nfunction renderFinancialReports()",end);
 const context=vm.createContext({

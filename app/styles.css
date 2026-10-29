@@ -2337,3 +2337,29 @@ button.shortage-stat.ok b{color:#1f7a45}
 @keyframes packing-qty-pulse{0%,100%{transform:scale(1);box-shadow:0 0 0 0 rgba(241,194,125,.9)}50%{transform:scale(1.08);box-shadow:0 0 0 6px rgba(241,194,125,0)}}
 @keyframes packing-count-bump{0%{transform:scale(1)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
 @media(prefers-reduced-motion:reduce){.packing-line.is-multi .packing-qty-badge.multi,.packing-line.count-bump .packing-qty-badge{animation:none}}
+
+/* Finance: one row of sections, a smaller row for the pages inside a section, and compact numbers. */
+.finance-page .finance-tabs{margin-bottom:6px;padding-bottom:8px}
+.finance-subtabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 10px;padding:4px;border-radius:12px;background:#eef3f9;width:max-content;max-width:100%}
+.finance-subtabs button{border:0;background:transparent;padding:7px 14px;border-radius:9px;color:var(--muted);font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.finance-subtabs button.active{background:var(--surface);color:var(--blue);box-shadow:0 1px 4px rgba(31,95,168,.12)}
+.finance-intro{display:flex;align-items:center;gap:6px;margin:0 0 14px;color:var(--muted);font-size:13px}
+.finance-page .stats-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:0 0 16px}
+.finance-page .stat-card{padding:12px 14px;display:grid;grid-template-columns:auto 1fr;column-gap:12px;align-items:center;box-shadow:none}
+.finance-page .stat-card .stat-top{margin:0;grid-row:span 3}
+.finance-page .stat-card .stat-icon{width:32px;height:32px;font-size:14px}
+.finance-page .stat-card strong{font-size:19px;margin:0}
+.finance-page .card{margin-bottom:16px}
+.carrier-strip{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 14px;padding:10px 12px;border:1px solid #cfe0f4;border-radius:14px;background:#f5f9ff}
+.carrier-strip span{display:grid;gap:2px;padding:0 12px;border-inline-start:3px solid #c7dcf5}
+.carrier-strip small{color:var(--muted);font-size:12px}.carrier-strip b{font-size:15px}
+.carrier-strip .btn{margin-inline-start:auto}
+.treasury-accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.treasury-account{display:grid;gap:4px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fafbfd}
+.treasury-account>div{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.treasury-account b{font-size:20px}.treasury-account small{color:var(--muted);font-size:11px}
+.ledger-filters{display:grid;grid-template-columns:minmax(200px,2fr) repeat(2,minmax(120px,1fr)) repeat(2,minmax(140px,1fr));gap:8px;margin-bottom:12px}
+.ledger-filters label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}.ledger-filters label input{flex:1;min-width:0}
+.report-group{margin-bottom:16px}.report-group h3{margin:0 0 8px;font-size:15px}
+.finance-page .report-grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+@media(max-width:900px){.ledger-filters{grid-template-columns:1fr 1fr}.ledger-filters input[type=search]{grid-column:1/-1}.carrier-strip .btn{margin-inline-start:0}}
