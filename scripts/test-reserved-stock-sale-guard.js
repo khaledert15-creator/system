@@ -25,6 +25,8 @@ const now=new Date().toISOString();
   const read=()=>JSON.parse(fs.readFileSync(dbFile,'utf8'));
   const latest=async()=>{const response=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}});return {db:await response.json(),revision:response.headers.get('x-db-revision')};};
   const save=(db,revision)=>fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':revision},body:JSON.stringify(db)});
+  // Sets a book's stock the way the page does: with the movement that explains the change.
+  const setStock=(db,bookId,after,documentId)=>{const book=db.books.find(b=>b.id===bookId);db.stockMovements.push({id:`MOV-${documentId}`,bookId,type:'بيع',quantity:after-book.stock,before:book.stock,after,documentId});book.stock=after;};
   const sale=(id,bookId,qty,extra={})=>({id,date:now.slice(0,10),customerId:'C1',status:'معتمدة',lines:[{bookId,productId:bookId,qty,quantity:qty,price:100}],subtotal:100*qty,total:100*qty,paid:100*qty,remaining:0,createdAt:now,...extra});
 
   let r=await fetch(base+'/api/orders/ORD1/confirm',{method:'POST',headers:{'X-Session-Token':token}});
@@ -53,7 +55,7 @@ const now=new Date().toISOString();
   r=await save(db,revision);
   assert.equal(r.status,409,await r.clone().text());assert.equal((await r.json()).code,'RESERVED_STOCK_UNAVAILABLE');
   ({db,revision}=await latest());
-  db.sales.push(sale('INV-POS-4','B2',1));db.books.find(b=>b.id==='B2').stock=1;
+  db.sales.push(sale('INV-POS-4','B2',1));setStock(db,'B2',1,'INV-POS-4');
   r=await save(db,revision);
   assert.equal(r.status,200,await r.clone().text());
   console.log('PASS held copies are not sold; the free copy still is');
@@ -62,7 +64,7 @@ const now=new Date().toISOString();
   ({db,revision}=await latest());
   const order=db.onlineOrders.find(o=>o.id==='ORD1');
   db.sales.push(sale('INV-ORD1','B1',1,{onlineOrderId:'ORD1',operationKey:'order-invoice:ORD1',channel:'متجر إلكتروني'}));
-  db.books.find(b=>b.id==='B1').stock=0;Object.assign(order,{saleId:'INV-ORD1',status:'تم إنشاء الفاتورة'});
+  setStock(db,'B1',0,'INV-ORD1');Object.assign(order,{saleId:'INV-ORD1',status:'تم إنشاء الفاتورة'});
   r=await save(db,revision);
   assert.equal(r.status,200,await r.clone().text());
   const after=read();

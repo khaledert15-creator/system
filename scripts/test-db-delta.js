@@ -93,7 +93,7 @@ pass('Lists without unique ids are tracked as one value',()=>{
     assert.equal(same.mode,'delta');assert.deepEqual(same.changes,{});
 
     // A save (as a page does) then a change made by the server itself.
-    const next=clone(page);next.books[0].stock=7;next.shipments[1].status='خرج للتوصيل';
+    const next=clone(page);next.stockMovements=[...(next.stockMovements||[]),{id:'MOV-TEST-1',bookId:next.books[0].id,type:'شراء',quantity:7-Number(next.books[0].stock||0),before:Number(next.books[0].stock||0),after:7}];next.books[0].stock=7;next.shipments[1].status='خرج للتوصيل';
     const put=await fetch(base+'/api/db',{method:'PUT',headers:{...headers,'Content-Type':'application/json','If-Match':revision},body:JSON.stringify(next)});
     assert.equal(put.status,200,await put.text());
     const delta=await (await fetch(`${base}/api/db/delta?since=${revision}`,{headers})).json();

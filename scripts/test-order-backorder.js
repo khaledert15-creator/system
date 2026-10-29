@@ -57,7 +57,7 @@ const draft=(id,lines)=>({id,customerId:'C1',customerName:'عميل',phone:'0100
   assert.deepEqual(order('ORD1').backorderLines,[{bookId:'B2',qty:1}],'the missing list follows current stock');
   assert.equal(book('B2').reservedStock,1,'still no partial hold');
   const currentResponse=await fetch(base+'/api/db',{headers:{'X-Session-Token':token}}),current=await currentResponse.json();
-  current.books.find(b=>b.id==='B2').stock=4;
+  current.stockMovements=[...(current.stockMovements||[]),{id:'MOV-TEST-1',bookId:'B2',type:'شراء',quantity:1,before:3,after:4}];current.books.find(b=>b.id==='B2').stock=4;
   r=await fetch(base+'/api/db',{method:'PUT',headers:{'X-Session-Token':token,'Content-Type':'application/json','If-Match':currentResponse.headers.get('x-db-revision')},body:JSON.stringify(current)});
   assert.equal(r.status,200,await r.clone().text());
   await until(async()=>order('ORD1').workflowStage==='awaiting_preparation');

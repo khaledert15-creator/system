@@ -2621,9 +2621,23 @@ function allocateInventoryFIFO(productId, quantity) {
   return PurchaseInventoryIntegrity.consumeBatchesFIFO(data, productId, quantity);
 }
 
+// Batches that no longer add up to the book's stock (old data, a legacy return) are first brought back in line with
+// the stock on record, so the book can still be adjusted or counted: missing copies get a batch at the average cost,
+// extra batch copies are taken out oldest first. The difference is kept on the book for the audit trail.
+function realignBookBatches(book, reference) {
+  const stock=Number(book.stock||0),batchQty=productInventorySummary(book.id).currentStockQty,gap=Number((stock-batchQty).toFixed(6));
+  if(Math.abs(gap)<1e-6)return 0;
+  if(gap>0)createInventoryBatch({productId:book.id,purchaseInvoiceId:reference,supplierId:book.supplierId||"",qty:gap,unitCost:productInventorySummary(book.id).averageInventoryCost||latestApprovedPurchaseCost(book.id)||Number(book.cost||0),coverPrice:productCoverPrice(book),purchaseDate:today(),source:"batch_realignment"});
+  else PurchaseInventoryIntegrity.consumeBatchesFIFO(data,book.id,Math.abs(gap));
+  book.batchRealignments=[...(book.batchRealignments||[]),{at:new Date().toISOString(),reference,stock,batchQty,gap,by:currentUser?.name||currentUser?.username||""}];
+  return gap;
+}
+
 function synchronizeStockAdjustment(book, afterStock, reference, reason = "تسوية مخزون") {
   clearCountHold(book);
   const before=Number(book.stock||0),after=Number(afterStock||0),difference=Number((after-before).toFixed(6));
+  if(!Number.isFinite(after)||after<0)throw Object.assign(new Error("Stock must be zero or more."),{code:"INVALID_STOCK"});
+  realignBookBatches(book,reference);
   PurchaseInventoryIntegrity.assertInventoryConsistency(data,[book.id]);
   if(difference<0)PurchaseInventoryIntegrity.consumeBatchesFIFO(data,book.id,Math.abs(difference));
   if(difference>0)createInventoryBatch({productId:book.id,purchaseInvoiceId:reference,supplierId:book.supplierId||"",qty:difference,unitCost:productInventorySummary(book.id).averageInventoryCost||latestApprovedPurchaseCost(book.id)||Number(book.cost||0),coverPrice:productCoverPrice(book),purchaseDate:today(),source:"stock_adjustment"});
@@ -11082,8 +11096,9 @@ modalBody.addEventListener("submit", async event => {
     const rows = [...form.querySelectorAll("[data-count-row]")];
     const changes = [];
     const countId = `COUNT-${Date.now()}`;
-    try{rows.forEach(row=>{const book=getBook(row.dataset.bookId),after=Number(row.querySelector(".count-actual-stock").value||0);if(book&&Number(book.stock||0)!==after){PurchaseInventoryIntegrity.assertInventoryConsistency(data,[book.id]);if(after<Number(book.stock||0)&&productInventorySummary(book.id).currentStockQty<Number(book.stock||0)-after)throw Object.assign(new Error("Insufficient batch stock"),{code:"INSUFFICIENT_BATCH_STOCK"});}});}catch(error){return toast("تم منع اعتماد الجرد لأن أحد الأصناف لا يملك دفعات متطابقة مع رصيده.","error");}
-    rows.forEach(row => {
+    if (rows.some(row => !(Number(row.querySelector(".count-actual-stock").value || 0) >= 0))) return toast("الرصيد الفعلي لازم يكون صفر أو أكتر.", "error");
+    const beforeCount = snapshotClientData();
+    try { rows.forEach(row => {
       const book = getBook(row.dataset.bookId);
       if (!book) return;
       const before = Number(book.stock || 0);
@@ -11094,7 +11109,7 @@ modalBody.addEventListener("submit", async event => {
         synchronizeStockAdjustment(book,after,countId,`جرد ${form.dataset.countType}`);
         recordStockMovement(book, `جرد ${form.dataset.countType}`, after - before, before, after, countId, formData.note || "");
       }
-    });
+    }); } catch (error) { restoreClientData(beforeCount); return toast("تعذر اعتماد الجرد، ومتغيّرش أي رصيد. حدّث الصفحة وأعد المحاولة.", "error"); }
     const auditUser = currentUser?.name || currentUser?.username || "النظام";
     const auditStamp = new Date().toISOString();
     AuditIds.appendAuditRecord(data.audit, { date: auditStamp, action: `اعتماد جرد ${form.dataset.countType} (${changes.length} فروق)`, entity: "المخزون", entityId: countId, user: auditUser });
@@ -11581,7 +11596,8 @@ modalBody.addEventListener("submit", async event => {
   if (form.id === "stock-form") {
     const book = getBook(form.dataset.id);
     const before = Number(book.stock || 0),adjustmentId=`ADJ-${Date.now()}`;
-    try{synchronizeStockAdjustment(book,Number(formData.stock),adjustmentId,formData.reason||"تسوية مخزون");}catch(error){return toast("تم منع التسوية لأنها كانت ستنشئ فرقًا بين المخزون والدفعات.","error");}
+    const beforeAdjustment=snapshotClientData();
+    try{synchronizeStockAdjustment(book,Number(formData.stock),adjustmentId,formData.reason||"تسوية مخزون");}catch(error){restoreClientData(beforeAdjustment);return toast(error.code==="INVALID_STOCK"?"الرصيد الفعلي لازم يكون صفر أو أكتر.":"تعذر اعتماد التسوية، ومتغيّرش الرصيد. حدّث الصفحة وأعد المحاولة.","error");}
     recordStockMovement(book, formData.reason || "تسوية مخزون", book.stock - before, before, book.stock, adjustmentId, formData.note || "");
     saveData("تسوية مخزون", "المخزون", book.id);
     closeModal();
@@ -12952,6 +12968,7 @@ function deleteBook(id) {
   if (!book) return;
   const used = data.sales.some(sale => sale.lines?.some(line => line.bookId === id)) || data.purchases.some(purchase => purchase.lines?.some(line => line.bookId === id));
   if (used) return toast("لا يمكن حذف صنف مرتبط بفواتير. يمكنك تعديل بياناته أو تصفير رصيده.", "error");
+  if (Number(book.stock || 0) !== 0 || bookReservedStock(book) > 0) return toast(`لا يمكن حذف «${book.name}» وعليه رصيد ${book.stock}${bookReservedStock(book) ? ` ومحجوز منه ${bookReservedStock(book)}` : ""}. صفّر رصيده بتسوية أولًا.`, "error");
   if (!confirm(`هل تريد حذف الصنف «${book.name}» نهائيًا؟`)) return;
   book.deletedAt = new Date().toISOString();
   saveData("حذف صنف", "الأصناف", id);

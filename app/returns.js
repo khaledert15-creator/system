@@ -287,9 +287,16 @@
     const settlement = single ? "auto" : String(payload.settlement || "account-credit");
     if (!single && !["cash", "account-credit"].includes(settlement)) throw fail("اختر طريقة تسوية صحيحة.", "INVALID_SETTLEMENT", 400);
     const now = actor.now || new Date().toISOString(), date = String(payload.date || now).slice(0, 10), reason = String(payload.reason || "").trim();
-    for (const line of lines) {
-      const book = list(db, "books").find(item => item.id === line.bookId);
-      if (book && Number(book.stock || 0) < line.qty) throw fail(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "INSUFFICIENT_STOCK");
+    // Only free copies can go back to the supplier: copies reserved for confirmed orders or held for a stock count stay.
+    // Lines are added up per book, so two lines of the same book cannot each pass on their own.
+    const requested = new Map();
+    for (const line of lines) requested.set(line.bookId, (requested.get(line.bookId) || 0) + Number(line.qty || 0));
+    for (const [bookId, qty] of requested) {
+      const book = list(db, "books").find(item => item.id === bookId);
+      if (!book) continue;
+      const stock = Number(book.stock || 0), held = Math.max(0, Number(book.reservedStock || 0)) + Math.max(0, Number(book.countHoldQty || 0));
+      if (stock < qty) throw fail(`لا يمكن تسجيل المرتجع لأن رصيد «${book.name}» أقل من الكمية المطلوبة.`, "INSUFFICIENT_STOCK");
+      if (stock - held < qty) throw fail(`المتاح من «${book.name}» ${Math.max(0, stock - held)} بس؛ باقي النسخ محجوزة لطلبات مؤكدة أو بانتظار الجرد. ألغِ الحجز أو قلّل الكمية.`, "RESERVED_STOCK_UNAVAILABLE");
     }
     const records = list(db, "returns");
     const returnId = nextNumber("RET-", records);
@@ -378,8 +385,17 @@
     // Checks before any change: the stock and batches must still hold what is taken back.
     const books = list(db, "books"), batches = list(db, "inventoryBatches");
     if (sale) {
-      for (const row of effects.stock) { const book = books.find(item => item.id === row.bookId); if (book && Number(book.stock || 0) < row.qty) throw fail(`الكتب اللي رجعت من «${book.name}» اتباعت تاني؛ الرصيد الحالي ${book.stock}.`, "STOCK_ALREADY_USED"); }
-      for (const row of [...effects.batchRestores, ...effects.createdBatches]) { const batch = batches.find(item => (item.batchId || item.id) === row.batchId); if (batch && Number(batch.remainingQty || 0) + 1e-6 < row.qty) throw fail("الكتب اللي رجعت بالمرتجع ده اتباعت تاني من نفس الدفعة؛ مينفعش يتلغي.", "STOCK_ALREADY_USED"); }
+      // Added up per book and per batch: a return from two invoices of the same book has a row for each, and each row
+      // alone could pass while together they take more than is left.
+      const perBook = new Map(), perBatch = new Map();
+      for (const row of effects.stock) perBook.set(row.bookId, (perBook.get(row.bookId) || 0) + Number(row.qty || 0));
+      for (const row of [...effects.batchRestores, ...effects.createdBatches]) perBatch.set(row.batchId, (perBatch.get(row.batchId) || 0) + Number(row.qty || 0));
+      for (const [bookId, qty] of perBook) {
+        const book = books.find(item => item.id === bookId); if (!book) continue;
+        const free = Number(book.stock || 0) - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0));
+        if (free + 1e-6 < qty) throw fail(`الكتب اللي رجعت من «${book.name}» اتباعت تاني أو اتحجزت؛ المتاح دلوقتي ${Math.max(0, free)} والمرتجع ${qty}.`, "STOCK_ALREADY_USED");
+      }
+      for (const [batchId, qty] of perBatch) { const batch = batches.find(item => (item.batchId || item.id) === batchId); if (batch && Number(batch.remainingQty || 0) + 1e-6 < qty) throw fail("الكتب اللي رجعت بالمرتجع ده اتباعت تاني من نفس الدفعة؛ مينفعش يتلغي.", "STOCK_ALREADY_USED"); }
     }
     const party = active(list(db, sale ? "customers" : "suppliers")).find(item => item.id === record.partyId);
     // Stock and batches.

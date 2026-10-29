@@ -994,10 +994,13 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
     }
     if(previous.confirmedAt&&!previous.saleId){
       order.inventoryReservation=previous.inventoryReservation?JSON.parse(JSON.stringify(previous.inventoryReservation)):order.inventoryReservation;
+      // Only an order that holds copies follows its edited lines. A save never creates a reservation for an order that
+      // has none (released, consumed, legacy) — that is the server endpoints' job — so an unrelated order cannot block it.
       if(previous.workflowStage==="awaiting_stock"){
         for(const key of ["workflowStage","status","backorderLines","backorderSince"])order[key]=previous[key]===undefined?undefined:JSON.parse(JSON.stringify(previous[key]));
         continue;
       }
+      if(!previousReservation)continue;
       reserveOrderInventory(nextDb,order,user,order.lines||[]);
     }
   }
@@ -1048,6 +1051,20 @@ function saleHasReturn(db,sale) {
 // What the packing edit dialog saw of an order when it opened; the save goes through only if it is unchanged.
 function packingEditStamp(order={}) {
   return {updatedAt:String(order.updatedAt||""),stage:String(order.workflowStage||""),lines:(order.lines||[]).map(line=>[String(line.bookId||""),Number(line.qty||0),Number(line.price||0),Number(line.discount||0),String(line.discountType||""),String(line.discountScope||"")])};
+}
+
+// An order whose invoice was voided has its books back on the shelf, so it goes back to preparation and its books are
+// reserved for it again (as a pre-order when some were sold meanwhile). Leaving the order «جاهز للشحن» with no
+// reservation let another order take the packed copies, and every later save then failed re-reserving them.
+function returnOrderToPreparation(db,order,sale,user,now=new Date().toISOString()) {
+  if(order.saleId===sale.id)order.saleId=null;
+  if(order.cancelledAt||order.workflowStage==="cancelled"||order.status==="ملغي"){order.updatedAt=now;return;}
+  Object.assign(sale,{voidedForEditOfOrderId:order.id,onlineOrderId:"",operationKey:`${sale.operationKey||`order-invoice:${order.id}`}:voided:${now}`,updatedAt:now});
+  for(const payment of db.orderPayments||[])if(payment.orderId===order.id&&payment.invoiceId===sale.id){payment.invoiceId="";payment.updatedAt=now;}
+  Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
+  if(!order.confirmedAt)return;
+  reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});
+  applyBackorderStage(order,user,now);
 }
 
 function voidSaleRecord(db,sale,user,note) {
@@ -1451,6 +1468,62 @@ function validateNegativeStockWrite(currentDb, nextDb, user) {
   if (!violations.length) return { ok:!reservedConflicts.length, violations:[], reservedConflicts };
   const allowed = nextDb.settings?.allowNegativeStock === true && canOverrideNegativeStock(nextDb, user);
   return { ok:allowed && !reservedConflicts.length, violations, reservedConflicts };
+}
+
+// A whole-database save is written by the browser, so the server checks that what it does to the stock adds up:
+//  - the stock history (movements, batches, purchases, books) is never removed or rewritten, only added to;
+//  - a book's stock changes only together with new movements that explain exactly that change;
+//  - a book whose batches matched its stock still matches after the save (cost and FIFO depend on it);
+//  - stock does not go below zero unless negative stock is allowed and the user may override it.
+// Self-test rows (ids with "-QA-") are left out: the self-test creates and removes them itself.
+const isQaRow = row => /-QA-/.test(String(row?.id || "")) || /-QA-/.test(String(row?.bookId || row?.productId || "")) || /QA-/.test(String(row?.documentId || ""));
+function validateInventoryWrite(currentDb, nextDb, user) {
+  const fail = (code, message, extra = {}) => ({ ok:false, code, message, ...extra });
+  const byKey = rows => {
+    const map = new Map();
+    for (const row of rows || []) if (row?.id != null) map.set(String(row.id), row);
+    for (const row of rows || []) if (row?.repairedFromId && !map.has(String(row.repairedFromId))) map.set(String(row.repairedFromId), row);
+    return map;
+  };
+  for (const [key, label] of [["stockMovements", "حركات المخزون"], ["inventoryBatches", "دفعات المخزون"], ["purchases", "فواتير الشراء"], ["books", "الأصناف"]]) {
+    const next = byKey(nextDb[key]);
+    for (const row of currentDb[key] || []) {
+      if (!row || isQaRow(row)) continue;
+      const after = next.get(String(row.id));
+      if (!after) return fail("INVENTORY_HISTORY_PROTECTED", `مينفعش يتمسح سجل من ${label} (${row.id}). حدّث الصفحة وأعد المحاولة.`, { key, id:row.id });
+      const sameMovement = () => { const { id:a, repairedFromId:x, ...was } = row, { id:b, repairedFromId:y, ...now } = after; return isDeepStrictEqual(was, now); };
+      if (key === "stockMovements" && !sameMovement()) return fail("INVENTORY_HISTORY_PROTECTED", `حركات المخزون القديمة مينفعش تتعدّل (${row.id}). حدّث الصفحة وأعد المحاولة.`, { key, id:row.id });
+    }
+  }
+  const oldMovementIds = new Set((currentDb.stockMovements || []).map(row => String(row.id || "")));
+  const movementDelta = new Map();
+  for (const row of nextDb.stockMovements || []) {
+    if (!row || oldMovementIds.has(String(row.id || ""))) continue;
+    const bookId = String(row.bookId || row.productId || "");
+    const delta = Number.isFinite(Number(row.after)) && Number.isFinite(Number(row.before)) && row.after !== undefined && row.before !== undefined ? Number(row.after) - Number(row.before) : Number(row.quantity || 0);
+    movementDelta.set(bookId, (movementDelta.get(bookId) || 0) + delta);
+  }
+  const oldBooks = new Map((currentDb.books || []).map(book => [String(book.id), book]));
+  const changed = [];
+  for (const book of nextDb.books || []) {
+    if (!book || isQaRow(book)) continue;
+    const id = String(book.id), old = oldBooks.get(id), before = Number(old?.stock || 0), after = Number(book.stock || 0);
+    if (!Number.isFinite(after)) return fail("INVALID_STOCK", `رصيد «${book.name || id}» مش رقم صحيح.`, { bookId:id });
+    const explained = movementDelta.get(id) || 0;
+    if (Math.abs((after - before) - explained) > 1e-6) return fail("STOCK_CHANGE_WITHOUT_MOVEMENT", `رصيد «${book.name || id}» اتغيّر من ${before} لـ ${after} من غير حركة مخزون تفسّر الفرق. حدّث الصفحة وأعد المحاولة.`, { bookId:id, before, after, explained });
+    if (after < 0 && after < before && !(nextDb.settings?.allowNegativeStock === true && canOverrideNegativeStock(nextDb, user))) return fail("NEGATIVE_STOCK_FORBIDDEN", `رصيد «${book.name || id}» مينفعش يبقى بالسالب (${after}).`, { bookId:id });
+    if (old) changed.push(id);
+    if (old && book.deletedAt && !old.deletedAt && (after !== 0 || reservedStock(old) > 0)) return fail("BOOK_HAS_STOCK", `مينفعش يتحذف «${book.name || id}» وعليه رصيد ${after}${reservedStock(old) ? ` ومحجوز منه ${reservedStock(old)}` : ""}. صفّر رصيده بتسوية الأول.`, { bookId:id });
+  }
+  const oldBatches = new Map((currentDb.inventoryBatches || []).map(row => [String(row.id || row.batchId || ""), JSON.stringify(row)]));
+  const batchBooks = new Set((nextDb.inventoryBatches || []).filter(row => oldBatches.get(String(row.id || row.batchId || "")) !== JSON.stringify(row)).map(row => String(row.productId || row.bookId || "")));
+  const scope = [...new Set([...changed.filter(id => Number(oldBooks.get(id)?.stock || 0) !== Number((nextDb.books || []).find(book => String(book.id) === id)?.stock || 0)), ...batchBooks])].filter(id => oldBooks.has(id));
+  if (scope.length) {
+    const wasValid = new Map(PurchaseInventoryIntegrity.inventoryConsistency(currentDb, scope).map(row => [row.productId, row.valid]));
+    const broken = PurchaseInventoryIntegrity.inventoryConsistency(nextDb, scope).find(row => !row.valid && wasValid.get(row.productId));
+    if (broken) { const book = oldBooks.get(broken.productId); return fail("INVENTORY_BATCH_STOCK_MISMATCH", `دفعات «${book?.name || broken.productId}» (${broken.batchRemaining}) مش هتطابق رصيده (${broken.stock}) بعد الحفظ. حدّث الصفحة وأعد المحاولة.`, { bookId:broken.productId }); }
+  }
+  return { ok:true };
 }
 
 function validateCommercialFields(db) {
@@ -4150,7 +4223,7 @@ const server = http.createServer(async (req, res) => {
       if((db.shipments||[]).some(item=>!item.deletedAt&&(item.invoiceId===sale.id||item.orderId===sale.id)))return send(res,409,{ok:false,code:"SHIPMENT_CANCELLATION_REQUIRED",message:"ألغِ الشحنة المرتبطة أولًا."});
       const financial=OrderRefunds.cancellationPreview(db,{invoiceId});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الفاتورة قبل تسوية المبلغ المدفوع.",financial});
       const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إبطال الفاتورة دون حذف",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}
-      const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});const order=(db.onlineOrders||[]).find(item=>item.id===sale.onlineOrderId);if(order)Object.assign(order,{saleId:null,status:"قيد التجهيز",updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED",action:"إبطال فاتورة بيع",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:"تمت التسوية المالية قبل الإبطال"});writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SALE_VOIDED",performedBy:user.username});return send(res,200,{ok:true,sale,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
+      const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});const order=(db.onlineOrders||[]).find(item=>item.id===sale.onlineOrderId&&!item.deletedAt);if(order)returnOrderToPreparation(db,order,sale,user,now);db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED",action:"إبطال فاتورة بيع",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:"تمت التسوية المالية قبل الإبطال"});writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SALE_VOIDED",performedBy:user.username});return send(res,200,{ok:true,sale,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route.startsWith("/api/customers/") && route.endsWith("/ledger") && req.method === "GET") {
@@ -4335,6 +4408,9 @@ const server = http.createServer(async (req, res) => {
       if(operationKey&&(order.reopenedForEdit||[]).some(entry=>entry.operationKey===operationKey))return send(res,200,{ok:true,order,existing:true,revision:String(revision)});
       if(order.cancelledAt||order.workflowStage==="cancelled"||order.status==="ملغي")return send(res,409,{ok:false,code:"ORDER_CANCELLED",message:"الطلب ملغي."});
       if(order.workflowStage==="delivered"||order.status==="تم التسليم")return send(res,409,{ok:false,code:"ORDER_DELIVERED",message:"الطلب اتسلّم؛ التعديل بيبقى مرتجع."});
+      // Copies already returned from this invoice are back on the shelf; voiding it would put them back a second time.
+      const returnedSale=order.saleId&&(db.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
+      if(order.refusal||(returnedSale&&saleHasReturn(db,returnedSale)))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"فاتورة الطلب عليها مرتجع؛ مينفعش ترجع للتعديل. استخدم المرتجعات."});
       if(order.shipmentId||activeOrderShipment(db,order))return send(res,409,{ok:false,code:"ORDER_SHIPPED",message:"الطلب اتعمل له شحنة؛ ألغِ الشحنة الأول أو استخدم المرتجعات."});
       if(!order.saleId&&!order.preparedAt)return send(res,200,{ok:true,order,existing:true,revision:String(revision)});
       const exportCheck=carrierExportBlock(order,payload);if(exportCheck?.error)return send(res,409,exportCheck.error);
@@ -4448,6 +4524,9 @@ const server = http.createServer(async (req, res) => {
         const order=(db.onlineOrders||[]).find(item=>item.id===shipment.onlineOrderId),sale=(db.sales||[]).find(item=>item.id===(shipment.invoiceId||shipment.orderId));
         if(!order)return send(res,409,{ok:false,message:"تعذر العثور على الطلب المرتبط بالشحنة."});
         if(resolution==="cancel_order"){
+          // A refused or returned order already put its books back; cancelling it would restock them a second time.
+          if(order.refusal)return send(res,409,{ok:false,code:"ORDER_REFUSED",message:"الطلب ده متسجل له رفض استلام والكتب رجعت المخزن بالفعل؛ مينفعش يتلغي."});
+          if(sale&&saleHasReturn(db,sale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"فاتورة الطلب عليها مرتجع والكتب رجعت المخزن بالفعل؛ مينفعش يتلغي."});
           const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الطلب بالكامل قبل تسوية المبلغ المدفوع.",financial});
           if(sale&&!sale.cancelledAt&&sale.status!=="ملغاة"){
             const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إلغاء طلب بعد إلغاء الشحنة لدى شركة الشحن",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username,shipmentId:null,updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED_AFTER_SHIPMENT_CANCELLATION",action:"إبطال فاتورة بعد إلغاء الشحنة",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:reason});
@@ -4934,6 +5013,11 @@ const server = http.createServer(async (req, res) => {
       if (!stockValidation.ok) {
         const row = stockValidation.violations[0];
         return send(res, 403, { ok:false, code:"NEGATIVE_STOCK_FORBIDDEN", message:`لا يمكن إتمام البيع. الرصيد المتاح من «${row.name}» هو ${row.available} والكمية المطلوبة ${row.requested}.`, violations:stockValidation.violations });
+      }
+      const inventoryCheck=validateInventoryWrite(currentDb,parsed,user);
+      if(!inventoryCheck.ok){
+        console.warn(JSON.stringify({timestamp:new Date().toISOString(),operationType:"INVENTORY_WRITE_BLOCKED",performedBy:user.username,code:inventoryCheck.code,key:inventoryCheck.key,id:inventoryCheck.id,bookId:inventoryCheck.bookId}));
+        return send(res,409,inventoryCheck);
       }
       appendNegativeStockAudit(parsed, user, stockValidation.violations);
       pruneLazyFinanceFields(currentSource,parsed);

@@ -238,6 +238,8 @@ const item = (bookId, quantity, unitPrice, extra = {}) => ({ productId:Number(bo
     assert.equal(first.body.order.workflowStage, 'awaiting_stock'); assert.equal(second.body.order.workflowStage, 'awaiting_stock');
     await H.sleep(1700); // let the post-write allocation pass settle
     const full = await system.api('/api/db', { username:'warehouse' });
+    full.body.stockMovements = [...(full.body.stockMovements || []), { id:'MOV-TEST-1', bookId:'B0003', type:'شراء', quantity:1, before:0, after:1 }];
+    full.body.inventoryBatches = [...(full.body.inventoryBatches || []), { id:'BAT-TEST-1', batchId:'BAT-TEST-1', productId:'B0003', receivedQty:1, remainingQty:1, unitCost:30 }];
     full.body.books.find(row => row.id === 'B0003').stock = 1;
     const put = await system.api('/api/db', { username:'warehouse', method:'PUT', body:full.body, headers:{ 'If-Match':full.headers.get('x-db-revision') } });
     assert.equal(put.status, 200, put.text);

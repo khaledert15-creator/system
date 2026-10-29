@@ -15,7 +15,7 @@ function context() {
   c.fetchLatestDatabaseForPurchase=async()=>({data:structuredClone(c.data),revision:"new"});
   c.createInventoryBatch=({productId,qty,unitCost})=>c.data.inventoryBatches.push({id:`batch-${c.data.inventoryBatches.length}`,productId,remainingQty:qty,unitCost});
   vm.createContext(c);
-  vm.runInContext(fn("bookCountHold")+"\n"+fn("clearCountHold")+"\n"+fn("synchronizeStockAdjustment")+"\n"+fn("bookEditFingerprint"),c);
+  vm.runInContext(fn("bookCountHold")+"\n"+fn("clearCountHold")+"\n"+fn("realignBookBatches")+"\n"+fn("synchronizeStockAdjustment")+"\n"+fn("bookEditFingerprint"),c);
   return c;
 }
 async function run() {

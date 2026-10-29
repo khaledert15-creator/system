@@ -128,6 +128,7 @@ const item = (bookId, quantity, unitPrice) => ({ productId:Number(bookId.slice(1
     // ---- Stock arrives for part 2: it moves to preparation on its own and the Store link follows.
     const rev2 = (await (await fetch(`${system.base}/api/live-revision`, { headers:{ 'X-Session-Token':owner } })).json()).revision;
     const restock = (await system.api('/api/db', { username:'owner' })).body;
+    restock.stockMovements = [...(restock.stockMovements || []), { id:'MOV-TEST-1', bookId:'B0005', type:'شراء', quantity:2, before:1, after:3 }];
     restock.books.find(row => row.id === 'B0005').stock = 3;
     r = await system.api('/api/db', { username:'owner', method:'PUT', body:restock, headers:{ 'If-Match':rev2 } });
     assert.equal(r.status, 200, r.text);
