@@ -1835,6 +1835,7 @@ function localRpaTimelineToEvents(result = {}, shipment = {}) {
       statusText,
       normalizedStatus: row.normalizedStatus || normalizeTrackingStatus(statusText),
       location,
+      ...(row.stage ? { stage: cleanTrackingText(row.stage) } : {}),
       eventAt: new Date(row.eventAt || row.date || Date.now()).toString() === "Invalid Date" ? new Date().toISOString() : new Date(row.eventAt || row.date || Date.now()).toISOString(),
       provider: "LocalTrackingRPA",
       raw: row
@@ -2874,6 +2875,8 @@ async function trackShipment(db, shipment, { manual = false, requestId = crypto.
     const confirmedEvents = (result.events || []).map(event => {
       const sourceNormalizedStatus = event.normalizedStatus || normalizeTrackingStatus(event.statusText, settings.statusMapping);
       let canonicalStatus = canonicalShippingStatus(sourceNormalizedStatus, event.statusText);
+      // Only the post's last stage is a delivery; a "تسليم" text in an earlier stage is the parcel out with the courier.
+      if (canonicalStatus === "delivered" && event.stage && event.stage !== ShipmentFollowUp.COMPLETION_STAGE) canonicalStatus = "out_for_delivery";
       // "Delivered" at our own warehouse means the parcel came back to us, not that the customer took it.
       const warehouse = canonicalStatus === "delivered" ? ShipmentFollowUp.warehouseDelivery(event, shipment, settings.warehousePlaces) : null;
       if (warehouse && !warehouse.ambiguous) canonicalStatus = "returned";
@@ -4500,6 +4503,12 @@ const server = http.createServer(async (req, res) => {
         syncLinkedOrder(db, shipment);
       }
       if (payload.warehouseDelivered === true && statusCode === "delivered") shipment.warehouseDeliveryConfirmedAt = now;
+      // A parcel read as delivered before «اكتمال الطلب»: tracking resumes and its order goes back to shipped.
+      if (payload.reopenTracking === true && !["delivered", "returned"].includes(statusCode)) {
+        Object.assign(shipment, { deliveredAt:"", nextTrackingAt:"", trackingEnabled:shipment.trackingEnabled !== false, reopenedAt:now });
+        const order = db.onlineOrders?.find(item => item.id === shipment.onlineOrderId);
+        if (order && !order.refusal && (order.workflowStage === "delivered" || order.status === "تم التسليم")) Object.assign(order, { status:"تم الشحن", workflowStage:"shipped", updatedAt:now });
+      }
       closeComplaintsOfFinishedShipment(db, shipment);
       appendManualShipmentStatusAudit(db, user, shipment, statusCode, notes);
       writeDb(db);

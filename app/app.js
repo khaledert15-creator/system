@@ -9813,6 +9813,7 @@ root.addEventListener("click", async event => {
   if (action === "complaint-follow-up") complaintFollowUpModal(target.dataset.id);
   if (action === "complaint-waive") complaintWaiveModal(target.dataset.id);
   if (action === "warehouse-return" || action === "warehouse-delivered") resolveWarehouseDelivery(target.dataset.id, action === "warehouse-return");
+  if (action === "warehouse-reopen") reopenShipmentTracking(target.dataset.id);
   if (action === "shipment-complaints") shipmentComplaintsModal(target.dataset.id);
   if (action === "edit-shipment-complaint") editShipmentComplaintModal(target.dataset.id);
   if (action === "update-tracking-now") updateShipmentTrackingNow(target.dataset.id);
@@ -13205,7 +13206,7 @@ function followUpActions(shipment, task) {
   const id = esc(shipment.id);
   if (task.kind === "complaint-due") return `<button class="row-action primary" data-action="add-shipment-complaint" data-id="${id}">＋ سجّلت الشكوى</button><button class="row-action" data-action="complaint-waive" data-id="${id}">${task.trigger === "attempt" ? "العميل ما كانش موجود" : "مش محتاجة شكوى"}</button>`;
   if (task.kind === "complaint-follow-up") return `<button class="row-action primary" data-action="complaint-follow-up" data-id="${esc(task.complaint.id)}">✎ سجّل متابعة الشكوى</button>`;
-  if (task.kind === "warehouse-return") return `<button class="row-action primary" data-action="warehouse-return" data-id="${id}">↩ سجّلها مرتجع</button><button class="row-action" data-action="warehouse-delivered" data-id="${id}">اتسلمت للعميل فعلًا</button>`;
+  if (task.kind === "warehouse-return") return `<button class="row-action primary" data-action="warehouse-return" data-id="${id}">↩ سجّلها مرتجع</button><button class="row-action" data-action="warehouse-delivered" data-id="${id}">اتسلمت للعميل فعلًا</button>${task.checkStage ? `<button class="row-action" data-action="open-egypt-post-with-code" data-id="${id}">فتح صفحة البريد</button><button class="row-action" data-action="warehouse-reopen" data-id="${id}">«اكتمال الطلب» لسه ما حصلش: كمّل التتبع</button>` : ""}`;
   return "";
 }
 
@@ -13250,6 +13251,19 @@ async function resolveWarehouseDelivery(shipmentId, returned) {
     });
     if (currentView === "shipping") renderShipping();
     toast(returned ? "اتسجلت الشحنة مرتجع." : "اتأكد التسليم.");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+// Read as delivered before the post's last stage: back to "out for delivery" so tracking picks it up again.
+async function reopenShipmentTracking(shipmentId) {
+  if (!confirm("الشحنة هترجع «جاري التسليم» والتتبع هيكمّل عليها، والطلب يرجع «تم الشحن». تكمّل؟")) return;
+  try {
+    await complaintRequest(`/api/shipping/shipments/${encodeURIComponent(shipmentId)}/status`, {
+      method:"PATCH",
+      body:JSON.stringify({ shippingStatus:"out_for_delivery", reopenTracking:true, notes:"اتقرت «تم التسليم» قبل «اكتمال الطلب»: التتبع رجع يشتغل." })
+    });
+    if (currentView === "shipping") renderShipping();
+    toast("التتبع رجع يشتغل على الشحنة.");
   } catch (error) { toast(error.message, "error"); }
 }
 

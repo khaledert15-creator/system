@@ -55,6 +55,10 @@ const warehouseEvent = { statusText:'تم التسليم', location:'مكتب ب
 assert.deepEqual(F.warehouseDelivery(warehouseEvent, { city:'الزقازيق' }), { place:'أولاد صقر', ambiguous:false });
 assert.equal(F.warehouseDelivery(warehouseEvent, { city:'اولاد صقر' }).ambiguous, true);
 assert.equal(F.warehouseDelivery({ statusText:'تم التسليم', location:'مكتب بريد الزقازيق' }, {}), null);
+assert.equal(F.warehouseDelivery({ ...warehouseEvent, stage:'التسليم' }, {}), null, 'only «اكتمال الطلب» decides');
+assert.equal(F.warehouseDelivery({ ...warehouseEvent, stage:'اكتمال الطلب' }, {}).place, 'أولاد صقر');
+assert.equal(task({ lastEvent:warehouseEvent }, { statusCode:'delivered' }).checkStage, true, 'older events without a stage ask the employee to check');
+assert.equal(task({ lastEvent:{ ...warehouseEvent, stage:'اكتمال الطلب' } }, { statusCode:'delivered' }).checkStage, false);
 result = task({ lastEvent:warehouseEvent, collectionId:'COL-1' }, { statusCode:'delivered' });
 assert.equal(result.kind, 'warehouse-return'); assert.equal(result.collected, true);
 assert.equal(task({ lastEvent:warehouseEvent, warehouseDeliveryConfirmedAt:'2026-10-29' }, { statusCode:'delivered' }), null);

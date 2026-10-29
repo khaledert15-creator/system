@@ -23,10 +23,26 @@ function eventDate(dateText, timeText) {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
 }
 
-function normalizeStatus(text) {
+// The result page has five stages. Only the last, «اكتمال الطلب», says where the parcel finally ended; texts in
+// «التسليم» (the delivery stage) such as handing it to the courier or a delivery attempt are not a delivery.
+const STAGES = ["التسجيل", "الشحن", "النقل والمعالجة", "التسليم", "اكتمال الطلب"];
+const COMPLETION_STAGE = "اكتمال الطلب";
+const DELIVERY_STAGE = "التسليم";
+
+function stageName(value) {
+  const text = String(value || "").trim();
+  return STAGES.includes(text) ? text : "";
+}
+
+function normalizeStatus(text, stage = "") {
   const value = String(text || "").toLowerCase();
-  if (/مرتجع|إرجاع|ارجاع|عودة|returned|return/.test(value)) return "returned";
-  if (/تم\s+(?:ال)?تسليم|التسليم والتحصيل|delivered/.test(value)) return "delivered";
+  const returning = /مرتجع|إرجاع|ارجاع|عودة|returned|return/.test(value);
+  if (stage === COMPLETION_STAGE) return returning ? "returned" : "delivered";
+  if (/محاولة/.test(value)) return "delivery_attempt_1";
+  if (returning) return "returned";
+  if (/التسليم والتحصيل/.test(value)) return "delivered";
+  if (/تم\s+(?:ال)?تسليم|delivered/.test(value)) return stage ? "out_for_delivery" : "delivered";
+  if (stage === DELIVERY_STAGE) return "out_for_delivery";
   if (/مندوب التوصيل|خارج للتسليم|خرج للتوصيل|out for delivery/.test(value)) return "out_for_delivery";
   if (/تسجيل|استلام|استلم|registered|accepted/.test(value)) return "registered";
   if (/النقل|مرحلة النقل|في الطريق|معالجة|الشحن|transit/.test(value)) return "in_transit";
@@ -41,12 +57,14 @@ function parseEgyptPostSteps(steps, trackingNumber) {
     const dateIndex = fields.findIndex((value, index) => index > 1 && /^\d{1,2}\s+\S+\s+\d{4}$/.test(westernDigits(value)));
     if (!detail || dateIndex < 0) return null;
     const at = eventDate(fields[dateIndex], fields[dateIndex + 1] || "");
-    const normalizedStatus = normalizeStatus(detail);
+    const stage = stageName(fields[0]);
+    const normalizedStatus = normalizeStatus(detail, stage);
     if (!at || normalizedStatus === "unknown") return null;
     return {
       trackingNumber,
       statusText: detail,
       normalizedStatus,
+      ...(stage ? { stage } : {}),
       location: fields.slice(2, dateIndex).filter(Boolean).join("، "),
       eventAt: at
     };
@@ -54,12 +72,14 @@ function parseEgyptPostSteps(steps, trackingNumber) {
 }
 
 // The site's GetShipmentDetails JSON as the same rows its result page shows: stage, status, office, city, date, time.
+// `status` is the stage's place (1–5) in the page's row of stages.
 function stepsFromShipmentDetails(body) {
   const rows = body?.data?.data;
   if (!Array.isArray(rows)) return [];
-  return rows.filter(row => row && row.itemStatus && row.date).map(row => ({
-    fields: ["", row.itemStatus, row.location, row.city, row.date, row.time].map(value => String(value || "").trim())
-  }));
+  return rows.filter(row => row && row.itemStatus && row.date).map(row => {
+    const stage = /اكتمال/.test(String(row.mainStatus || "")) ? COMPLETION_STAGE : (STAGES[Number(row.status) - 1] || "");
+    return { fields: [stage, row.itemStatus, row.location, row.city, row.date, row.time].map(value => String(value || "").trim()) };
+  });
 }
 
-module.exports = { parseEgyptPostSteps, stepsFromShipmentDetails, eventDate, normalizeStatus };
+module.exports = { parseEgyptPostSteps, stepsFromShipmentDetails, eventDate, normalizeStatus, STAGES, COMPLETION_STAGE };

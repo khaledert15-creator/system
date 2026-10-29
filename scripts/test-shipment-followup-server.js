@@ -7,10 +7,13 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){for(let i=0;i<100;i++){if(await fn())return;await sleep(50);}throw new Error('Timed out waiting for server');}
 const freePort=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 
-const offices={ENO11111111EG:'مكتب بريد أولاد صقر - الشرقية',ENO22222222EG:'مكتب بريد أولاد صقر - الشرقية',ENO33333333EG:'مكتب بريد الزقازيق'};
+const offices={ENO11111111EG:'مكتب بريد أولاد صقر - الشرقية',ENO22222222EG:'مكتب بريد أولاد صقر - الشرقية',ENO33333333EG:'مكتب بريد الزقازيق',ENO55555555EG:'منطقة توزيع أولاد صقر'};
+// ENO5 is only in the delivery stage at أولاد صقر: «اكتمال الطلب» has not happened, so it is neither delivered nor a return.
 const delivered=trackingNumber=>({success:true,trackingNumber,confirmedStatus:'delivered',timeline:[
-  {statusText:'تم قبول الشحنة',normalizedStatus:'in_transit',location:'مكتب بريد أولاد صقر - الشرقية',eventAt:'2026-10-20T10:00:00.000Z'},
-  {statusText:'تم التسليم',normalizedStatus:'delivered',location:offices[trackingNumber],eventAt:'2026-10-27T10:00:00.000Z'}]});
+  {statusText:'تم قبول الشحنة',normalizedStatus:'in_transit',stage:'الشحن',location:'مكتب بريد أولاد صقر - الشرقية',eventAt:'2026-10-20T10:00:00.000Z'},
+  trackingNumber==='ENO55555555EG'
+    ?{statusText:'تم التسليم',normalizedStatus:'delivered',stage:'التسليم',location:offices[trackingNumber],eventAt:'2026-10-27T10:00:00.000Z'}
+    :{statusText:'تم التسليم',normalizedStatus:'delivered',stage:'اكتمال الطلب',location:offices[trackingNumber],eventAt:'2026-10-27T10:00:00.000Z'}]});
 function fakeAgent(){
   const jobs=new Map();
   return http.createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{
@@ -38,9 +41,10 @@ function fakeAgent(){
     fs.writeFileSync(dbFile,JSON.stringify({version:4,meta:{dataRevision:0},
       users:[{id:'U1',username:'owner',name:'Owner',role:'مالك',active:true,salt,passwordHash:crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex')}],
       settings:{tracking:{enabled:false,minDelaySeconds:5,rateLimitMs:10000}},audit:[],books:[],sales:[],
-      onlineOrders:['SH-1','SH-2','SH-3','SH-4'].map(id=>({id:`ORD-${id}`,status:'تم الشحن',workflowStage:'shipped',shipmentId:id})),
+      onlineOrders:['SH-1','SH-2','SH-3','SH-4','SH-5','SH-6'].map(id=>({id:`ORD-${id}`,status:'تم الشحن',workflowStage:'shipped',shipmentId:id})),
       complaints:[{id:'CMP-3',shipmentId:'SH-3',complaintNumber:'C-3',status:'open',complaintStatus:'open',createdAt:now},{id:'CMP-4',shipmentId:'SH-4',complaintNumber:'C-4',status:'open',complaintStatus:'open',createdAt:now}],
-      shipments:[shipment('SH-1','ENO11111111EG'),shipment('SH-2','ENO22222222EG',{city:'أولاد صقر'}),shipment('SH-3','ENO33333333EG'),shipment('SH-4','ENO44444444EG',{trackingEnabled:false})]}));
+      shipments:[shipment('SH-1','ENO11111111EG'),shipment('SH-2','ENO22222222EG',{city:'أولاد صقر'}),shipment('SH-3','ENO33333333EG'),shipment('SH-4','ENO44444444EG',{trackingEnabled:false}),shipment('SH-5','ENO55555555EG'),
+        shipment('SH-6','ENO66666666EG',{trackingEnabled:true,status:'تم التسليم',normalizedStatus:'delivered',shippingStatus:'delivered',deliveredAt:now})]}));
     const port=await freePort(),base=`http://127.0.0.1:${port}`;
     child=spawn(process.execPath,['server-node.js'],{cwd:temp,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',TRACKING_RPA_ENABLED:'true',TRACKING_RPA_BASE_URL:`http://127.0.0.1:${agentPort}`,TRACKING_RPA_SHARED_SECRET:'secret',TRACKING_RPA_TIMEOUT_MS:'20000'},stdio:'ignore'});
     await until(async()=>{try{return (await fetch(base+'/api/health')).ok;}catch{return false;}});
@@ -49,7 +53,7 @@ function fakeAgent(){
     const read=()=>JSON.parse(fs.readFileSync(dbFile,'utf8'));
     const post=(route,body,method='POST')=>fetch(base+route,{method,headers,body:JSON.stringify(body)});
 
-    await (await fetch(`${base}/api/tracking/run`,{method:'POST',headers:{...headers,'X-Request-ID':'cycle-1'},body:JSON.stringify({shipmentIds:['SH-1','SH-2','SH-3']})})).json();
+    await (await fetch(`${base}/api/tracking/run`,{method:'POST',headers:{...headers,'X-Request-ID':'cycle-1'},body:JSON.stringify({shipmentIds:['SH-1','SH-2','SH-3','SH-5']})})).json();
     let db=read();const byId=id=>db.shipments.find(item=>item.id===id);
     assert.equal(byId('SH-1').normalizedStatus,'returned','delivered at the warehouse is a return');
     assert.ok(byId('SH-1').returnedToWarehouseAt);
@@ -59,6 +63,8 @@ function fakeAgent(){
     assert.equal(byId('SH-3').normalizedStatus,'delivered');
     const closed=db.complaints.find(item=>item.id==='CMP-3');
     assert.equal(closed.status,'closed');assert.equal(closed.autoClosed,true);assert.match(closed.resolutionNotes,/اتسلمت/);
+    assert.equal(byId('SH-5').normalizedStatus,'out_for_delivery','«تسليم» before «اكتمال الطلب» is not a delivery');
+    assert.ok(!byId('SH-5').returnedToWarehouseAt);
     console.log('PASS warehouse delivery becomes a return; a delivered parcel closes its open complaint');
 
     let response=await post('/api/shipping/complaints/CMP-4/follow-up',{note:''});
@@ -84,6 +90,15 @@ function fakeAgent(){
     response=await post('/api/shipping/shipments/SH-2/status',{shippingStatus:'delivered',warehouseDelivered:true},'PATCH');
     assert.equal(response.status,200);db=read();assert.ok(byId('SH-2').warehouseDeliveryConfirmedAt);
     console.log('PASS the employee settles a warehouse delivery as a return or a real delivery');
+
+    db.onlineOrders.find(item=>item.id==='ORD-SH-6').workflowStage='delivered';db.onlineOrders.find(item=>item.id==='ORD-SH-6').status='تم التسليم';
+    fs.writeFileSync(dbFile,JSON.stringify(db));
+    response=await post('/api/shipping/shipments/SH-6/status',{shippingStatus:'out_for_delivery',reopenTracking:true},'PATCH');
+    assert.equal(response.status,200,await response.clone().text());
+    db=read();
+    assert.equal(byId('SH-6').normalizedStatus,'out_for_delivery');assert.equal(byId('SH-6').deliveredAt,'');assert.ok(byId('SH-6').reopenedAt);
+    assert.equal(db.onlineOrders.find(item=>item.id==='ORD-SH-6').workflowStage,'shipped','the order goes back to shipped');
+    console.log('PASS a parcel read as delivered too early goes back to tracking');
 
     db.settings.tracking.warehousePlaces=['أولاد صقر','فاقوس'];
     response=await fetch(base+'/api/db',{method:'PUT',headers:{...headers,'If-Match':String(db.meta.dataRevision)},body:JSON.stringify(db)});

@@ -40,4 +40,30 @@ assert.equal(parseEgyptPostSteps(stepsFromShipmentDetails(reply), "ENO50884920EG
 assert.deepEqual(stepsFromShipmentDetails({ data: { barcode: "ENO10914048EG", case: 2, data: [] }, success: true }), []);
 assert.deepEqual(stepsFromShipmentDetails({ data: null, success: false, errorMessages: ["Something went wrong"] }), []);
 
+// ENO50626795EG (2026-10-28): an attempt in the delivery stage, «اكتمال الطلب» not reached yet.
+const attempt = parseEgyptPostSteps([
+  { fields: ["التسجيل", "تم تسجيل الشحنة", "المركز اللوجيستى بأبو كبير", "الشرقية", "18 أكتوبر 2026", "07:18 مساءً"] },
+  { fields: ["الشحن", "تم استلام الشحنه من الجهة", "المركز اللوجيستى بأبو كبير", "الشرقية", "19 أكتوبر 2026", "03:36 مساءً"] },
+  { fields: ["النقل والمعالجة", "تم وصول الشحنة الى المكتب", "منطقة توزيع ادكو", "البحيرة", "26 أكتوبر 2026", "11:04 صباحاً"] },
+  { fields: ["التسليم", "تم إجراء محاولة توزيع", "منطقة توزيع ادكو", "البحيرة", "28 أكتوبر 2026", "02:18 مساءً"] },
+  { fields: ["اكتمال الطلب"] }
+], "ENO50626795EG");
+assert.equal(attempt.length, 4, "the attempt is kept, not dropped as unknown");
+assert.equal(attempt[3].normalizedStatus, "delivery_attempt_1");
+assert.equal(attempt[3].stage, "التسليم");
+assert.ok(!attempt.some(item => item.normalizedStatus === "delivered"));
+
+// «تسليم» in the delivery stage is the courier, not the customer; only «اكتمال الطلب» delivers.
+const beforeCompletion = parseEgyptPostSteps([{ fields: ["التسليم", "تم تسليم الشحنة لمندوب التوزيع", "منطقة توزيع أولاد صقر", "الشرقية", "28 أكتوبر 2026", "09:00 صباحاً"] }], trackingNumber);
+assert.equal(beforeCompletion[0].normalizedStatus, "out_for_delivery");
+const completedAtWarehouse = parseEgyptPostSteps([{ fields: ["اكتمال الطلب", "تم التسليم", "منطقة توزيع أولاد صقر", "الشرقية", "29 أكتوبر 2026", "10:00 صباحاً"] }], trackingNumber);
+assert.equal(completedAtWarehouse[0].normalizedStatus, "delivered");
+assert.equal(completedAtWarehouse[0].stage, "اكتمال الطلب");
+// The JSON reply names the stage by its place: 4 = «التسليم», 5 = «اكتمال الطلب».
+const jsonStages = parseEgyptPostSteps(stepsFromShipmentDetails({ data: { data: [
+  { status: 4, date: "28 أكتوبر 2026", time: "02:18 مساءً", city: "البحيرة", location: "منطقة توزيع ادكو", itemStatus: "تم تسليم الشحنة لمندوب التوزيع", mainStatus: "التسليم" },
+  { status: 5, date: "29 أكتوبر 2026", time: "02:18 مساءً", city: "البحيرة", location: "منطقة توزيع ادكو", itemStatus: "تم التسليم والتحصيل", mainStatus: "اكتمال الطلب" }
+] } }), trackingNumber);
+assert.deepEqual(jsonStages.map(item => [item.stage, item.normalizedStatus]), [["التسليم", "out_for_delivery"], ["اكتمال الطلب", "delivered"]]);
+
 console.log("Egypt Post step parser: passed");

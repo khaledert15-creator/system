@@ -14,6 +14,7 @@
   const DEFAULTS = Object.freeze({ lowerEgyptHours:48, upperEgyptHours:72, followUpHours:24, escalateAfter:3, warehousePlaces:["أولاد صقر"] });
   const HOUR = 3600000, DAY = 24 * HOUR;
   const ATTEMPTS = ["delivery_attempt_1", "delivery_attempt_2", "delivery_attempt_3"];
+  const COMPLETION_STAGE = "اكتمال الطلب";
   const CLOSED = ["closed", "resolved"];
 
   function normalizeText(value) {
@@ -72,7 +73,9 @@
 
   // A "delivered" event whose place is our warehouse is the parcel coming back to us. When the customer lives in
   // that same place the event is ambiguous, so it is flagged for a person to check instead of being turned around.
+  // Only the post's last stage («اكتمال الطلب») says where a parcel ended; events from earlier stages never count.
   function warehouseDelivery(event = {}, shipment = {}, places = DEFAULTS.warehousePlaces) {
+    if (event.stage && event.stage !== COMPLETION_STAGE) return null;
     const text = normalizeText(`${event.location || ""} ${event.statusText || ""} ${event.office || ""}`);
     const place = placesList(places).find(item => text.includes(normalizeText(item)));
     if (!place) return null;
@@ -94,7 +97,8 @@
       if (!warehouse) return null;
       return {
         kind: "warehouse-return",
-        reason: warehouse.ambiguous ? `اتسلمت في ${warehouse.place}، والعميل نفسه من هناك: اتأكد هل دي تسليم ولا مرتجع` : `البريد كاتب «تم التسليم» في ${warehouse.place} (المخزن): الطرد رجع لنا`,
+        reason: warehouse.ambiguous ? `اتسلمت في ${warehouse.place}، والعميل نفسه من هناك: اتأكد هل دي تسليم ولا مرتجع` : event.stage ? `«اكتمال الطلب» في ${warehouse.place} (المخزن): الطرد رجع لنا` : `مكتوب «تسليم» في ${warehouse.place} (المخزن). افتح صفحة البريد: لو «اكتمال الطلب» لسه ما حصلش، كمّل التتبع`,
+        checkStage: !event.stage,
         ambiguous: warehouse.ambiguous,
         collected: Boolean(shipment.collectionId)
       };
@@ -127,5 +131,5 @@
     return { kind:"complaint-due", trigger:"late", hours:Math.floor(hours), region:region.label, reason:`متأخرة ${Math.floor(hours)} ساعة (${region.label}، الحد ${limit} ساعة من غير الجمعة)` };
   }
 
-  return { UPPER_EGYPT, DEFAULTS, normalizeText, settingsFrom, regionOf, hoursWithoutFridays, warehouseDelivery, isOpenComplaint, followUpTask, placesList };
+  return { UPPER_EGYPT, DEFAULTS, COMPLETION_STAGE, normalizeText, settingsFrom, regionOf, hoursWithoutFridays, warehouseDelivery, isOpenComplaint, followUpTask, placesList };
 });
