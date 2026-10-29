@@ -28,6 +28,7 @@ const sandbox = {
   esc:value => String(value), canAction:() => true, arabicDateTimeLabel:() => "اليوم", dateTimeLabel:() => "اليوم", complaintStatusLabel:() => "",
   shipmentTrackingSummary:() => ({}), shipmentComplaints:() => [], shipmentStatusOptions:() => "<option>x</option>", shipmentStatusBadge:() => "",
   shipmentStatusCode:item => item.normalizedStatus || "in_transit",
+  shipmentStatusMeta:item => ({ code:item.normalizedStatus || "in_transit" }),
   data:{ onlineOrders:[], shipments, complaints:[], trackingHistory:[], settings:{ tracking:{} } }, orderCanBeRefused:() => false,
   ShipmentFollowUp:require("../app/shipment-followup.js")
 };

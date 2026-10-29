@@ -1417,6 +1417,8 @@ const SHIPPING_STATUSES = {
 };
 
 function shipmentStatusCode(item = {}) {
+  // A refused parcel is a return whatever its last tracking text says.
+  if (item.refusedAt) return "returned";
   const direct = [item.shippingStatus, item.trackingStatus, item.normalizedStatus].find(value => SHIPPING_STATUSES[value]);
   if (direct) return direct;
   const text = String(item.status || item.currentStatus || "").trim();
@@ -1475,6 +1477,7 @@ function isTerminalShipment(item = {}) {
 }
 
 function shipmentStatusMeta(item = {}) {
+  if (item.status === "ملغاة" || item.normalizedStatus === "cancelled" || item.shippingStatus === "cancelled") return { code:"cancelled", label:"ملغاة", legacy:"ملغاة", tone:"gray" };
   const code = shipmentStatusCode(item);
   return { code, ...(SHIPPING_STATUSES[code] || SHIPPING_STATUSES.shipped) };
 }
@@ -6792,7 +6795,7 @@ function shipmentsTable(list) {
       <td><strong>${esc(item.onlineOrderId || item.orderId || item.invoiceId || item.id)}</strong><span class="muted">${esc(item.invoiceId || item.id)}</span><span class="shipping-customer">${esc(item.customerName || item.customer || "—")}</span><span class="muted" dir="ltr">${esc(item.customerPhone || item.phone || "")}</span></td>
       <td><button type="button" class="shipping-code" data-action="copy-tracking-code" data-id="${item.id}" title="نسخ كود التتبع"><strong dir="ltr">${esc(item.trackingNumber || item.tracking || "—")}</strong><span aria-hidden="true">⧉</span></button><span class="muted">${esc(item.carrier || item.company || "—")}</span></td>
       <td class="shipping-shipped-cell"><strong>${shippedAt ? esc(arabicDateTimeLabel(shippedAt)) : "—"}</strong>${days === null ? "" : `<span class="shipping-days ${late ? "late" : terminal ? "done" : ""}">${esc(shipmentDaysLabel(days))}${late ? " · متأخرة" : ""}</span>`}${days === null || terminal ? "" : `<span class="shipping-workdays" title="من تاني يوم الشحن، من غير الجمعة والسبت">${esc(shipmentWorkingDaysLabel(shipmentWorkingDaysSinceShipped(item)))}</span>`}${item.shippedBy ? `<span class="muted">${esc(item.shippedBy)}</span>` : ""}</td>
-      <td class="shipping-status-cell"><select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select><div class="shipment-status-preview">${shipmentStatusBadge(item)}</div>${followUpFlag(tasks.get(item.id))}</td>
+      <td class="shipping-status-cell">${item.refusedAt || shipmentStatusMeta(item).code === "cancelled" ? `<span class="muted shipment-status-locked">${item.refusedAt ? "رفض استلام: الحالة من الطلب" : "الشحنة ملغاة"}</span>` : `<select class="shipment-status-select" data-shipment-status data-id="${item.id}" aria-label="تغيير حالة الشحنة ${item.id}">${shipmentStatusOptions(current)}</select>`}<div class="shipment-status-preview">${shipmentStatusBadge(item)}</div>${followUpFlag(tasks.get(item.id))}</td>
       <td class="shipping-update-cell"><span class="shipping-last-update">${lastUpdate ? dateTimeLabel(lastUpdate) : "—"}</span>${item.trackingError ? `<span class="shipment-update-hint error" title="${esc(item.trackingError)}">تعذر آخر تحديث</span>` : item.trackingNotice ? `<span class="shipment-update-hint" title="${esc(item.trackingNotice)}">بانتظار إعادة المحاولة</span>` : ""}${complaintSummary}</td>
       <td><div class="shipping-row-actions">${followUpActions(item, tasks.get(item.id))}${trackingAction}${(()=>{const order=(data.onlineOrders||[]).find(row=>row.id===(item.onlineOrderId||item.orderId));return orderCanBeRefused(order)?`<button class="row-action text-danger" data-action="order-not-delivered" data-id="${esc(order.id)}">↩ الطلب ما اتسلمش</button>`:"";})()}${manual}<details class="shipping-more"><summary><span aria-hidden="true">•••</span> المزيد${complaintCount ? ` · ${complaintCount} شكوى` : ""}</summary><div>
         <button class="row-action" data-action="edit-shipment-status" data-id="${item.id}">✎ تعديل الحالة</button>

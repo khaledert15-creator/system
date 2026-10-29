@@ -2412,3 +2412,5 @@ tr:has(.followup-flag.complaint-due)>td:first-child{box-shadow:inset -4px 0 0 va
 @media (max-width: 560px) {
   .shipping-table tbody tr { grid-template-columns:1fr; }
 }
+.shipment-status-badge.gray { color:#6a7471; background:#edf0ef; }
+.shipment-status-locked { display:block; font-size:12px; }

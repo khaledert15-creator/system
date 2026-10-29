@@ -368,9 +368,35 @@ function readDbForWrite() {
 
 const liveClients = new Set();
 
+// An order's final state wins over its parcel's tracking text, so every screen shows the same thing: the parcel of a
+// refused or returned order is a return, the parcel of a cancelled order is cancelled. Returns how many it changed.
+function syncShipmentsWithOrders(db) {
+  const orders = new Map((db.onlineOrders || []).filter(order => !order.deletedAt).map(order => [order.id, order]));
+  const now = new Date().toISOString();
+  let changed = 0;
+  for (const shipment of db.shipments || []) {
+    if (shipment.deletedAt) continue;
+    const order = orders.get(shipment.onlineOrderId);
+    const own = order && (!order.shipmentId || order.shipmentId === shipment.id);
+    const returned = Boolean(shipment.refusedAt) || Boolean(own && (order.refusal || order.refusedAt || order.workflowStage === "returned"));
+    const status = canonicalShippingStatus(shipment.shippingStatus || shipment.normalizedStatus, shipment.status);
+    if (returned && !isCancelledShipment(shipment)) {
+      if (status === "returned" && shipment.status === "مرتجع" && [shipment.trackingStatus, shipment.normalizedStatus].every(value => !value || value === "returned")) continue;
+      Object.assign(shipment, { status:"مرتجع", currentStatus:"مرتجع", normalizedStatus:"returned", shippingStatus:"returned", trackingStatus:"returned", returnedAt:shipment.returnedAt || order?.refusedAt || order?.returnedAt || now, nextTrackingAt:"", updatedAt:now });
+      if (own && order.refusedAt && !shipment.refusedAt) shipment.refusedAt = order.refusedAt;
+      changed++;
+    } else if (own && order.workflowStage === "cancelled" && !isCancelledShipment(shipment) && !["delivered", "returned"].includes(status)) {
+      Object.assign(shipment, { status:"ملغاة", currentStatus:"ملغاة", normalizedStatus:"cancelled", shippingStatus:"cancelled", trackingStatus:"cancelled", cancelledAt:order.cancelledAt || now, nextTrackingAt:"", updatedAt:now });
+      changed++;
+    }
+  }
+  return changed;
+}
+
 function writeDb(db, options = {}) {
   // A restore stores the backup exactly as it was (linkSeason:false); every other write links new records to the active season.
   if (options.linkSeason !== false) SeasonDataManagement.linkNewRecordsToActiveSeason(fs.existsSync(DB_PATH) ? readDbShared() : {}, db);
+  if (options.linkSeason !== false) syncShipmentsWithOrders(db);
   const result = databasePersistence.write(db, options);
   // Fingerprint the new state right away so the page that saved can send its next save as a patch from it.
   setImmediate(() => { try { clientState(); } catch {} });
@@ -5119,4 +5145,13 @@ server.listen(PORT, HOST, () => {
   scheduleTrackingWorker();
   scheduleBackorderAllocation(3000);
   setInterval(() => scheduleBackorderAllocation(0), 5 * 60 * 1000).unref();
+  // Parcels saved before syncShipmentsWithOrders existed (e.g. refused orders still shown in transit) are fixed once.
+  setTimeout(() => {
+    try {
+      if (!fs.existsSync(DB_PATH)) return;
+      const db = readDb();
+      const changed = syncShipmentsWithOrders(db);
+      if (changed) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
+    } catch (error) { console.error("Shipment/order sync failed:", error.message); }
+  }, 2000).unref();
 });
