@@ -873,7 +873,7 @@ function applyQuickOrderPayment(db,order,payload,user) {
     const now=new Date().toISOString(),receiptId=`PAY-${crypto.randomUUID()}`;
     const receipt={id:receiptId,sourceKey,idempotencyKey:sourceKey,orderId:order.id,invoiceId:"",customerId:order.customerId,amount:payment.paidAmount,paymentMethod:String(payload.receiptMethod||payload.paymentMethod||"كاش"),cashAccountId:account.id,cashAccountName:account.name,confirmed:true,status:"confirmed",receivedBy:user.name||user.username,receivedByUsername:user.username,receivedAt:now,source:"quick_order"};
     db.orderPayments.push(receipt);
-    db.cash.push({id:nextId("TX-",db.cash),date:now.slice(0,10),type:"قبض",direction:"in",locked:true,account:account.name,party:order.customerName,amount:receipt.amount,category:"دفعة طلب",orderId:order.id,paymentId:receipt.id,sourceKey:`${sourceKey}:cash`,note:`دفعة مقدمة للطلب ${order.id}`,createdAt:now,createdBy:receipt.receivedBy});
+    db.cash.push({id:nextId("TX-",db.cash),date:now.slice(0,10),type:"قبض",direction:"in",locked:true,account:account.name,party:order.customerName,amount:receipt.amount,category:"دفعة طلب",orderId:order.id,paymentId:receipt.id,sourceKey:`${sourceKey}:cash`,note:`دفعة مقدمة للطلب ${order.id}`,createdAt:now,createdBy:receipt.receivedBy,deletedAt:null});
     appendOrderAudit(db,user,order,"تسجيل دفعة مؤكدة",`${receipt.amount} · ${account.name}`);
     order.paymentReceiptId=receipt.id;
   }
@@ -1487,7 +1487,8 @@ function isDocumentCash(row={}) {
 }
 function cashRowRewritten(old,row) {
   for(const [key,value] of Object.entries(old))if(!isDeepStrictEqual(value,row[key]))return true;
-  return Object.keys(row).some(key=>!(key in old)&&!CASH_STAMP_FIELDS.has(key));
+  // A page fills in missing fields as empty (deletedAt:null on rows written by server endpoints); that is not an edit.
+  return Object.keys(row).some(key=>!(key in old)&&!CASH_STAMP_FIELDS.has(key)&&row[key]!=null);
 }
 function cashWriteRequirements(current,next) {
   const required=new Set(),before=new Map((current.cash||[]).map(row=>[row.id,row])),after=new Map((next.cash||[]).map(row=>[row.id,row]));
