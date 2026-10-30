@@ -29,6 +29,7 @@ const DbDelta = require("./app/db-delta.js");
 const IntegrationAuth = require("./app/integration-auth.js");
 const WebsiteOrders = require("./app/website-orders.js");
 const ChatwoodContext = require("./app/chatwood-context.js");
+const ChatwoodContact = require("./app/chatwood-contact.js");
 const SplitShipment = require("./app/split-shipment.js");
 const { createIntegrationServer } = require("./app/integration-server.js");
 
@@ -799,6 +800,12 @@ function quickOrderChatwoodIdentity(payload={},user={}) {
   const result=ChatwoodContext.verifyContextToken(INTEGRATION_CONFIG.signingSecret,payload.chatwoodContext,user.username);
   if(!result.ok)return {error:{code:result.code,message:ChatwoodContext.contextMessage(result.code)}};
   return {identity:result.context};
+}
+
+// After an order booked from a conversation is saved: the Chatwood contact takes the customer's name when it has only a
+// stand-in («John Doe», empty, a phone number). Not awaited, so the order never waits on Chatwood or fails because of it.
+function nameChatwoodContact(order) {
+  ChatwoodContact.nameContactFromOrder(INTEGRATION_CONFIG,{contactId:order.chatwootContactId,name:order.customerName,phone:order.phone},{log:event=>console.log(JSON.stringify({timestamp:new Date().toISOString(),orderId:order.id,...event}))});
 }
 
 function quickOrderChatwoodLink(identity,user,now) {
@@ -4096,6 +4103,7 @@ const server = http.createServer(async (req, res) => {
       }
       db.onlineOrders.push(order);appendOrderAudit(db,user,order,"إنشاء مسودة طلب واتساب سريع");
       writeDb(db,{expectedRevision:revision});
+      if(chatwood.identity)nameChatwoodContact(order);
       return send(res,201,{ok:true,order,customer,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -4167,9 +4175,10 @@ const server = http.createServer(async (req, res) => {
       if(order.confirmedAt){reserveOrderInventory(db,order,user,lines,{allowBackorder:!["preparing","needs_review"].includes(order.workflowStage)});if(["awaiting_preparation","awaiting_stock"].includes(order.workflowStage))applyBackorderStage(order,user);}
       Object.assign(order,{customerName:String(payload.customerName||customer?.name||order.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),paymentMethod:payload.paymentMethod||order.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,updatedAt:now});
       // Chatwood identity can be added to an order that has none; an existing different value is never replaced here.
+      let linkedNow=false;
       {const chatwood=quickOrderChatwoodIdentity(payload,user);if(chatwood.error)return send(res,409,{ok:false,code:chatwood.error.code,message:chatwood.error.message});
        // Fill an order that has no owner yet; a recorded owner is changed only through the audited correction.
-       if(chatwood.identity&&!order.chatwootContactId&&!/^\d{1,18}$/.test(String(order.chatwootConversationId||""))&&!order.customerWhatsAppPhone){for(const key of ["chatwootConversationId","chatwootContactId","customerWhatsAppPhone"])order[key]=chatwood.identity[key];order.chatwootChannel=chatwood.identity.channel;order.chatwoodLink=quickOrderChatwoodLink(chatwood.identity,user,new Date().toISOString());}}
+       if(chatwood.identity&&!order.chatwootContactId&&!/^\d{1,18}$/.test(String(order.chatwootConversationId||""))&&!order.customerWhatsAppPhone){for(const key of ["chatwootConversationId","chatwootContactId","customerWhatsAppPhone"])order[key]=chatwood.identity[key];order.chatwootChannel=chatwood.identity.channel;linkedNow=true;order.chatwoodLink=quickOrderChatwoodLink(chatwood.identity,user,new Date().toISOString());}}
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       if(preparationStarted){
@@ -4187,6 +4196,7 @@ const server = http.createServer(async (req, res) => {
       }
       appendOrderAudit(db,user,order,"تعديل طلب واتساب سريع",preparationStarted?"تم تحديث قائمة التجهيز وإعادة ضبط علاماتها":"تحديث المسودة");
       writeDb(db,{expectedRevision:revision});
+      if(linkedNow)nameChatwoodContact(order);
       return send(res,200,{ok:true,order,preparationReset:preparationStarted,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 

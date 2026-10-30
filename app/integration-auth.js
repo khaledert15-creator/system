@@ -103,6 +103,11 @@ function configFromEnv(env = process.env, logger = () => {}) {
   const chatwoodOrigin = validOrigin(env.CHATWOOD_ORIGIN || DEFAULT_CHATWOOD_ORIGIN) || DEFAULT_CHATWOOD_ORIGIN;
   if (env.CHATWOOD_ORIGIN && chatwoodOrigin !== env.CHATWOOD_ORIGIN) logger({ operationType:"INTEGRATION_CONFIG_INVALID", setting:"CHATWOOD_ORIGIN", message:`not an origin; using ${DEFAULT_CHATWOOD_ORIGIN}` });
   const storeAdminOrderUrl = String(env.STORE_ADMIN_ORDER_URL_BASE || "https://store.maktabaa.com/admin/orders/");
+  // Chatwood API access of the System itself (an access token of a Chatwood user), used to name contacts after booked
+  // orders. Off until both the token and the account id are set.
+  const chatwoodApiUrl = validOrigin(env.CHATWOOD_API_URL || chatwoodOrigin) || chatwoodOrigin;
+  const chatwoodAccountId = /^\d{1,9}$/.test(String(env.CHATWOOD_ACCOUNT_ID || "")) ? String(env.CHATWOOD_ACCOUNT_ID) : "";
+  const chatwoodApiToken = String(env.CHATWOOD_API_TOKEN || "").trim();
   return {
     enabled: secrets.length > 0,
     secrets,
@@ -114,6 +119,11 @@ function configFromEnv(env = process.env, logger = () => {}) {
     storeTimeoutMs: Math.min(30000, Math.max(1000, Number(env.STORE_INTEGRATION_TIMEOUT_MS) || 8000)),
     storeNotifyTimeoutMs: Math.min(15000, Math.max(500, Number(env.STORE_INTEGRATION_NOTIFY_TIMEOUT_MS) || 3000)),
     chatwoodOrigin,
+    chatwoodApiUrl,
+    chatwoodAccountId,
+    chatwoodApiToken,
+    chatwoodContactsEnabled: Boolean(chatwoodApiToken && chatwoodAccountId),
+    chatwoodTimeoutMs: Math.min(15000, Math.max(500, Number(env.CHATWOOD_API_TIMEOUT_MS) || 5000)),
     storeAdminOrderUrl: /^https?:\/\//.test(storeAdminOrderUrl) ? storeAdminOrderUrl : "https://store.maktabaa.com/admin/orders/"
   };
 }

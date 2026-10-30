@@ -21,6 +21,9 @@ services:
       STORE_INTEGRATION_NOTIFY_TIMEOUT_MS: ${STORE_INTEGRATION_NOTIFY_TIMEOUT_MS:-3000}
       STORE_ADMIN_ORDER_URL_BASE: ${STORE_ADMIN_ORDER_URL_BASE:-https://store.maktabaa.com/admin/orders/}
       CHATWOOD_ORIGIN: ${CHATWOOD_ORIGIN:-https://chat.maktabaa.com}
+      # Chatwood API (names contacts after booked orders). Off until both are set.
+      CHATWOOD_ACCOUNT_ID: ${CHATWOOD_ACCOUNT_ID:-}
+      CHATWOOD_API_TOKEN: ${CHATWOOD_API_TOKEN:-}
     volumes:
       - app_data:/app/data
     ports:
