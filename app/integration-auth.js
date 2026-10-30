@@ -103,11 +103,12 @@ function configFromEnv(env = process.env, logger = () => {}) {
   const chatwoodOrigin = validOrigin(env.CHATWOOD_ORIGIN || DEFAULT_CHATWOOD_ORIGIN) || DEFAULT_CHATWOOD_ORIGIN;
   if (env.CHATWOOD_ORIGIN && chatwoodOrigin !== env.CHATWOOD_ORIGIN) logger({ operationType:"INTEGRATION_CONFIG_INVALID", setting:"CHATWOOD_ORIGIN", message:`not an origin; using ${DEFAULT_CHATWOOD_ORIGIN}` });
   const storeAdminOrderUrl = String(env.STORE_ADMIN_ORDER_URL_BASE || "https://store.maktabaa.com/admin/orders/");
-  // Chatwood API access of the System itself (an access token of a Chatwood user), used to name contacts after booked
-  // orders. Off until both the token and the account id are set.
-  const chatwoodApiUrl = validOrigin(env.CHATWOOD_API_URL || chatwoodOrigin) || chatwoodOrigin;
-  const chatwoodAccountId = /^\d{1,9}$/.test(String(env.CHATWOOD_ACCOUNT_ID || "")) ? String(env.CHATWOOD_ACCOUNT_ID) : "";
-  const chatwoodApiToken = String(env.CHATWOOD_API_TOKEN || "").trim();
+  // Chatwood API access of the System itself (the access token of a Chatwood agent), used to name contacts after booked
+  // orders. Off, logged once at start, until both the token and the account id are set.
+  const chatwoodApiUrl = validOrigin(String(env.CHATWOOT_BASE_URL || "").replace(/\/+$/, "")) || chatwoodOrigin;
+  const chatwoodAccountId = /^\d{1,9}$/.test(String(env.CHATWOOT_ACCOUNT_ID || "")) ? String(env.CHATWOOT_ACCOUNT_ID) : "";
+  const chatwoodApiToken = String(env.CHATWOOT_API_TOKEN || "").trim();
+  if (!chatwoodApiToken || !chatwoodAccountId) logger({ operationType:"CHATWOOD_CONTACTS_DISABLED", message:"CHATWOOT_API_TOKEN or CHATWOOT_ACCOUNT_ID not set; contacts are not named after booked orders" });
   return {
     enabled: secrets.length > 0,
     secrets,
@@ -123,7 +124,7 @@ function configFromEnv(env = process.env, logger = () => {}) {
     chatwoodAccountId,
     chatwoodApiToken,
     chatwoodContactsEnabled: Boolean(chatwoodApiToken && chatwoodAccountId),
-    chatwoodTimeoutMs: Math.min(15000, Math.max(500, Number(env.CHATWOOD_API_TIMEOUT_MS) || 5000)),
+    chatwoodTimeoutMs: Math.min(15000, Math.max(500, Number(env.CHATWOOT_API_TIMEOUT_MS) || 5000)),
     storeAdminOrderUrl: /^https?:\/\//.test(storeAdminOrderUrl) ? storeAdminOrderUrl : "https://store.maktabaa.com/admin/orders/"
   };
 }

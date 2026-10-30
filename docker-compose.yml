@@ -22,8 +22,9 @@ services:
       STORE_ADMIN_ORDER_URL_BASE: ${STORE_ADMIN_ORDER_URL_BASE:-https://store.maktabaa.com/admin/orders/}
       CHATWOOD_ORIGIN: ${CHATWOOD_ORIGIN:-https://chat.maktabaa.com}
       # Chatwood API (names contacts after booked orders). Off until both are set.
-      CHATWOOD_ACCOUNT_ID: ${CHATWOOD_ACCOUNT_ID:-}
-      CHATWOOD_API_TOKEN: ${CHATWOOD_API_TOKEN:-}
+      CHATWOOT_BASE_URL: ${CHATWOOT_BASE_URL:-https://chat.maktabaa.com}
+      CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID:-}
+      CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN:-}
     volumes:
       - app_data:/app/data
     ports:

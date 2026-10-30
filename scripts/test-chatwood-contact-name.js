@@ -43,7 +43,12 @@ async function startMockChatwood(contacts) {
     assert.deepEqual([failed.ok, events[0].operationType, events[0].contactId], [false, 'CHATWOOD_CONTACT_NAME_FAILED', '1']);
     assert.ok(!JSON.stringify(events).includes('01077770007'), 'phones are not logged');
     assert.deepEqual(await ChatwoodContact.nameContactFromOrder({ ...offline, chatwoodContactsEnabled:false }, { contactId:'1', name:'منى' }), { skipped:true });
-    console.log('PASS placeholder names are recognised; a failure is logged without phones and reported, never thrown');
+    const startup = [];
+    assert.equal(H.IntegrationAuth.configFromEnv({}, event => startup.push(event.operationType)).chatwoodContactsEnabled, false);
+    assert.deepEqual(startup.filter(type => type === 'CHATWOOD_CONTACTS_DISABLED'), ['CHATWOOD_CONTACTS_DISABLED']);
+    const configured = H.IntegrationAuth.configFromEnv({ CHATWOOT_BASE_URL:'https://chat.maktabaa.com/', CHATWOOT_ACCOUNT_ID:'1', CHATWOOT_API_TOKEN:TOKEN }, () => {});
+    assert.deepEqual([configured.chatwoodContactsEnabled, configured.chatwoodApiUrl, configured.chatwoodAccountId], [true, 'https://chat.maktabaa.com', '1']);
+    console.log('PASS placeholder names are recognised; a failure is logged without phones and reported, never thrown; no token is logged once at start');
 
     chatwood = await startMockChatwood({
       9200:{ name:'John Doe', phone_number:null },          // Messenger: placeholder, no phone
@@ -59,7 +64,7 @@ async function startMockChatwood(contacts) {
     store.state.conversations.set('8400', messenger('8400', '9400'));
     store.state.conversations.set('8500', messenger('8500', '9500'));
     store.state.conversations.set('8001', H.chatwoodConversation('8001'));
-    system = await H.startSystem({ env:H.integrationEnv(store, { CHATWOOD_API_URL:chatwood.base, CHATWOOD_ACCOUNT_ID:'7', CHATWOOD_API_TOKEN:TOKEN }), name:'chatwood-contact-name-' });
+    system = await H.startSystem({ env:H.integrationEnv(store, { CHATWOOT_BASE_URL:chatwood.base, CHATWOOT_ACCOUNT_ID:'7', CHATWOOT_API_TOKEN:TOKEN }), name:'chatwood-contact-name-' });
     const context = async (conversationId, contactId) => (await system.api(`/api/integration/v1/panel/customer?${new URLSearchParams({ conversationId, contactId })}`)).body.orderContext.token;
     const book = async (conversationId, contactId, customerName, phone) => {
       const r = await system.api('/api/orders/quick', { method:'POST', body:{ duplicateOverrideReason:'اختبار', customerName, phone, governorate:'القاهرة', city:'مدينة نصر', address:'شارع الاختبار 5', shippingCost:35, lines:[{ bookId:'B0001', qty:1 }], requestId:crypto.randomUUID(), chatwoodContext:await context(conversationId, contactId) } });
