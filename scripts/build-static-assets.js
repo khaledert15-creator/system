@@ -36,8 +36,7 @@ for (const asset of versionedAssets) {
   html = html.replace(new RegExp(`(["'])${escaped}(?:\\?[^"']*)?\\1`, "g"), (_match, quote) => `${quote}${asset.versioned}${quote}`);
 }
 const marker = `<meta name="app-build" content="${id}">`;
-const runtime = `<script>window.__APP_BUILD__=${JSON.stringify(id)};console.info("Maktabaa System Build:",window.__APP_BUILD__);</script>`;
-html = html.replace("<title>", `${marker}\n  <title>`).replace("</head>", `  ${runtime}\n</head>`);
+html = html.replace("<title>", `${marker}\n  <title>`);
 fs.writeFileSync(path.join(outputRoot, "index.html"), html, "utf8");
 fs.writeFileSync(path.join(outputRoot, "build-manifest.json"), `${JSON.stringify({ build:id, assets:Object.fromEntries(versionedAssets.map(asset => [asset.source, asset.versioned])) }, null, 2)}\n`, "utf8");
 

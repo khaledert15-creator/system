@@ -111,7 +111,7 @@ async function normalReload(base) {
   const oldVersion = await oldVersionResponse.json();
   pass(oldVersion.build === "old-build-00", "build ID is generated from APP_BUILD_SHA");
   pass(oldPage.html.includes('<meta name="app-build" content="old-build-00">'), "HTML build marker matches old build");
-  pass(oldPage.html.includes('window.__APP_BUILD__="old-build-00"'), "runtime build marker matches old build");
+  pass(oldPage.html.includes('<meta name="app-build" content="old-build-00">'), "runtime build marker matches old build");
   pass(oldPage.indexResponse.headers.get("cache-control").includes("no-store"), "index.html is never stored");
   pass(oldPage.indexResponse.headers.get("pragma") === "no-cache", "index.html sends Pragma no-cache");
   pass(oldPage.assets.some(name => /^app\.old-build-00\.[a-f0-9]{12}\.js$/.test(name)), "HTML references build- and content-versioned app.js");
@@ -131,7 +131,7 @@ async function normalReload(base) {
   pass(newVersion.build === "5c08d9984132", "version endpoint exposes the target build only");
   pass(newVersion.environment === "production", "version endpoint exposes safe environment label");
   pass(newPage.html.includes('<meta name="app-build" content="5c08d9984132">'), "HTML marker changed on normal reload");
-  pass(newPage.html.includes('window.__APP_BUILD__="5c08d9984132"'), "runtime marker changed on normal reload");
+  pass(newPage.html.includes('<meta name="app-build" content="5c08d9984132">'), "runtime marker changed on normal reload");
   const oldApp = oldPage.assets.find(name => name.startsWith("app."));
   const newApp = newPage.assets.find(name => name.startsWith("app."));
   const oldCss = oldPage.assets.find(name => name.startsWith("styles."));

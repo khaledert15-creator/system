@@ -79,8 +79,8 @@ function renderVersionedIndex() {
     html = html.replace(new RegExp(`(["'])${escaped}(?:\\?[^"']*)?\\1`, "g"), (_match, quote) => `${quote}${versionedName}${quote}`);
   }
   const marker = `<meta name="app-build" content="${APP_BUILD_ID}">`;
-  const runtime = `<script>window.__APP_BUILD__=${JSON.stringify(APP_BUILD_ID)};console.info("Maktabaa System Build:",window.__APP_BUILD__);</script>`;
-  return html.replace("<title>", `${marker}\n  <title>`).replace("</head>", `  ${runtime}\n</head>`);
+  // The build is read from this meta tag (app.js CLIENT_BUILD); pages run no inline script (script-src 'self').
+  return html.replace("<title>", `${marker}\n  <title>`);
 }
 const sessions = new Map();
 const resetPreparations = new Map();
