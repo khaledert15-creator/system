@@ -437,7 +437,7 @@ function createWebsiteOrders(deps) {
     delivered:{ group:"history", label:"تم التسليم" }, cancelled:{ group:"history", label:"ملغي" }, returned:{ group:"history", label:"مرتجع" },
     not_completed:{ group:"history", label:"لم يكتمل (مؤرشف)" }, previous:{ group:"history", label:"طلب سابق" }
   };
-  const SOURCE_LABELS = { website:"الموقع", whatsapp:"واتساب", system:"السيستم", cashier:"مبيعات السيستم" };
+  const SOURCE_LABELS = { website:"الموقع", whatsapp:"واتساب", messenger:"ماسنجر", system:"السيستم", cashier:"مبيعات السيستم" };
 
   function systemOrderPhase(order, shipment) {
     if (isCancelled(order)) return "cancelled";
@@ -465,7 +465,8 @@ function createWebsiteOrders(deps) {
   // contact's WhatsApp number; for website orders the buyer's own mobile. The delivery phone of a quick order is the
   // recipient's and proves nothing about the owner once an owner is recorded.
   function orderOwner(order) {
-    const phones = order.source === "website" || order.websiteOrderNumber ? [order.phone, order.alternativePhone] : [order.customerWhatsAppPhone];
+    // A Messenger contact has no phone: the number the employee typed for the order is the customer's own.
+    const phones = order.source === "website" || order.websiteOrderNumber || order.chatwootChannel === "messenger" ? [order.phone, order.alternativePhone] : [order.customerWhatsAppPhone];
     const owner = { conversationId:/^\d{1,18}$/.test(String(order.chatwootConversationId || "").trim()) ? String(order.chatwootConversationId).trim() : "", contactId:/^\d{1,18}$/.test(String(order.chatwootContactId || "")) ? String(order.chatwootContactId) : "", phones:phones.map(normalizeEgyptPhone).filter(Boolean) };
     return { ...owner, known:Boolean(owner.conversationId || owner.contactId || owner.phones.length) };
   }
@@ -518,7 +519,7 @@ function createWebsiteOrders(deps) {
       const shipmentRecord = orderShipment(db, order), shipment = shipmentSummary(shipmentRecord);
       const total = round(Number(order.total || 0)), paid = round(Number(order.paidAmount || 0));
       const required = order.depositRequired ?? order.deposit?.required;
-      const source = order.source === "website" || order.websiteOrderNumber || order.parentWebsiteOrderNumber ? "website" : order.source === "whatsapp" ? "whatsapp" : "system";
+      const source = order.source === "website" || order.websiteOrderNumber || order.parentWebsiteOrderNumber ? "website" : order.source === "whatsapp" ? (order.chatwootChannel === "messenger" ? "messenger" : "whatsapp") : "system";
       return {
         kind:"system_order", source, sourceLabel:SOURCE_LABELS[source], websiteOrderNumber:order.websiteOrderNumber || order.parentWebsiteOrderNumber || storeOrder?.orderNumber || "", storeOrderId:storeOrder?.id ?? order.websiteOrderId ?? null,
         salesOrderId:order.id, invoiceId:order.saleId || "", splitPart:order.splitPart || null, splitFromOrderId:order.splitFromOrderId || "", parentWebsiteOrderNumber:order.parentWebsiteOrderNumber || "", splitChildOrderIds:order.splitShipment?.childOrderIds || [],
@@ -579,14 +580,14 @@ function createWebsiteOrders(deps) {
 const SERVER_OWNED_ORDER_FIELDS = ["websiteOrderNumber", "websiteOrderId", "integrationId", "source", "sourcePlatform", "depositRequired", "depositAmount", "deposit", "depositHistory", "websiteApprovedAt", "websiteApprovedBy", "websiteApprovedByUsername", "websiteEdits", "websiteEditedAt"];
 // The Chatwood identity of an order (who it belongs to) and the quick-order request key are written by the server
 // only; a whole-database save keeps the stored values.
-const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "quickOrderRequestId", "chatwoodLink", "chatwoodLinkHistory"];
+const CHATWOOD_IDENTITY_FIELDS = ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwootChannel", "quickOrderRequestId", "chatwoodLink", "chatwoodLinkHistory"];
 function preserveChatwoodIdentity(current = {}, next = {}) {
   const currentOrders = new Map((current.onlineOrders || []).filter(order => order && order.id).map(order => [order.id, order]));
   for (const order of next.onlineOrders || []) {
     if (!order || typeof order !== "object") continue;
     const previous = currentOrders.get(order.id);
     // A browser-made order never brings an owner of its own: only verified server paths record one.
-    if (!previous) { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwoodLink", "chatwoodLinkHistory"]) delete order[key]; continue; }
+    if (!previous) { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwootChannel", "chatwoodLink", "chatwoodLinkHistory"]) delete order[key]; continue; }
     for (const key of CHATWOOD_IDENTITY_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(previous, key)) order[key] = JSON.parse(JSON.stringify(previous[key]));
       else delete order[key];
@@ -629,7 +630,7 @@ function sameChatwoodOwner(owner, identity) {
 
 function applyChatwoodLink(order, identity, { source, evidence = [], by, now }) {
   Object.assign(order, {
-    chatwootConversationId:identity.chatwootConversationId, chatwootContactId:identity.chatwootContactId, customerWhatsAppPhone:identity.customerWhatsAppPhone || "",
+    chatwootConversationId:identity.chatwootConversationId, chatwootContactId:identity.chatwootContactId, customerWhatsAppPhone:identity.customerWhatsAppPhone || "", chatwootChannel:identity.channel || "whatsapp",
     chatwoodLink:{ source, evidence:evidence.slice(0, 5).map(String), inboxId:identity.inboxId ?? null, linkedAt:now, linkedBy:by }, updatedAt:now,
   });
 }
@@ -642,7 +643,7 @@ function correctChatwoodLink(order, { action, identity = null, reason, by, now }
   const entry = { at:now, by, action, reason, before, after };
   order.chatwoodLinkHistory = [...(Array.isArray(order.chatwoodLinkHistory) ? order.chatwoodLinkHistory : []), entry].slice(-20);
   if (action === "relink") applyChatwoodLink(order, identity, { source:"corrected", evidence:["owner_correction"], by, now });
-  else { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwoodLink"]) delete order[key]; order.updatedAt = now; }
+  else { for (const key of ["chatwootConversationId", "chatwootContactId", "customerWhatsAppPhone", "chatwootChannel", "chatwoodLink"]) delete order[key]; order.updatedAt = now; }
   return entry;
 }
 

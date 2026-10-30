@@ -8,6 +8,15 @@
   const TOKEN_KEY = "maktabaa-chatwood-panel-session";
   const state = { token: sessionStorage.getItem(TOKEN_KEY) || "", user: null, phone: "", rawPhone: "", conversationId: "", contactId: "", contactName: "", data: null, loading: false, messages: [], catalog: null, form: null };
   const $ = id => document.getElementById(id);
+  // The customer's phone typed by the employee (a Messenger contact, or a WhatsApp contact without an Egyptian mobile),
+  // kept per conversation for this Chatwood tab so the panel reloads Chatwood does on every switch keep it.
+  const MANUAL_KEY = "maktabaa-chatwood-panel-manual-phones";
+  const manualPhones = () => { try { return JSON.parse(sessionStorage.getItem(MANUAL_KEY) || "{}"); } catch { return {}; } };
+  const manualPhone = () => manualPhones()[state.conversationId || "-"] || "";
+  function setManualPhone(phone) {
+    const all = manualPhones(); all[state.conversationId || "-"] = phone;
+    try { sessionStorage.setItem(MANUAL_KEY, JSON.stringify(all)); } catch {}
+  }
 
   function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -52,7 +61,7 @@
     $("panel-user").textContent = state.user ? `${state.user.name || state.user.username}` : "";
     startLive();
     $("conversation-label").textContent = state.conversationId ? `#${state.conversationId}` : "—";
-    $("phone-label").textContent = state.rawPhone || state.phone || "—";
+    $("phone-label").replaceChildren(state.rawPhone || state.phone || "—", !state.rawPhone && state.phone ? el("span", { class: "muted small", dir: "rtl", text: "مكتوب يدويًا" }) : "");
     $("manual-form").hidden = Boolean(state.phone);
     // A contact without a usable phone (WhatsApp username, foreign number) is still looked up by its conversation.
     if (state.phone || state.conversationId) load(); else { $("customer-card").replaceChildren(); $("orders-list").replaceChildren(); }
@@ -147,7 +156,7 @@
     event.preventDefault();
     const phone = normalizePhone(new FormData(event.target).get("phone"));
     if (!phone) return message("اكتب رقم موبايل مصري صحيح.", "error");
-    state.phone = phone; state.rawPhone = phone; showContext();
+    state.phone = phone; setManualPhone(phone); showContext();
   });
 
   // Chatwood dashboard app context: {event:"appContext", data:{conversation, contact, currentAgent}} (JSON string).
@@ -163,10 +172,10 @@
     const changed = conversationId !== state.conversationId || rawPhone !== state.rawPhone || contactId !== state.contactId;
     state.conversationId = /^\d{1,18}$/.test(conversationId) ? conversationId : "";
     state.contactId = /^\d{1,18}$/.test(contactId) ? contactId : "";
-    state.rawPhone = rawPhone; state.phone = normalizePhone(rawPhone); state.contactName = String(contact.name || "");
+    state.rawPhone = rawPhone; state.phone = normalizePhone(rawPhone) || manualPhone(); state.contactName = String(contact.name || "");
     state.messages = Array.isArray(conversation.messages) ? conversation.messages : [];
     if (state.form && !changed) refreshSuggestions();
-    if (!state.phone) $("manual-hint").textContent = rawPhone ? "رقم جهة الاتصال ليس رقم موبايل مصري. اكتب رقم العميل يدويًا." : "جهة الاتصال بدون رقم هاتف. اكتب رقم العميل يدويًا.";
+    if (!state.phone) $("manual-hint").textContent = rawPhone ? "رقم جهة الاتصال ليس رقم موبايل مصري. اكتب رقم العميل يدويًا." : "جهة الاتصال بدون رقم هاتف (زي ماسنجر). اكتب رقم العميل اللي بعته في الشات.";
     if (changed && state.user) { saveDraft(); state.form = null; showContext(); }
   });
   // Chatwood sends the conversation (with the messages on screen) only when asked; ask again while the form is open so
@@ -251,7 +260,7 @@
     document.querySelector(".context-card").hidden = Boolean(state.form);
     if (state.form) { $("manual-form").hidden = true; return renderForm(); }
     const { customer, orders } = state.data;
-    const name = customer.name || state.contactName || "عميل غير مسجل";
+    const name = customer.name || realContactName() || "عميل غير مسجل";
     $("customer-card").replaceChildren(el("div", { class: "card customer" },
       el("div", { class: "row" }, el("strong", { text: name }), el("span", { class: `badge ${customer.status === "new" ? "new" : "returning"}`, text: customer.status === "new" ? "عميل جديد" : "عميل سابق" })),
       el("div", { class: "muted", dir: "ltr", text: customer.phone || (state.data.phoneUsable ? "" : "بدون رقم موبايل مصري") }),
@@ -401,14 +410,15 @@
     return (state.catalog = catalog);
   }
 
+  // A WhatsApp name of dots or digits is not a name, nor is «John Doe», Meta's stand-in for a Messenger profile.
+  const realContactName = () => /\d{5,}/.test(state.contactName) || !/\p{L}{2,}/u.test(state.contactName) || state.contactName.trim() === "John Doe" ? "" : state.contactName;
+
   function emptyDraft() {
-    const customer = state.data?.customer || {}, saved = customer.address || {};
-    // A WhatsApp name of dots or digits is not a name.
-    const contactName = /\d{5,}/.test(state.contactName) || !/\p{L}{2,}/u.test(state.contactName) ? "" : state.contactName;
+    const customer = state.data?.customer || {}, saved = customer.address || {}, contactName = realContactName();
     return { phone: state.phone, customerName: customer.known ? customer.name : (customer.name || contactName), alternativePhone: saved.alternativePhone || "", governorate: saved.governorate || "", city: EgyptCities.canonicalCity(saved.governorate, saved.city) || saved.city || "",
       address: saved.address || "", addressMark: saved.addressMark || "", shippingCompany: state.catalog.defaultShippingCompany, shippingCost: 0, shippingManual: false, lines: [], paymentPlan: "cash_on_delivery",
       paidAmount: 0, paymentConfirmed: false, cashAccountId: "", receiptMethod: "InstaPay", notes: "", orderDiscount: 0, orderDiscountType: "percent", requestId: `panel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      customerEdit: { confirmed: false, channel: "واتساب", note: "" }, reopenConfirmed: false, duplicateOverrideReason: "" };
+      customerEdit: { confirmed: false, channel: state.data?.orderContext?.channel === "messenger" ? "ماسنجر" : "واتساب", note: "" }, reopenConfirmed: false, duplicateOverrideReason: "" };
   }
 
   async function openCreateForm() {
@@ -530,7 +540,7 @@
     if (order?.website) notices.push(el("div", { class: "notice warn" }, el("strong", { text: "طلب موقع: بيتعدّل بطلب العميل بس" }),
       el("span", { class: "small", text: "الكتب اللي في الطلب بسعر الموقع، والكتاب الجديد بياخد سعره على الموقع وقت الحفظ." }),
       el("label", { class: "check" }, el("input", { type: "checkbox", checked: draft.customerEdit.confirmed, onchange: event => { draft.customerEdit.confirmed = event.target.checked; clearError(); } }), "العميل هو اللي طلب التعديل ده"),
-      el("div", { class: "two" }, el("select", { onchange: event => { draft.customerEdit.channel = event.target.value; } }, ["واتساب", "مكالمة", "رسالة على الموقع"].map(item => el("option", { selected: item === draft.customerEdit.channel, text: item }))),
+      el("div", { class: "two" }, el("select", { onchange: event => { draft.customerEdit.channel = event.target.value; } }, ["واتساب", "ماسنجر", "مكالمة", "رسالة على الموقع"].map(item => el("option", { selected: item === draft.customerEdit.channel, text: item }))),
         el("input", { placeholder: "إيه اللي طلبه (اختياري)", value: draft.customerEdit.note, oninput: event => { draft.customerEdit.note = event.target.value; } }))));
     if (order?.packed) notices.push(el("div", { class: "notice warn" }, el("strong", { text: `الطلب متغلّف${order.saleId ? ` وليه فاتورة ${order.saleId}` : ""}` }),
       el("span", { class: "small", text: "عند الحفظ هيرجع «جاهز للتغليف»، وفاتورته هتتلغي، والكتب تفضل محجوزة له. غلّفه تاني بعد التعديل." }),
@@ -783,6 +793,8 @@
         order = (await api(`/api/orders/${encodeURIComponent(current.id)}/quick`, { method: "PATCH", body: JSON.stringify(body) })).order;
       }
       form.done = { order, totals: totals(draft) };
+      // A contact without a phone (Messenger) is looked up by the number the order was saved with from now on.
+      if (!state.phone && normalizePhone(order?.phone)) { state.phone = normalizePhone(order.phone); setManualPhone(state.phone); }
       dropDraft(form.key);
       renderDone();
     } catch (error) {

@@ -9,7 +9,7 @@ const ChatwoodContext = require('../app/chatwood-context.js');
 
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const money = db => hash({ books:db.books, sales:db.sales, orderPayments:db.orderPayments, cash:db.cash, customers:db.customers, inventoryBatches:db.inventoryBatches, stockMovements:db.stockMovements });
-const orderCore = order => { const { chatwootConversationId, chatwootContactId, customerWhatsAppPhone, chatwoodLink, chatwoodLinkHistory, updatedAt, ...rest } = order; return hash(rest); };
+const orderCore = order => { const { chatwootConversationId, chatwootContactId, customerWhatsAppPhone, chatwootChannel, chatwoodLink, chatwoodLinkHistory, updatedAt, ...rest } = order; return hash(rest); };
 
 (async () => {
   let system, store;
@@ -20,6 +20,7 @@ const orderCore = order => { const { chatwootConversationId, chatwootContactId, 
     store.state.conversations.set('8003', H.chatwoodConversation('8003', { contactId:'9003', contactPhone:null, mentions:[{ orderRef:'ORD-L1', mentionedAt:'2026-10-20T11:00:00.000Z', messages:1 }] }));
     store.state.conversations.set('8004', H.chatwoodConversation('8004', { contactId:'9002', contactPhone:'01033330003' }));
     store.state.conversations.set('8100', H.chatwoodConversation('8100', { channel:'Channel::Api' }));
+    store.state.conversations.set('8200', H.chatwoodConversation('8200', { channel:'Channel::FacebookPage', contactId:'9200', contactPhone:null }));
     const db = H.fixtureDb();
     db.customers = [{ id:'C-L', name:'عميل قديم', phone:'01033330003' }];
     db.onlineOrders = [{ id:'ORD-L1', date:'2026-10-16', customerId:'C-L', customerName:'عميل قديم', phone:'01033330003', alternativePhone:'', source:'whatsapp', status:'تم الشحن', workflowStage:'shipped', lines:[{ bookId:'B0001', qty:1, price:100, lineTotal:100 }], total:135, paidAmount:0, confirmedAt:'2026-10-16T10:00:00.000Z', createdAt:'2026-10-16T10:00:00.000Z', deletedAt:null }];
@@ -174,6 +175,23 @@ const orderCore = order => { const { chatwootConversationId, chatwootContactId, 
     assert.equal(r.body.order.chatwootConversationId, '8001');
     store.state.down = false;
     console.log('PASS with the Store down no new context is issued; an issued one still works until it expires');
+
+    // ---- Messenger: the contact has no phone; the employee types the customer's number, books the order from the
+    // panel and it is linked to the conversation. The typed number then finds it from any conversation of that customer.
+    r = await panel({ conversationId:'8200', contactId:'9200' });
+    assert.deepEqual([r.status, r.body.orderContext.ok, r.body.orderContext.channel, r.body.orders.length], [200, true, 'messenger', 0], r.text);
+    r = await panel({ conversationId:'8200', contactId:'9200', phone:'01077770007' });
+    assert.equal(r.body.orderContext.ok, true);
+    r = await create({ phone:'01077770007', chatwoodContext:r.body.orderContext.token });
+    assert.equal(r.status, 201, r.text);
+    const messenger = r.body.order;
+    assert.deepEqual([messenger.chatwootConversationId, messenger.chatwootContactId, messenger.customerWhatsAppPhone, messenger.chatwootChannel, messenger.source], ['8200', '9200', '', 'messenger', 'whatsapp']);
+    r = await panel({ conversationId:'8200', contactId:'9200', phone:'01077770007' });
+    assert.deepEqual(r.body.orders.map(row => [row.salesOrderId, row.source, row.sourceLabel, row.linkedToConversation]), [[messenger.id, 'messenger', 'ماسنجر', true]]);
+    r = await panel({ phone:'01077770007' });
+    assert.deepEqual([r.body.orders.map(row => row.salesOrderId), r.body.recipientOrders.length], [[messenger.id], 0], 'the typed number is the Messenger customer\'s own');
+    assert.equal(order(first.id).chatwootChannel, 'whatsapp', 'WhatsApp orders keep their channel');
+    console.log('PASS Messenger conversations book orders by the typed phone and stay linked to the conversation');
     console.log('chatwood verified linking tests passed');
   } catch (error) {
     console.error(`FAIL ${error.stack || error.message}`);

@@ -29,7 +29,7 @@ input { display:block; width:100%; margin-top:4px; padding:8px 10px; border:1px 
 .stats.four { grid-template-columns:repeat(4, 1fr); }
 .orders-section h2 { margin:14px 0 6px; font-size:15px; }
 .phase h3 { margin:8px 0 4px; font-size:13px; color:var(--muted); }
-.badge.src { background:#f1f4f7; color:var(--ink); } .badge.src.website { background:#efe9ff; color:#5b3fb8; } .badge.src.whatsapp { background:var(--green-soft); color:var(--green); }
+.badge.src { background:#f1f4f7; color:var(--ink); } .badge.src.website { background:#efe9ff; color:#5b3fb8; } .badge.src.whatsapp { background:var(--green-soft); color:var(--green); } .badge.src.messenger { background:#e8f0ff; color:#1d4ed8; }
 .status.history { color:var(--muted); }
 .card.state { display:flex; flex-direction:column; gap:6px; } .card.state.error strong { color:#b42318; }
 .due { color:#b42318; }

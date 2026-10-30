@@ -4,10 +4,13 @@
 // browser: the Store vouches for the conversation (facts it records from Chatwood's signed webhooks), and the System
 // then gives the browser a short-lived token, signed with a key derived from the integration secret and bound to the
 // employee. Quick orders take their owner (conversation, contact, WhatsApp number) only from such a token.
+// WhatsApp and Facebook Messenger conversations can own orders; a Messenger contact has no phone, so its orders are
+// found by the conversation, the contact and the phone the employee types.
 const crypto = require("crypto");
 
 const CONTEXT_TTL_MS = 6 * 60 * 60 * 1000;
 const WHATSAPP_CHANNEL = "Channel::Whatsapp";
+const ORDER_CHANNELS = { [WHATSAPP_CHANNEL]:"whatsapp", "Channel::FacebookPage":"messenger" };
 const ID_PATTERN = /^\d{1,18}$/;
 
 const MESSAGES = {
@@ -20,9 +23,9 @@ const MESSAGES = {
 const contextKey = secret => crypto.createHmac("sha256", String(secret)).update("maktabaa:chatwood-context:v1").digest();
 const sign = (secret, body) => crypto.createHmac("sha256", contextKey(secret)).update(body).digest();
 
-function issueContextToken(secret, { conversationId, contactId = "", customerWhatsAppPhone = "", inboxId = null, username }, now = Date.now()) {
+function issueContextToken(secret, { conversationId, contactId = "", customerWhatsAppPhone = "", inboxId = null, channel = "whatsapp", username }, now = Date.now()) {
   if (!secret || !ID_PATTERN.test(String(conversationId || "")) || !username) throw new Error("A verified conversation and an employee are required");
-  const body = Buffer.from(JSON.stringify({ v:1, c:String(conversationId), ct:String(contactId || ""), w:String(customerWhatsAppPhone || ""), i:inboxId ?? null, u:String(username), iat:now, exp:now + CONTEXT_TTL_MS })).toString("base64url");
+  const body = Buffer.from(JSON.stringify({ v:1, c:String(conversationId), ct:String(contactId || ""), w:String(customerWhatsAppPhone || ""), i:inboxId ?? null, ch:channel === "messenger" ? "messenger" : "whatsapp", u:String(username), iat:now, exp:now + CONTEXT_TTL_MS })).toString("base64url");
   return { token:`${body}.${sign(secret, body).toString("base64url")}`, expiresAt:new Date(now + CONTEXT_TTL_MS).toISOString() };
 }
 
@@ -40,7 +43,7 @@ function verifyContextToken(secret, token, username, now = Date.now()) {
   return { ok:true, context:{
     chatwootConversationId:payload.c, chatwootContactId:ID_PATTERN.test(String(payload.ct || "")) ? payload.ct : "",
     customerWhatsAppPhone:/^01\d{9}$/.test(String(payload.w || "")) ? payload.w : "", inboxId:Number.isInteger(payload.i) ? payload.i : null,
-    issuedAt:new Date(payload.iat).toISOString(), expiresAt:new Date(payload.exp).toISOString(),
+    channel:payload.ch === "messenger" ? "messenger" : "whatsapp", issuedAt:new Date(payload.iat).toISOString(), expiresAt:new Date(payload.exp).toISOString(),
   } };
 }
 
@@ -51,16 +54,17 @@ function maskPhone(phone) {
   return /^01\d{9}$/.test(value) ? `${value.slice(0, 4)}****${value.slice(-3)}` : "";
 }
 
-// What the Store reported about a conversation, checked: only WhatsApp conversations carry an order owner, and the
+// What the Store reported about a conversation, checked: only WhatsApp and Messenger conversations carry an order owner, and the
 // contact the browser saw must be the contact the Store knows (a stale or forged id is refused, never trusted).
 function checkConversation(conversation, { expectedContactId = "", normalizePhone = value => value } = {}) {
   if (!conversation || !ID_PATTERN.test(String(conversation.conversationId || ""))) return { ok:false, status:404, code:"CONVERSATION_NOT_FOUND", message:"المحادثة دي مش معروفة للسيستم لسه. لازم يكون فيها رسالة بعد تفعيل الربط." };
-  if (conversation.channel !== WHATSAPP_CHANNEL) return { ok:false, status:422, code:"CONVERSATION_NOT_WHATSAPP", message:"المحادثة دي مش محادثة واتساب، فمينفعش يتربط بيها طلب." };
+  const channel = ORDER_CHANNELS[conversation.channel];
+  if (!channel) return { ok:false, status:422, code:"CONVERSATION_NOT_WHATSAPP", message:"المحادثة دي مش واتساب ولا ماسنجر، فمينفعش يتربط بيها طلب." };
   const contactId = ID_PATTERN.test(String(conversation.contactId || "")) ? String(conversation.contactId) : "";
   if (!contactId) return { ok:false, status:422, code:"CONVERSATION_WITHOUT_CONTACT", message:"المحادثة دي من غير جهة اتصال معروفة." };
   if (expectedContactId && String(expectedContactId) !== contactId) return { ok:false, status:409, code:"CONTACT_MISMATCH", message:"جهة الاتصال مش مطابقة للمحادثة. حدّث التبويب وحاول تاني." };
-  const whatsapp = normalizePhone(conversation.contactPhone || "");
-  return { ok:true, identity:{ chatwootConversationId:String(conversation.conversationId), chatwootContactId:contactId, customerWhatsAppPhone:/^01\d{9}$/.test(whatsapp) ? whatsapp : "", inboxId:Number.isInteger(conversation.inboxId) ? conversation.inboxId : null }, lastMessageAt:conversation.lastMessageAt || null, mentions:Array.isArray(conversation.mentions) ? conversation.mentions : [] };
+  const whatsapp = channel === "whatsapp" ? normalizePhone(conversation.contactPhone || "") : "";
+  return { ok:true, identity:{ chatwootConversationId:String(conversation.conversationId), chatwootContactId:contactId, customerWhatsAppPhone:/^01\d{9}$/.test(whatsapp) ? whatsapp : "", inboxId:Number.isInteger(conversation.inboxId) ? conversation.inboxId : null, channel }, lastMessageAt:conversation.lastMessageAt || null, mentions:Array.isArray(conversation.mentions) ? conversation.mentions : [] };
 }
 
 module.exports = { CONTEXT_TTL_MS, WHATSAPP_CHANNEL, issueContextToken, verifyContextToken, contextMessage, maskPhone, checkConversation };

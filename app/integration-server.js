@@ -84,7 +84,7 @@ function createIntegrationServer(deps) {
     return result.body.conversation;
   }
 
-  // The server's own check of a conversation: it exists, is a WhatsApp conversation, and has the contact expected.
+  // The server's own check of a conversation: it exists, is a WhatsApp or Messenger conversation, and has the contact expected.
   async function verifyConversation(conversationId, expectedContactId = "") {
     if (!/^\d{1,18}$/.test(String(conversationId || ""))) return { ok:false, status:400, code:"INVALID_CONVERSATION", message:"رقم المحادثة غير صحيح." };
     if (!config.storeEnabled) return { ok:false, status:503, code:"INTEGRATION_DISABLED", message:"ربط المحادثات غير مفعّل." };
@@ -254,7 +254,7 @@ function createIntegrationServer(deps) {
     const fresh = readDbSafe();
     const panelContactId = verified?.ok ? verified.identity.chatwootContactId : contactId;
     let orderContext = null;
-    if (verified?.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:true, ...ChatwoodContext.issueContextToken(config.signingSecret, { conversationId:verified.identity.chatwootConversationId, contactId:verified.identity.chatwootContactId, customerWhatsAppPhone:verified.identity.customerWhatsAppPhone, inboxId:verified.identity.inboxId, username:user.username }), conversationId, whatsappMasked:ChatwoodContext.maskPhone(verified.identity.customerWhatsAppPhone) };
+    if (verified?.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:true, ...ChatwoodContext.issueContextToken(config.signingSecret, { conversationId:verified.identity.chatwootConversationId, contactId:verified.identity.chatwootContactId, customerWhatsAppPhone:verified.identity.customerWhatsAppPhone, inboxId:verified.identity.inboxId, channel:verified.identity.channel, username:user.username }), conversationId, channel:verified.identity.channel, whatsappMasked:ChatwoodContext.maskPhone(verified.identity.customerWhatsAppPhone) };
     else if (verified && !verified.ok && canOrderAction(fresh, user, "order.quick.create")) orderContext = { ok:false, code:verified.code, message:verified.message };
     const links = verified?.ok ? WebsiteOrders.chatwoodSuggestions(fresh, verified) : { suggestions:[], conflicts:[] };
     return send(res, 200, { ok:true, ...websiteOrders.panelCustomer(fresh, phone, storeOrders, { conversationId, contactId:panelContactId, config }), storeAvailable, storeEnabled:Boolean(config.storeEnabled), phoneUsable:Boolean(phone), conversationId:conversationId || null, conversationVerified:Boolean(verified?.ok), verifiedContactId:verified?.ok ? verified.identity.chatwootContactId : null, orderContext, suggestions:links.suggestions, mentionConflicts:links.conflicts, canLink:canOrderAction(fresh, user, "panel.link") }, JSON_TYPE, NO_STORE);
