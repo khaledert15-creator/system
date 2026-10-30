@@ -511,7 +511,8 @@ function actorSnapshot() {
 }
 
 function negativeStockError(book, requestedQuantity, ownReserved = 0) {
-  const available = Math.max(0,Number(book?.stock || 0)-Number(book?.reservedStock||0)+Number(ownReserved||0));
+  // Same rule as the server: copies held for a stock count are not for sale either.
+  const available = Math.max(0,Number(book?.stock || 0)-Number(book?.reservedStock||0)-Math.max(0,Number(book?.countHoldQty||0))+Number(ownReserved||0));
   const requested = Number(requestedQuantity || 0);
   if (requested <= available) return "";
   if (data.settings.allowNegativeStock && canAction("allow-negative-stock")) return "";
@@ -2557,7 +2558,7 @@ function productDefaultSellingPrice(book = {}) {
 function activeInventoryBatches(productId) {
   return (data.inventoryBatches || [])
     .filter(batch => !batch.deletedAt && (batch.productId || batch.bookId) === productId && Number(batch.remainingQty || 0) > 0)
-    .sort((a, b) => String(a.purchaseDate || "").localeCompare(String(b.purchaseDate || "")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.batchId || a.id).localeCompare(String(b.batchId || b.id)));
+    .sort(PurchaseInventoryIntegrity.fifoOrder);
 }
 
 function latestApprovedPurchaseCost(productId) {
@@ -2576,6 +2577,11 @@ function latestApprovedPurchaseCost(productId) {
     ? total / quantity
     : Number(line.unitPurchaseCost ?? line.cost ?? NaN);
   return Number.isFinite(unitCost) && unitCost >= 0 ? unitCost : null;
+}
+
+// Items still on the books: deleted items stay for history but are left out of stock totals, values and counts.
+function liveBooks() {
+  return (data.books || []).filter(book => !book.deletedAt);
 }
 
 function productInventorySummary(productId) {
@@ -2950,14 +2956,14 @@ function statCard(label, value, note, icon, tone = "", trend = "", action = "") 
 function renderDashboard() {
   const sales = activeSalesList();
   const totalSales = sales.reduce((sum, inv) => sum + inv.total, 0);
-  const inventoryCost = data.books.reduce((sum, book) => sum + productInventorySummary(book.id).currentInventoryValue, 0);
+  const inventoryCost = liveBooks().reduce((sum, book) => sum + productInventorySummary(book.id).currentInventoryValue, 0);
   const customerDebt = data.customers.reduce((sum, item) => sum + item.balance, 0);
-  const lowStock = data.books.filter(book => book.stock <= book.reorder);
-  const staleBooks = data.books.filter(book => {
+  const lowStock = liveBooks().filter(book => book.stock <= book.reorder);
+  const staleBooks = liveBooks().filter(book => {
     if (!book.lastSale) return true;
     return (Date.now() - new Date(book.lastSale).getTime()) / 86400000 >= data.settings.staleDays;
   });
-  const consignment = data.books.filter(book => !book.owned);
+  const consignment = liveBooks().filter(book => !book.owned);
   const dashboardAlerts = getNotificationItems();
   const maxChart = Math.max(...sales.map(s => s.total), 1000);
   const manualReviewShipments = data.shipments.filter(item => !item.deletedAt && (item.manualInterventionNeeded || item.manual_review_required));
@@ -2974,7 +2980,7 @@ function renderDashboard() {
     </div>
     <div class="stats-grid">
       ${statCard("إجمالي المبيعات", money(totalSales), "إجمالي الفواتير المسجلة", "↗", "", "+12.4%", "sales")}
-      ${statCard("قيمة المخزون", money(inventoryCost), `${data.books.length} صنف مسجل`, "▤", "gold", "+4.1%", "inventory")}
+      ${statCard("قيمة المخزون", money(inventoryCost), `${liveBooks().length} صنف مسجل`, "▤", "gold", "+4.1%", "inventory")}
       ${statCard("مديونية العملاء", money(customerDebt), "أرصدة آجلة قائمة", "👤", "blue", "", "customer-debt")}
       ${statCard("أصناف تحتاج انتباه", lowStock.length, "منخفضة أو سالبة المخزون", "!", "red", "", "stock-alerts")}
       ${statCard("شحنات تحتاج مراجعة", manualReviewShipments.length, "تحتاج مراجعة يدوية بعد تعذر التحديث", "⚑", "gold", "", "shipping")}
@@ -3093,7 +3099,7 @@ function showDashboardStatDetails(type) {
     return;
   }
 
-  const attention = data.books.filter(book => book.stock <= book.reorder).sort((a, b) => a.stock - b.stock);
+  const attention = liveBooks().filter(book => book.stock <= book.reorder).sort((a, b) => a.stock - b.stock);
   openModal("أصناف تحتاج انتباه", "لوحة المتابعة", `
     <div class="metric-strip">
       <div class="mini-metric"><span>صفري أو سالب</span><strong>${attention.filter(book => book.stock <= 0).length}</strong></div>
@@ -3113,15 +3119,15 @@ function renderBooks() {
       <div class="actions"><button class="btn secondary" data-action="stock-count">▤ جرد مخزني</button><button class="btn" data-action="add-book">＋ إضافة صنف</button></div>
     </div>
     <div class="stats-grid">
-      ${statCard("إجمالي الأصناف", data.books.length, "منتج مسجل", "▤")}
-      ${statCard("إجمالي الوحدات", data.books.reduce((s, b) => s + b.stock, 0), "الرصيد الدفتري الحالي", "▥", "blue")}
-      ${statCard("منخفض المخزون", data.books.filter(b => b.stock > 0 && b.stock <= b.reorder).length, "تحتاج إعادة طلب", "!", "gold")}
-      ${statCard("رصيد صفري/سالب", data.books.filter(b => b.stock <= 0).length, "تحتاج مراجعة عاجلة", "−", "red")}
+      ${statCard("إجمالي الأصناف", liveBooks().length, "منتج مسجل", "▤")}
+      ${statCard("إجمالي الوحدات", liveBooks().reduce((s, b) => s + b.stock, 0), "الرصيد الدفتري الحالي", "▥", "blue")}
+      ${statCard("منخفض المخزون", liveBooks().filter(b => b.stock > 0 && b.stock <= b.reorder).length, "تحتاج إعادة طلب", "!", "gold")}
+      ${statCard("رصيد صفري/سالب", liveBooks().filter(b => b.stock <= 0).length, "تحتاج مراجعة عاجلة", "−", "red")}
     </div>
     <article class="card">
       <div class="toolbar">
         <div class="search"><input autocomplete="off" id="book-search" placeholder="بحث باسم الصنف أو الباركود أو المورد/الناشر..."></div>
-        <select id="book-category" class="filter-select"><option value="">كل التصنيفات</option>${[...new Set(data.books.map(b => b.category))].map(c => `<option>${esc(c)}</option>`).join("")}</select>
+        <select id="book-category" class="filter-select"><option value="">كل التصنيفات</option>${[...new Set(liveBooks().map(b => b.category))].map(c => `<option>${esc(c)}</option>`).join("")}</select>
         <select id="book-stock-filter" class="filter-select"><option value="">كل حالات المخزون</option><option value="low">منخفض</option><option value="zero">صفري أو سالب</option><option value="consignment">أمانة</option></select>
         <button class="btn ghost" onclick="window.print()">⇩ طباعة</button>
       </div>
@@ -3511,7 +3517,7 @@ function renderSaleInvoice() {
     const book = getBook(line.bookId);
     const computed = totals.lines[index] || {};
     const listId = `sale-book-options-${index}`;
-    const availableStock = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0)) : 0;
+    const availableStock = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0) - bookCountHold(book)) : 0;
     const stockWarning = book && Number(line.qty || 0) > availableStock;
     return `<article class="quick-order-line quick-sale-line ${stockWarning ? "stock-warning" : ""}" data-line="${index}">
       <div class="quick-line-book sale-book-cell"><span class="quick-book-avatar" aria-hidden="true">${esc((book?.name || "ك").trim().charAt(0))}</span><div>
@@ -6232,7 +6238,7 @@ function updateSaleSummary() {
     const lineElement = document.querySelector(`.quick-sale-line[data-line="${index}"]`);
     const draftLine = draftSale.lines[index];
     const book = getBook(draftLine.bookId);
-    const available = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0)) : 0;
+    const available = book ? Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0) - bookCountHold(book)) : 0;
     const requested = draftSale.lines.filter(item => item.bookId === draftLine.bookId).reduce((sum, item) => sum + Number(item.qty || 0), 0);
     const insufficient = Boolean(book && requested > available);
     lineElement?.classList.toggle("stock-warning", insufficient);
@@ -7626,7 +7632,7 @@ function renderReports() {
     ["المبيعات اليومية والشهرية", "↗", `إجمالي ${money(sales)} وربح FIFO ${money(profit)}${incompleteNote}.`],
     ["صافي الربح", "≋", `المبيعات ناقص تكلفة الأصناف والمصروفات.`],
     ["أكثر الأصناف مبيعًا", "•", "ترتيب الأصناف حسب الكميات المباعة."],
-    ["المخزون وإعادة الطلب", "▤", `${data.books.filter(b => b.stock <= b.reorder).length} أصناف تحتاج قرار شراء.`],
+    ["المخزون وإعادة الطلب", "▤", `${liveBooks().filter(b => b.stock <= b.reorder).length} أصناف تحتاج قرار شراء.`],
     ["الأصناف الراكدة والمرتجعات", "↶", "تحليل آخر بيع وموعد الإرجاع لكل مورد."],
     ["مديونية العملاء", "👤", `إجمالي ${money(data.customers.reduce((s, i) => s + i.balance, 0))}.`],
     ["مديونية الموردين", "▦", `إجمالي ${money(data.suppliers.reduce((s, i) => s + i.balance, 0))}.`],
@@ -8820,7 +8826,7 @@ function addBookModal(book = null) {
         <div class="form-field"><label class="required">سعر الغلاف</label><input name="coverPrice" type="number" min="0" step="0.01" required value="${coverPrice || ""}" placeholder="السعر المطبوع على المنتج"></div>
         <div class="form-field"><label class="required">سعر البيع الافتراضي</label><input name="defaultSellingPrice" type="number" min="0" step="0.01" required value="${defaultSellingPrice || ""}"></div>
         <div class="form-field calculated-field"><label>آخر سعر شراء / محسوب</label><input name="lastPurchasePrice" readonly value="${lastPurchaseCost === null || lastPurchaseCost === undefined ? "غير متاح" : lastPurchaseCost}"><small>مشتق من آخر فاتورة شراء أو استلام معتمدة، ولا يمكن تعديله يدويًا.</small></div>
-        <div class="form-field"><label>الرصيد الافتتاحي</label><input name="stock" type="number" value="${book?.stock ?? 0}"></div>
+        ${book ? `<div class="form-field"><label>الرصيد الحالي</label><input name="stock" type="number" min="0" value="${book.stock ?? 0}" ${canAction("adjust-stock") ? "" : "readonly title=\"تغيير الرصيد يحتاج صلاحية تسوية المخزون\""}><small>${canAction("adjust-stock") ? "أي تغيير يتسجل كتسوية مخزون." : "للتغيير استخدم «تسوية» (تحتاج صلاحية)."}</small></div>` : `<div class="form-field"><label>الرصيد الافتتاحي</label><input name="stock" type="number" min="0" value="0"></div><div class="form-field"><label>تكلفة الوحدة للرصيد الافتتاحي</label><input name="openingCost" type="number" min="0" step="0.01" placeholder="سعر شراء النسخة"><small>من غيرها تكلفة المبيعات من الرصيد ده هتبقى غير مكتملة.</small></div>`}
         <div class="form-field"><label>حد إعادة الطلب</label><input name="reorder" type="number" min="0" value="${book?.reorder ?? 5}"></div>
         <div class="form-field"><label>نوع الملكية</label><select name="owned"><option value="true" ${book?.owned !== false ? "selected" : ""}>مملوك</option><option value="false" ${book?.owned === false ? "selected" : ""}>أمانة / تصريف</option></select></div>
         <div class="form-field"><label>آخر موعد للمرتجع</label><input name="returnDeadline" type="date" value="${book?.returnDeadline || ""}"></div>
@@ -10612,7 +10618,7 @@ modalBody.addEventListener("click", event => {
   if(action==="notification-open-settlement"){closeModal();financeTab="settlements";navigate("accounting");setTimeout(()=>newSettlementModal(data.carrierSettlements.find(item=>item.id===target.dataset.id)),80);}
   if (action === "notification-refresh") showNotificationCenter();
   if (action === "start-partial-count") partialStockCountModal();
-  if (action === "start-full-count") openInventoryCountForm(data.books, "كلي");
+  if (action === "start-full-count") openInventoryCountForm(liveBooks(), "كلي");
   if (action === "back-to-count-types") stockCountModal();
   if (action === "best-customer-detail") bestCustomerDetail(target.dataset.id);
   if (action === "best-supplier-detail") bestSupplierDetail(target.dataset.id);
@@ -11022,8 +11028,8 @@ modalBody.addEventListener("submit", async event => {
     const filterValue = values.get("filterValue");
     const selectedIds = values.getAll("bookIds");
     const books = filterType === "manual"
-      ? data.books.filter(book => selectedIds.includes(book.id))
-      : data.books.filter(book => String(book[filterType] || "") === String(filterValue || ""));
+      ? liveBooks().filter(book => selectedIds.includes(book.id))
+      : liveBooks().filter(book => String(book[filterType] || "") === String(filterValue || ""));
     openInventoryCountForm(books, "جزئي");
     return;
   }
@@ -11098,11 +11104,16 @@ modalBody.addEventListener("submit", async event => {
     const countId = `COUNT-${Date.now()}`;
     if (rows.some(row => !(Number(row.querySelector(".count-actual-stock").value || 0) >= 0))) return toast("الرصيد الفعلي لازم يكون صفر أو أكتر.", "error");
     const beforeCount = snapshotClientData();
+    const movedDuringCount = [];
     try { rows.forEach(row => {
       const book = getBook(row.dataset.bookId);
       if (!book) return;
       const before = Number(book.stock || 0);
-      const after = Number(row.querySelector(".count-actual-stock").value || 0);
+      // The shelf was counted against the stock shown when the count opened. Copies sold or received since then are
+      // carried over, so a sale during the count is not booked a second time as a count difference.
+      const counted = Number(row.querySelector(".count-actual-stock").value || 0), shown = Number(row.dataset.systemStock ?? before);
+      const after = Math.max(0, counted + before - shown);
+      if (before !== shown) movedDuringCount.push(`${book.name} (${shown}→${before})`);
       clearCountHold(book);
       if (before !== after) {
         changes.push({ id: book.id, name: book.name, before, after, difference: after - before });
@@ -11114,10 +11125,10 @@ modalBody.addEventListener("submit", async event => {
     const auditStamp = new Date().toISOString();
     AuditIds.appendAuditRecord(data.audit, { date: auditStamp, action: `اعتماد جرد ${form.dataset.countType} (${changes.length} فروق)`, entity: "المخزون", entityId: countId, user: auditUser });
     AuditIds.appendAuditRecord(data.audit, { date: auditStamp, action: `تفاصيل الجرد: ${changes.map(item => `${item.name} ${item.before}→${item.after}`).join("، ") || "بدون فروقات"}`, entity: "المخزون", entityId: countId, user: auditUser });
-    saveData();
+    if (!(await saveData())) { restoreClientData(beforeCount); lastSaveError = null; renderBooks(); return toast("لم يتم اعتماد الجرد ولم يتغير أي رصيد. حدّث الصفحة وأعد المحاولة.", "error"); }
     closeModal();
     renderBooks();
-    toast(changes.length ? `تم اعتماد الجرد وتحديث ${changes.length} صنف.` : "تم اعتماد الجرد بدون فروقات.");
+    toast(`${changes.length ? `تم اعتماد الجرد وتحديث ${changes.length} صنف.` : "تم اعتماد الجرد بدون فروقات."}${movedDuringCount.length ? ` اتحسبت حركات حصلت أثناء الجرد: ${movedDuringCount.join("، ")}.` : ""}`);
     return;
   }
   if (form.id === "book-form") {
@@ -11156,7 +11167,8 @@ modalBody.addEventListener("submit", async event => {
       purchaseListPrice: Number(formData.coverPrice || 0),
       purchaseDiscount: 0,
       lastPurchasePrice: latestApprovedPurchaseCost(form.dataset.editId) ?? null,
-      cost: Number(getBook(form.dataset.editId)?.cost || 0),
+      // A new item's opening stock is valued at the cost typed for it; an existing item keeps its purchase cost.
+      cost: form.dataset.editId ? Number(getBook(form.dataset.editId)?.cost || 0) : Math.max(0, Number(formData.openingCost || 0)),
       price: Number(formData.defaultSellingPrice || 0),
       stock: Number(formData.stock),
       reorder: Number(formData.reorder),
@@ -11172,6 +11184,7 @@ modalBody.addEventListener("submit", async event => {
     const index = data.books.findIndex(b => b.id === item.id);
     const targetStock = item.stock;
     if (!Number.isFinite(targetStock) || targetStock < 0) throw new Error("أدخل كمية صحيحة لا تقل عن صفر.");
+    if (index >= 0 && targetStock !== Number(data.books[index].stock || 0) && !canAction("adjust-stock")) throw new Error("تغيير رصيد صنف موجود يحتاج صلاحية «تسوية مخزون». استخدم زر «تسوية».");
     item.stock = index >= 0 ? Number(data.books[index].stock || 0) : 0;
     if (index >= 0) data.books[index] = { ...data.books[index], ...item };
     else data.books.push(item);
@@ -11597,9 +11610,11 @@ modalBody.addEventListener("submit", async event => {
     const book = getBook(form.dataset.id);
     const before = Number(book.stock || 0),adjustmentId=`ADJ-${Date.now()}`;
     const beforeAdjustment=snapshotClientData();
-    try{synchronizeStockAdjustment(book,Number(formData.stock),adjustmentId,formData.reason||"تسوية مخزون");}catch(error){restoreClientData(beforeAdjustment);return toast(error.code==="INVALID_STOCK"?"الرصيد الفعلي لازم يكون صفر أو أكتر.":"تعذر اعتماد التسوية، ومتغيّرش الرصيد. حدّث الصفحة وأعد المحاولة.","error");}
+    // Like a count: copies sold or received while the dialog was open are carried over onto the counted figure.
+    const counted=Number(formData.stock),shown=Number(form.dataset.systemStock??before),target=Number.isFinite(counted)?counted+before-shown:counted;
+    try{synchronizeStockAdjustment(book,target<0&&counted>=0?0:target,adjustmentId,formData.reason||"تسوية مخزون");}catch(error){restoreClientData(beforeAdjustment);return toast(error.code==="INVALID_STOCK"?"الرصيد الفعلي لازم يكون صفر أو أكتر.":"تعذر اعتماد التسوية، ومتغيّرش الرصيد. حدّث الصفحة وأعد المحاولة.","error");}
     recordStockMovement(book, formData.reason || "تسوية مخزون", book.stock - before, before, book.stock, adjustmentId, formData.note || "");
-    saveData("تسوية مخزون", "المخزون", book.id);
+    if (!(await saveData("تسوية مخزون", "المخزون", book.id))) { restoreClientData(beforeAdjustment); lastSaveError = null; renderBooks(); return toast("لم يتم اعتماد التسوية ولم يتغير الرصيد. حدّث الصفحة وأعد المحاولة.", "error"); }
     closeModal();
     renderBooks();
     toast("تم تسجيل تسوية المخزون مع سبب الحركة.");
@@ -11871,6 +11886,11 @@ function convertOnlineOrderToSale(id, options = {}) {
     const summary = productInventorySummary(book.id);
     if (summary.averageInventoryCost > 0 && netUnit < summary.averageInventoryCost) return toast(`لا يمكن تحويل الطلب: صافي سعر «${book.name}» (${money(netUnit)}) أقل من متوسط التكلفة (${money(summary.averageInventoryCost)}).`, "error");
   }
+  // Everything below changes stock, batches and balances; if any step fails the page goes back to how it was, so a
+  // half-made invoice never reaches the next save.
+  const beforeInvoice = snapshotClientData();
+  let sale;
+  try {
   const customer = findOrCreateOrderCustomer(order);
   order.customerId = customer.id;
   const grandTotal = totals.total;
@@ -11878,7 +11898,7 @@ function convertOnlineOrderToSale(id, options = {}) {
   const paid = paymentSummary.paidAmount;
   const actor = actorSnapshot();
   orderInvoiceConversions.add(order.id);
-  const sale = {
+  sale = {
     id: nextId("INV-", data.sales), date: today(), customerId: customer.id, channel: "متجر إلكتروني",
     saleOperationType: "طلب أونلاين",
     payment: order.paymentMethod, paymentStatus:paymentSummary.paymentStatus, subtotal: totals.subtotal, subtotalBeforeDiscount:totals.subtotalBeforeDiscount, productDiscountTotal:totals.productDiscountTotal, orderDiscount:totals.orderDiscountAmount, discount: totals.discountTotal, subtotalAfterDiscount:totals.goods, shipping: totals.shipping, total: grandTotal,
@@ -11907,6 +11927,11 @@ function convertOnlineOrderToSale(id, options = {}) {
   (data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed").forEach(item=>{item.invoiceId=sale.id;item.updatedAt=new Date().toISOString();});
   data.sales.push(sale);
   order.saleId = sale.id; order.status = "تم إنشاء الفاتورة"; order.updatedAt = new Date().toISOString();
+  } catch (error) {
+    restoreClientData(beforeInvoice);
+    orderInvoiceConversions.delete(order.id);
+    return toast(error.code === "INSUFFICIENT_BATCH_STOCK" ? "تعذر إنشاء الفاتورة: دفعات أحد الأصناف أقل من رصيده. اعمل تسوية أو جرد للصنف وأعد المحاولة. متغيّرش أي رصيد." : "تعذر إنشاء الفاتورة، ومتغيّرش أي رصيد. حدّث الصفحة وأعد المحاولة.", "error");
+  }
   saveData("تحويل طلب أونلاين إلى فاتورة", "طلبات الأونلاين", order.id);
   saveQueue.finally(()=>orderInvoiceConversions.delete(order.id));
   if(!options.keepModal){closeModal();renderOnlineOrders();}
@@ -12034,7 +12059,7 @@ async function commitSale({ printAfter = false } = {}) {
     const book = getBook(line.bookId);
     if (!book || book.deletedAt) return toast("أحد أصناف الفاتورة لم يعد متاحًا. راجع الأصناف.", "error");
     const requested = validLines.filter(item => item.bookId === book.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-    const available = Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0));
+    const available = Math.max(0, Math.min(Number(book.stock || 0), productInventorySummary(book.id).currentStockQty) - Number(book.reservedStock || 0) - bookCountHold(book));
     if (requested > available) return toast(`الرصيد المتاح من «${book.name}» هو ${available} والكمية المطلوبة ${requested}.`, "error");
     const netUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.price) * Number(line.qty || 0))) / Number(line.qty || 1) : 0;
     const summary = productInventorySummary(book.id);
@@ -12221,6 +12246,7 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
     operationKey:draftPurchase.operationKey,
     date: today(),
     supplierInvoiceNumber,
+    returnDeadline: type === "أمانة" ? String(document.getElementById("purchase-return")?.value || "") : "",
     supplierId,
     type,
     payment: document.getElementById("purchase-payment").value,
@@ -12264,11 +12290,10 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
     const shippingUnit = qtyTotal ? shipping / qtyTotal : 0;
     const netCostUnit = Number(line.qty || 0) > 0 ? Number(computed.finalNet ?? (Number(line.cost) * Number(line.qty || 0))) / Number(line.qty || 1) : Number(line.cost || 0);
     const unitCost = type === "شراء" ? netCostUnit + shippingUnit : netCostUnit;
-    book.lastPurchasePrice = unitCost;
-    book.cost = unitCost;
-    book.coverPrice = Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0);
-    book.purchaseListPrice = book.coverPrice;
+    // A purchase waiting for inspection changes nothing on the item yet: its cost, cover price and supplier are
+    // taken when the copies are received (receivePurchase), so a cancelled pending purchase leaves the item as it was.
     if (receivingStatus !== "في انتظار الفحص") {
+      applyPurchaseToBook(book, { type, supplierId, unitCost, coverPrice:Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0), returnDeadline:type === "أمانة" ? document.getElementById("purchase-return").value : "" });
       const before = book.stock;
       book.stock += Number(line.qty);
       const batch = createInventoryBatch({
@@ -12283,9 +12308,6 @@ async function savePurchase({ skipRevisionPreflight = false } = {}) {
       purchase.lines[index].batchId = batch.batchId;
       recordStockMovement(book, type === "أمانة" ? "توريد أمانة" : "شراء", Number(line.qty), before, book.stock, purchase.id, getSupplier(supplierId)?.name || "");
     }
-    book.owned = type === "شراء";
-    if (type === "أمانة") book.returnDeadline = document.getElementById("purchase-return").value;
-    book.supplierId = supplierId;
   });
   try {
     PurchaseInventoryIntegrity.validatePurchaseEffects(dataBeforePurchase, data, purchase, { inventoryAffecting:receivingStatus !== "في انتظار الفحص" });
@@ -12501,7 +12523,7 @@ function preparePurchaseForBook(id, qty) {
 
 function adjustStock(id) {
   const book = getBook(id);
-  openModal("تسوية رصيد صنف", "الجرد والمخزون", `<form id="stock-form" data-id="${id}"><div class="alert-item" style="margin-bottom:15px"><div class="book-cover">${esc(book.name.charAt(0))}</div><div><strong>${esc(book.name)}</strong><span>الرصيد الحالي: ${book.stock} ${esc(itemUnitLabel(book))}</span></div></div><div class="form-grid"><div class="form-field"><label class="required">الرصيد الفعلي</label><input name="stock" type="number" required value="${book.stock}"></div><div class="form-field"><label>سبب التسوية</label><select name="reason"><option>جرد فعلي</option><option>تالف</option><option>مفقود</option><option>وحدات مجانية</option><option>تصحيح خطأ</option></select></div><div class="form-field full"><label>ملاحظات</label><textarea name="note"></textarea></div></div><div class="form-actions"><button class="btn" type="submit">اعتماد التسوية</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
+  openModal("تسوية رصيد صنف", "الجرد والمخزون", `<form id="stock-form" data-id="${id}" data-system-stock="${Number(book.stock || 0)}"><div class="alert-item" style="margin-bottom:15px"><div class="book-cover">${esc(book.name.charAt(0))}</div><div><strong>${esc(book.name)}</strong><span>الرصيد الحالي: ${book.stock} ${esc(itemUnitLabel(book))}</span></div></div><div class="form-grid"><div class="form-field"><label class="required">الرصيد الفعلي</label><input name="stock" type="number" required value="${book.stock}"></div><div class="form-field"><label>سبب التسوية</label><select name="reason"><option>جرد فعلي</option><option>تالف</option><option>مفقود</option><option>وحدات مجانية</option><option>تصحيح خطأ</option></select></div><div class="form-field full"><label>ملاحظات</label><textarea name="note"></textarea></div></div><div class="form-actions"><button class="btn" type="submit">اعتماد التسوية</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div></form>`);
 }
 
 function stockCountModal() {
@@ -12512,15 +12534,15 @@ function stockCountModal() {
 }
 
 function partialStockCountModal() {
-  const shelves = [...new Set(data.books.map(book => book.shelf).filter(Boolean))].sort();
-  const categories = [...new Set(data.books.map(book => book.category).filter(Boolean))].sort();
+  const shelves = [...new Set(liveBooks().map(book => book.shelf).filter(Boolean))].sort();
+  const categories = [...new Set(liveBooks().map(book => book.category).filter(Boolean))].sort();
   openModal("إعداد الجرد الجزئي", "الجرد والمخزون", `
     <form id="partial-count-filter-form">
       <div class="form-grid">
         <div class="form-field"><label>طريقة الاختيار</label><select name="filterType" id="count-filter-type"><option value="shelf">حسب الرف / الموقع</option><option value="category">حسب التصنيف</option><option value="manual">اختيار أصناف يدويًا</option></select></div>
         <div class="form-field"><label>القيمة</label><select name="filterValue" id="count-filter-value">${shelves.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join("")}</select></div>
       </div>
-      <div id="manual-count-books" class="inventory-manual-list" hidden>${data.books.map(book => `<label><input type="checkbox" name="bookIds" value="${book.id}"> ${esc(book.name)} <small>(${esc(book.shelf || "بدون موقع")})</small></label>`).join("")}</div>
+      <div id="manual-count-books" class="inventory-manual-list" hidden>${liveBooks().map(book => `<label><input type="checkbox" name="bookIds" value="${book.id}"> ${esc(book.name)} <small>(${esc(book.shelf || "بدون موقع")})</small></label>`).join("")}</div>
       <script type="application/json" id="count-shelves-data">${JSON.stringify(shelves)}</script>
       <script type="application/json" id="count-categories-data">${JSON.stringify(categories)}</script>
       <div class="form-actions"><button class="btn" type="submit">بدء الجرد الجزئي</button><button class="btn ghost" type="button" data-modal-action="back-to-count-types">رجوع</button></div>
@@ -14313,14 +14335,18 @@ function viewPurchase(id) {
     <div class="form-actions"><button class="btn" data-action="print-purchase" data-id="${purchase.id}" data-format="a4">طباعة A4</button><button class="btn secondary" data-action="print-purchase" data-id="${purchase.id}" data-format="thermal">طباعة حرارية</button>${!["ملغاة","مرتجع","بانتظار الفحص"].includes(purchase.status) ? `<button class="btn ghost" data-action="return-purchase" data-id="${purchase.id}">تسجيل مرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
 
-function cancelPurchase(id) {
+async function cancelPurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (purchase?.status === "مرتجع جزئي") return toast("لا يمكن إلغاء مستند عليه مرتجع جزئي. أكمل المرتجع من شاشة المرتجعات أو راجع السجل.", "error");
   if (!purchase || purchase.status === "ملغاة" || !confirm(`سيتم إلغاء المستند ${id} وخصم كمياته من المخزون. هل أنت متأكد؟`)) return;
   for (const line of (purchase.status === "مستلمة" ? (purchase.lines || []) : [])) {
     const book = getBook(line.bookId);
     if (book && book.stock < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء لأن رصيد «${book.name}» أقل من كمية المستند.`, "error");
+    // Copies reserved for confirmed orders or held for a count cannot leave with the cancelled purchase.
+    const free = Number(book?.stock || 0) - bookReservedStock(book || {}) - bookCountHold(book || {});
+    if (book && free < Number(line.qty || 0)) return toast(`لا يمكن الإلغاء: المتاح من «${book.name}» ${Math.max(0, free)} والباقي محجوز لطلبات أو بانتظار الجرد. استخدم مرتجع مشتريات بالكمية المتاحة.`, "error");
   }
+  const beforeCancel = snapshotClientData();
   if(purchase.status==="مستلمة")try{const preview=JSON.parse(JSON.stringify(data)),previewPurchase=preview.purchases.find(item=>item.id===purchase.id);PurchaseInventoryIntegrity.consumePurchaseBatches(preview,previewPurchase);for(const line of previewPurchase.lines||[]){const book=preview.books.find(item=>item.id===(line.bookId||line.productId));if(book)book.stock=Number(book.stock||0)-Number(line.qty||line.quantity||0);}PurchaseInventoryIntegrity.assertInventoryConsistency(preview,[...(previewPurchase.lines||[]).map(line=>line.bookId||line.productId)]);}catch(error){return toast("لا يمكن إلغاء المستند لأن دفعاته استُهلكت أو لا تطابق المخزون. استخدم مرتجع مشتريات محددًا بدلًا من الإلغاء.","error");}
   if(purchase.status==="مستلمة")try{PurchaseInventoryIntegrity.consumePurchaseBatches(data,purchase);}catch(error){return toast("لا يمكن إلغاء المستند لأن دفعاته استُهلكت أو لا تطابق المخزون. استخدم مرتجع مشتريات محددًا بدلًا من الإلغاء.","error");}
   (purchase.status === "مستلمة" ? (purchase.lines || []) : []).forEach(line => {
@@ -14344,7 +14370,10 @@ function cancelPurchase(id) {
   }
   purchase.status = "ملغاة";
   purchase.cancelledAt = new Date().toISOString();
-  saveData("إلغاء فاتورة شراء", "المشتريات", id);
+  if (!(await saveData("إلغاء فاتورة شراء", "المشتريات", id))) {
+    restoreClientData(beforeCancel); lastSaveError = null; showPurchasesList();
+    return toast("لم يتم إلغاء المستند ولم يتغير المخزون. حدّث الصفحة وأعد المحاولة.", "error");
+  }
   showPurchasesList();
   toast("تم إلغاء المستند وتحديث المخزون.");
 }
@@ -14374,9 +14403,21 @@ function purchaseReturnModal(id) {
 
 
 
-function receivePurchase(id) {
+// What a received purchase sets on the item card: the latest cost, cover price, supplier and ownership.
+function applyPurchaseToBook(book, { type, supplierId, unitCost, coverPrice, returnDeadline = "" }) {
+  book.lastPurchasePrice = unitCost;
+  book.cost = unitCost;
+  book.coverPrice = coverPrice;
+  book.purchaseListPrice = coverPrice;
+  book.owned = type === "شراء";
+  if (type === "أمانة" && returnDeadline) book.returnDeadline = returnDeadline;
+  book.supplierId = supplierId;
+}
+
+async function receivePurchase(id) {
   const purchase = data.purchases.find(item => item.id === id);
   if (!purchase || purchase.status !== "بانتظار الفحص") return toast("المستند غير متاح للاستلام.", "error");
+  const beforeReceive = snapshotClientData();
   const qtyTotal = (purchase.lines || []).reduce((sum, line) => sum + Number(line.qty || 0), 0);
   (purchase.lines || []).forEach(line => {
     const book = getBook(line.bookId);
@@ -14384,13 +14425,17 @@ function receivePurchase(id) {
     const qty = Number(line.qty || 0), shippingUnit = qtyTotal ? Number(purchase.shipping || 0) / qtyTotal : 0;
     const netCostUnit = qty > 0 && Number.isFinite(Number(line.finalNet)) ? Number(line.finalNet) / qty : Number(line.cost || 0);
     // Stock and its FIFO batch are created together, as when a purchase is received immediately.
+    applyPurchaseToBook(book, { type:purchase.type, supplierId:purchase.supplierId, unitCost:purchase.type === "شراء" ? netCostUnit + shippingUnit : netCostUnit, coverPrice:Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0), returnDeadline:purchase.returnDeadline || "" });
     if (!line.batchId) line.batchId = createInventoryBatch({ productId:book.id, purchaseInvoiceId:purchase.id, supplierId:purchase.supplierId, qty, unitCost:purchase.type === "شراء" ? netCostUnit + shippingUnit : netCostUnit, coverPrice:Number(line.coverPriceAtPurchase ?? productCoverPrice(book) ?? 0), purchaseDate:purchase.date }).batchId;
     const before = book.stock; book.stock += qty;
     recordStockMovement(book, purchase.type === "أمانة" ? "استلام أمانة" : "استلام شراء", qty, before, book.stock, purchase.id, "اعتماد الفحص والاستلام");
   });
   purchase.status = "مستلمة";
   purchase.receivedAt = new Date().toISOString();
-  saveData("اعتماد استلام مشتريات", "المشتريات", id);
+  if (!(await saveData("اعتماد استلام مشتريات", "المشتريات", id))) {
+    restoreClientData(beforeReceive); lastSaveError = null; showPurchasesList();
+    return toast("لم يتم اعتماد الاستلام ولم يتغير المخزون. حدّث الصفحة وأعد المحاولة.", "error");
+  }
   showPurchasesList();
   toast("تم اعتماد الاستلام وتحديث المخزون.");
 }
@@ -14408,7 +14453,7 @@ function deletePurchase(id) {
 function showTrialBalance() {
   const receipts = activeCash().filter(item => item.type === "قبض").reduce((sum, item) => sum + item.amount, 0);
   const payments = activeCash().filter(item => item.type === "صرف").reduce((sum, item) => sum + item.amount, 0);
-  const inventory = data.books.reduce((sum, book) => sum + productInventorySummary(book.id).currentInventoryValue, 0);
+  const inventory = liveBooks().reduce((sum, book) => sum + productInventorySummary(book.id).currentInventoryValue, 0);
   const customers = data.customers.reduce((sum, item) => sum + item.balance, 0);
   const suppliers = data.suppliers.reduce((sum, item) => sum + item.balance, 0);
   openModal("ميزان المراجعة المبسط", "التقارير المحاسبية", `

@@ -412,7 +412,8 @@ function writeDb(db, options = {}) {
 // goes to orders that can actually ship. Carried-over orders are flagged so packing handles them first.
 const BACKORDER_SYSTEM_USER = { name:"النظام", username:"system", role:"نظام" };
 function autoAllocateBackorders(db, user = BACKORDER_SYSTEM_USER) {
-  const books = new Map((db.books || []).map(book => [book.id, book]));
+  // Deleted books are never available: a pre-order waiting for one keeps waiting instead of stopping the whole run.
+  const books = new Map((db.books || []).filter(book => !book.deletedAt).map(book => [book.id, book]));
   const waiting = (db.onlineOrders || []).filter(order => !order.deletedAt && order.workflowStage === "awaiting_stock")
     .sort((a, b) => String(a.backorderSince || a.confirmedAt || "").localeCompare(String(b.backorderSince || b.confirmedAt || "")));
   const moved = [];
@@ -427,7 +428,7 @@ function autoAllocateBackorders(db, user = BACKORDER_SYSTEM_USER) {
     const shortfall = [...needed].map(([bookId, qty]) => {
       const book = books.get(bookId);
       if (book && reported.has(bookId) && countHoldStock(book) > 0) return { bookId, qty:reported.get(bookId) };
-      return { bookId, qty:Math.max(0, qty - (book ? availableStock(book) : 0)) };
+      return { bookId, qty:book ? Math.max(0, qty - availableStock(book)) : qty };
     }).filter(line => line.qty > 0);
     if (shortfall.length) {
       if (JSON.stringify(shortfall) !== JSON.stringify(order.backorderLines || [])) { order.backorderLines = shortfall; changed = true; }
@@ -974,8 +975,20 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
     else delete book.reservedStock;
   });
   const currentOrders=new Map((currentDb.onlineOrders||[]).map(order=>[order.id,order]));
+  // An order removed from the list, or deleted, gives its reserved copies back.
+  const nextOrderIds=new Set((nextDb.onlineOrders||[]).map(order=>order.id));
+  for(const previous of currentDb.onlineOrders||[]){
+    if(nextOrderIds.has(previous.id))continue;
+    const reservation=activeReservation(previous);if(!reservation)continue;
+    for(const [bookId,quantity] of aggregateOrderLines(reservation.lines)){const book=(nextDb.books||[]).find(item=>item.id===bookId);if(book)book.reservedStock=Math.max(0,reservedStock(book)-quantity);}
+  }
   for(const order of nextDb.onlineOrders||[]){
     const previous=currentOrders.get(order.id);if(!previous)continue;
+    if(order.deletedAt&&!previous.deletedAt){
+      order.inventoryReservation=previous.inventoryReservation?JSON.parse(JSON.stringify(previous.inventoryReservation)):order.inventoryReservation;
+      releaseOrderInventory(nextDb,order,user,"حذف الطلب");
+      continue;
+    }
     const previousReservation=activeReservation(previous);
     if(order.saleId&&!previous.saleId&&previousReservation){
       order.inventoryReservation=JSON.parse(JSON.stringify(previous.inventoryReservation));
@@ -1004,6 +1017,27 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
       reserveOrderInventory(nextDb,order,user,order.lines||[]);
     }
   }
+}
+
+// book.reservedStock must equal the copies held by active order reservations. Older paths could leave copies
+// reserved for an order that was deleted, cancelled or already invoiced, or drop a reservation without its count; the
+// shelf then showed copies as reserved (or free) that were not. Runs at start-up and fixes both sides, with a log.
+function repairReservedStock(db,user=BACKORDER_SYSTEM_USER) {
+  const now=new Date().toISOString(),orderFixes=[],bookFixes=[];
+  const closed=order=>order.deletedAt||order.cancelledAt||order.refusal||["cancelled","returned","delivered"].includes(order.workflowStage)||["ملغي","مرتجع","تم التسليم"].includes(order.status);
+  const expected=new Map();
+  for(const order of db.onlineOrders||[]){
+    const reservation=activeReservation(order);if(!reservation)continue;
+    if(order.saleId){Object.assign(reservation,{status:"consumed",consumedAt:now,updatedAt:now,consumedBy:user.name,invoiceId:order.saleId});orderFixes.push({orderId:order.id,fix:"consumed"});continue;}
+    if(closed(order)){Object.assign(reservation,{status:"released",releasedAt:now,updatedAt:now,releasedBy:user.name,releaseReason:"إصلاح تلقائي: الطلب مقفول"});orderFixes.push({orderId:order.id,fix:"released"});continue;}
+    for(const [bookId,qty] of aggregateOrderLines(reservation.lines))expected.set(bookId,(expected.get(bookId)||0)+qty);
+  }
+  for(const book of db.books||[]){
+    const want=book.deletedAt?0:(expected.get(book.id)||0),have=reservedStock(book);
+    if(Math.abs(want-have)>1e-6){bookFixes.push({bookId:book.id,from:have,to:want});book.reservedStock=want;}
+  }
+  if(orderFixes.length||bookFixes.length){db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"RESERVED_STOCK_REPAIRED",action:"إصلاح تلقائي للكميات المحجوزة",entity:"المخزون",entityId:"reservedStock",user:user.name,username:user.username,performedAt:now,details:JSON.stringify({orderFixes,bookFixes}).slice(0,4000)});}
+  return {orderFixes,bookFixes};
 }
 
 const PREPARATION_SHORTAGE_REASONS=["صنف غير متوفر","الكمية غير كافية"];
@@ -1067,13 +1101,20 @@ function returnOrderToPreparation(db,order,sale,user,now=new Date().toISOString(
   applyBackorderStage(order,user,now);
 }
 
-function voidSaleRecord(db,sale,user,note) {
-  const now=new Date().toISOString();
+// A voided invoice puts its copies back on the shelf once: the stock with a movement, and the same copies in the batches.
+function restockVoidedSale(db,sale,user,note,now=new Date().toISOString()) {
   for(const line of sale.lines||[]){
     const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));
-    if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note,user:user.name||user.username,username:user.username});}
-    for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}
+    if(!book||!(qty>0))continue;
+    const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;
+    db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note,user:user.name||user.username,username:user.username});
+    PurchaseInventoryIntegrity.restoreSaleLineToBatches(db,sale,line,qty,{now,source:"sale_void"});
   }
+}
+
+function voidSaleRecord(db,sale,user,note) {
+  const now=new Date().toISOString();
+  restockVoidedSale(db,sale,user,note,now);
   const customer=(db.customers||[]).find(item=>item.id===sale.customerId);
   if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));
   Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});
@@ -3832,6 +3873,8 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
+      // A cancelled, refused or returned order holds no copies; editing it would reserve copies for an order that never ships.
+      if(order.cancelledAt||order.refusal||["cancelled","returned","delivered"].includes(order.workflowStage)||["ملغي","مرتجع","تم التسليم"].includes(order.status))return send(res,409,{ok:false,code:"ORDER_CLOSED",message:"الطلب ده مقفول (ملغي أو مرتجع أو اتسلّم)؛ مينفعش يتعدّل."});
       if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,code:"REOPEN_PREPARATION_REQUIRED",message:"تم تجهيز هذا الطلب بالفعل. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار."});
       let shippingCompany;try{shippingCompany=orderShippingCompany(db,payload.shippingCompany,order.shippingCompany);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(!/^01\d{9}$/.test(phone))return send(res,400,{ok:false,message:"أدخل رقم موبايل مصريًا صحيحًا."});
@@ -4222,7 +4265,7 @@ const server = http.createServer(async (req, res) => {
       if(saleHasReturn(db,sale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"لا يمكن إلغاء فاتورة عليها مرتجع. الكتب رجعت المخزن بالمرتجع بالفعل."});
       if((db.shipments||[]).some(item=>!item.deletedAt&&(item.invoiceId===sale.id||item.orderId===sale.id)))return send(res,409,{ok:false,code:"SHIPMENT_CANCELLATION_REQUIRED",message:"ألغِ الشحنة المرتبطة أولًا."});
       const financial=OrderRefunds.cancellationPreview(db,{invoiceId});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الفاتورة قبل تسوية المبلغ المدفوع.",financial});
-      const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إبطال الفاتورة دون حذف",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}
+      const now=new Date().toISOString();restockVoidedSale(db,sale,user,"إبطال الفاتورة دون حذف",now);
       const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username});const order=(db.onlineOrders||[]).find(item=>item.id===sale.onlineOrderId&&!item.deletedAt);if(order)returnOrderToPreparation(db,order,sale,user,now);db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED",action:"إبطال فاتورة بيع",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:"تمت التسوية المالية قبل الإبطال"});writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"SALE_VOIDED",performedBy:user.username});return send(res,200,{ok:true,sale,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
@@ -4349,7 +4392,8 @@ const server = http.createServer(async (req, res) => {
         for(const {bookId,qty} of missingLines){
           const book=(db.books||[]).find(item=>item.id===bookId);
           if(!book)continue;
-          book.countHoldQty=countHoldStock(book)+qty;
+          // Never more held than what is left after the reserved copies: a hold beyond that is copies that do not exist.
+          book.countHoldQty=Math.min(countHoldStock(book)+qty,Math.max(0,Number(book.stock||0)-reservedStock(book)));
           book.countHoldReports=[...(book.countHoldReports||[]),{orderId:order.id,qty,reason,notes,reportedAt:now,reportedBy:user.name||user.username}];
           book.updatedAt=now;
         }
@@ -4436,12 +4480,14 @@ const server = http.createServer(async (req, res) => {
 
     if (route.startsWith("/api/orders/") && route.endsWith("/prepare/reopen") && req.method === "POST") {
       const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تحديث الصفحة أو تسجيل الدخول مرة أخرى"});
+      // The body is read before the database, so a save that lands while it uploads is not overwritten.
+      const payload=await readJsonBody(req,16*1024);
       const db=ensureTrackingDb(readDb());if(!canOrderAction(db,user,"order.prepare"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا الإجراء"});
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.shipmentId||order.workflowStage==="shipped")return send(res,409,{ok:false,message:"لا يمكن إعادة فتح طلب تم شحنه."});
       if(!order.preparedAt&&!["awaiting_packing","awaiting_shipping"].includes(order.workflowStage))return send(res,409,{ok:false,message:"الطلب لم يكتمل تجهيزه بعد."});
-      const exportCheck=carrierExportBlock(order,await readJsonBody(req,16*1024));if(exportCheck?.error)return send(res,409,exportCheck.error);
+      const exportCheck=carrierExportBlock(order,payload);if(exportCheck?.error)return send(res,409,exportCheck.error);
       const now=new Date().toISOString();Object.assign(order,{workflowStage:"awaiting_preparation",status:"قيد التجهيز",preparedAt:null,preparedBy:null,preparedByUsername:null,packedAt:null,packedBy:null,packedWeightGrams:null,postalCostQuote:null,shippingExport:null,carrierExportedAt:null,preparingAt:null,preparingBy:null,preparingByUsername:null,preparationChecklist:(order.lines||[]).map(line=>({bookId:line.bookId,qty:line.qty,done:false})),updatedAt:now});
       appendOrderAudit(db,user,order,"إعادة فتح الطلب للتجهيز",`إعادة مراجعة محتويات الطرد${exportCheck?` · كان متصدّر لشركة الشحن · الطرد لسه عندنا: ${exportCheck.reason}`:""}`);writeDb(db);
       return send(res,200,{ok:true,order,revision:dbRevision()});
@@ -4529,7 +4575,7 @@ const server = http.createServer(async (req, res) => {
           if(sale&&saleHasReturn(db,sale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"فاتورة الطلب عليها مرتجع والكتب رجعت المخزن بالفعل؛ مينفعش يتلغي."});
           const financial=OrderRefunds.cancellationPreview(db,{orderId:order.id});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الطلب بالكامل قبل تسوية المبلغ المدفوع.",financial});
           if(sale&&!sale.cancelledAt&&sale.status!=="ملغاة"){
-            const now=new Date().toISOString();for(const line of sale.lines||[]){const qty=Number(line.qty??line.quantity??0),book=(db.books||[]).find(item=>item.id===(line.bookId||line.productId));if(book){const before=Number(book.stock||0);book.stock=before+qty;book.updatedAt=now;db.stockMovements=db.stockMovements||[];db.stockMovements.push({id:`MOV-${crypto.randomUUID()}`,bookId:book.id,date:now,createdAt:now,type:"إلغاء بيع",quantity:qty,before,after:book.stock,documentId:sale.id,note:"إلغاء طلب بعد إلغاء الشحنة لدى شركة الشحن",user:user.name||user.username,username:user.username});}for(const allocation of line.batchAllocations||[]){const batch=(db.inventoryBatches||[]).find(item=>item.id===allocation.batchId);if(batch){batch.remainingQty=Number(batch.remainingQty||0)+Number(allocation.qty||0);batch.updatedAt=now;}}}const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username,shipmentId:null,updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED_AFTER_SHIPMENT_CANCELLATION",action:"إبطال فاتورة بعد إلغاء الشحنة",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:reason});
+            const now=new Date().toISOString();restockVoidedSale(db,sale,user,"إلغاء طلب بعد إلغاء الشحنة لدى شركة الشحن",now);const customer=(db.customers||[]).find(item=>item.id===sale.customerId);if(customer)customer.balance=Math.max(0,Number(customer.balance||0)-Number(sale.remaining??sale.remainingAmount??0));Object.assign(sale,{status:"ملغاة",voidedAt:now,cancelledAt:now,voidedBy:user.name||user.username,voidedByUsername:user.username,shipmentId:null,updatedAt:now});db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"SALE_VOIDED_AFTER_SHIPMENT_CANCELLATION",action:"إبطال فاتورة بعد إلغاء الشحنة",entity:"المبيعات",entityId:sale.id,user:user.name||user.username,username:user.username,performedAt:now,details:reason});
           }
         }
         const now=new Date().toISOString(),tracking=shipment.trackingNumber||shipment.tracking||"";
@@ -5235,7 +5281,9 @@ server.listen(PORT, HOST, () => {
       if (!fs.existsSync(DB_PATH)) return;
       const db = readDb();
       const changed = syncShipmentsWithOrders(db);
-      if (changed) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
+      const reserved = repairReservedStock(db);
+      if (reserved.orderFixes.length || reserved.bookFixes.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"RESERVED_STOCK_REPAIRED", ...reserved }));
+      if (changed || reserved.orderFixes.length || reserved.bookFixes.length) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
     } catch (error) { console.error("Shipment/order sync failed:", error.message); }
   }, 2000).unref();
 });

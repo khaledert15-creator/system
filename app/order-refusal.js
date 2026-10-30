@@ -1,9 +1,11 @@
 (function (root, factory) {
-  const refunds = typeof module === "object" && module.exports ? require("./order-refund.js") : root.OrderRefunds;
-  const api = factory(refunds);
+  const node = typeof module === "object" && module.exports;
+  const refunds = node ? require("./order-refund.js") : root.OrderRefunds;
+  const integrity = node ? require("./purchase-inventory-integrity.js") : root.PurchaseInventoryIntegrity;
+  const api = factory(refunds, integrity);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.OrderRefusals = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function (Refunds) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Refunds, Integrity) {
   "use strict";
 
   // A refused delivery is not a customer return: the customer never received the books, so the whole invoice is
@@ -137,14 +139,7 @@
       book.updatedAt = now;
       db.stockMovements = list(db, "stockMovements");
       db.stockMovements.push({ id: `MOV-${actor.uuid()}`, bookId: book.id, date: now, createdAt: now, type: "مرتجع مبيعات - رفض استلام", quantity: qty, before, after: book.stock, documentId: sale.id, note, user: actor.name || actor.username, username: actor.username });
-      for (const allocation of line.batchAllocations || []) {
-        const batch = list(db, "inventoryBatches").find(item => item.id === allocation.batchId || item.batchId === allocation.batchId);
-        const restorable = Math.max(0, Number(allocation.qty || 0) - Number(allocation.returnedQty || 0));
-        if (!batch || !(restorable > 0)) continue;
-        batch.remainingQty = Number(batch.remainingQty || 0) + restorable;
-        batch.updatedAt = now;
-        allocation.returnedQty = Number(allocation.returnedQty || 0) + restorable;
-      }
+      Integrity.restoreSaleLineToBatches(db, sale, line, qty, { now, source:"refusal_return" });
     }
   }
 

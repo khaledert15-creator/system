@@ -75,9 +75,18 @@
     return { valid:true, products:inventoryConsistency(db, productIds) };
   }
 
+  // Oldest copies first: by purchase day, then by when the batch was made, then by batch number as a number
+  // (BAT-999 before BAT-1000, which a text comparison gets wrong).
+  function fifoOrder(a, b) {
+    const number = row => { const value = Number(String(batchIdOf(row)).replace(/^\D+/, "")); return Number.isFinite(value) ? value : Infinity; };
+    return String(a.purchaseDate || a.createdAt || "").slice(0, 10).localeCompare(String(b.purchaseDate || b.createdAt || "").slice(0, 10))
+      || String(a.createdAt || "").localeCompare(String(b.createdAt || ""))
+      || number(a) - number(b) || batchIdOf(a).localeCompare(batchIdOf(b));
+  }
+
   function consumeBatchesFIFO(db, productId, quantity) {
     let remaining = Number(quantity || 0), costOfGoodsSold = 0, costIncomplete = false;
-    const allocations = [], batches = (db?.inventoryBatches || []).filter(batch => !batch.deletedAt && productIdOf(batch) === String(productId) && Number(batch.remainingQty || 0) > 0).sort((a,b)=>String(a.purchaseDate||a.createdAt||"").localeCompare(String(b.purchaseDate||b.createdAt||""))||batchIdOf(a).localeCompare(batchIdOf(b)));
+    const allocations = [], batches = (db?.inventoryBatches || []).filter(batch => !batch.deletedAt && productIdOf(batch) === String(productId) && Number(batch.remainingQty || 0) > 0).sort(fifoOrder);
     const available=batches.reduce((sum,batch)=>sum+Number(batch.remainingQty||0),0);
     if(available+1e-6<remaining)throw Object.assign(new Error("Insufficient batch quantity for inventory operation."),{code:"INSUFFICIENT_BATCH_STOCK",productId,requested:Number(quantity||0),unallocatedQty:Number((remaining-available).toFixed(6))});
     for (const batch of batches) {
@@ -101,6 +110,36 @@
     return {restored:Number(allocations.reduce((sum,row)=>sum+Number(row.qty||0),0).toFixed(6))};
   }
 
+  // Copies of a sold line coming back to the shelf (void, refusal): each batch gets back what was taken from it and
+  // not returned yet; copies the line took from no batch (older sales) get a batch of their own at the line's cost,
+  // so the batches still add up to the stock.
+  function restoreSaleLineToBatches(db, sale, line, qty, { now = new Date().toISOString(), source = "sale_void" } = {}) {
+    db.inventoryBatches = Array.isArray(db.inventoryBatches) ? db.inventoryBatches : [];
+    const bookId = String(line?.bookId || line?.productId || "");
+    let left = Number(qty || 0), lastCost = null;
+    for (const allocation of Array.isArray(line?.batchAllocations) ? line.batchAllocations : []) {
+      if (!(left > 1e-9)) break;
+      if (allocation.unitCost != null) lastCost = Number(allocation.unitCost);
+      const batch = db.inventoryBatches.find(row => !row.deletedAt && batchIdOf(row) === String(allocation.batchId));
+      const take = Math.min(left, Math.max(0, Number(allocation.qty || 0) - Number(allocation.returnedQty || 0)));
+      if (!batch || !(take > 0)) continue;
+      batch.remainingQty = Number((Number(batch.remainingQty || 0) + take).toFixed(6)); batch.updatedAt = now;
+      allocation.returnedQty = Number((Number(allocation.returnedQty || 0) + take).toFixed(6));
+      left = Number((left - take).toFixed(6));
+    }
+    if (left > 1e-9) {
+      const book = (db.books || []).find(row => String(row.id) === bookId);
+      const held = db.inventoryBatches.filter(row => !row.deletedAt && productIdOf(row) === bookId);
+      const heldQty = held.reduce((sum, row) => sum + Number(row.remainingQty || 0), 0);
+      const average = heldQty > 0 ? held.reduce((sum, row) => sum + Number(row.remainingQty || 0) * Number(row.unitCost || 0), 0) / heldQty : 0;
+      const unitCost = Number((lastCost ?? (Number(line.unitCost || 0) || average || Number(book?.cost || 0))).toFixed(2));
+      const numbers = db.inventoryBatches.map(row => Number(String(batchIdOf(row)).replace(/^BAT-/, ""))).filter(Number.isFinite);
+      const id = `BAT-${String((numbers.length ? Math.max(...numbers) : 0) + 1).padStart(3, "0")}`;
+      db.inventoryBatches.push({ id, batchId:id, productId:bookId, bookId, purchaseInvoiceId:sale?.id || "", supplierId:book?.supplierId || "", receivedQty:left, remainingQty:left, unitCost, coverPrice:Number(book?.price || 0), purchaseDate:String(now).slice(0, 10), source, status:unitCost > 0 ? "active" : "cost_incomplete", createdAt:now, updatedAt:now, deletedAt:null });
+    }
+    return { batchCreatedQty:left > 1e-9 ? left : 0 };
+  }
+
   function consumePurchaseBatches(db, purchase, requestedLines = purchase?.lines || []) {
     const resolved=[];
     for(const requested of requestedLines){
@@ -121,5 +160,5 @@
     return {candidate:next,changes,validation:inventoryConsistency(next,productIds)};
   }
 
-  return { normalize, resolvePurchaseLines, productIdentityConflicts, validatePurchaseEffects, inventoryConsistency, assertInventoryConsistency, consumeBatchesFIFO, restoreBatchAllocations, consumePurchaseBatches, buildCancelledPurchaseBatchRepairCandidate };
+  return { fifoOrder, normalize, resolvePurchaseLines, productIdentityConflicts, validatePurchaseEffects, inventoryConsistency, assertInventoryConsistency, consumeBatchesFIFO, restoreBatchAllocations, restoreSaleLineToBatches, consumePurchaseBatches, buildCancelledPurchaseBatchRepairCandidate };
 });

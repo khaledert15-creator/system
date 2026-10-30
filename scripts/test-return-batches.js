@@ -4,9 +4,9 @@ const Inventory=require('../app/purchase-inventory-integrity.js');
 const source=fs.readFileSync('app/app.js','utf8');
 function fn(name){const start=source.search(new RegExp(`(?:async )?function ${name}\\(`));assert(start>=0,name);return source.slice(start,source.indexOf('\n}',start)+2);}
 function context(db){
-  const c={data:db,today:()=>'2026-10-17',nextId:(prefix,rows)=>`${prefix}${String(rows.length+1).padStart(3,'0')}`,productCoverPrice:book=>Number(book.price||0),productInventorySummary:()=>({averageInventoryCost:7}),latestApprovedPurchaseCost:()=>null,getBook:id=>db.books.find(b=>b.id===id),recordStockMovement:()=>{},saveData:()=>{},showPurchasesList:()=>{},toast:()=>{}};
+  const c={data:db,today:()=>'2026-10-17',nextId:(prefix,rows)=>`${prefix}${String(rows.length+1).padStart(3,'0')}`,productCoverPrice:book=>Number(book.price||0),productInventorySummary:()=>({averageInventoryCost:7}),latestApprovedPurchaseCost:()=>null,getBook:id=>db.books.find(b=>b.id===id),recordStockMovement:()=>{},saveData:async()=>true,snapshotClientData:()=>JSON.parse(JSON.stringify(db)),restoreClientData:()=>{},showPurchasesList:()=>{},toast:()=>{}};
   vm.createContext(c);
-  for(const name of ['createInventoryBatch','receivePurchase'])vm.runInContext(fn(name),c);
+  for(const name of ['createInventoryBatch','applyPurchaseToBook','receivePurchase'])vm.runInContext(fn(name),c);
   return c;
 }
 
@@ -38,4 +38,5 @@ assert.equal(db.books[0].stock,7);
 assert.equal(db.inventoryBatches.reduce((s,b)=>s+b.remainingQty,0),7,'received purchase adds a matching batch');
 assert.equal(db.inventoryBatches[1].unitCost,42,'unit cost includes the shipping share');
 assert.equal(db.purchases[0].lines[0].batchId,db.inventoryBatches[1].batchId);
+assert.equal(db.books[0].cost,42,'the item takes its cost when the copies are received');assert.equal(db.books[0].supplierId,'S1');
 console.log('PASS receiving a pending purchase creates its FIFO batch');
