@@ -42,9 +42,12 @@
     const credited = round(refunds.filter(item => item.settlementType === "customer_credit").reduce((sum, item) => sum + Number(item.amount || 0), 0));
     const pending = round(refunds.filter(item => item.settlementType === "pending_credit").reduce((sum, item) => sum + Number(item.amount || 0), 0));
     const retained = round(refunds.filter(item => item.settlementType === "retained_fee").reduce((sum, item) => sum + Number(item.amount || 0), 0));
-    const settled = round(refunded + credited + retained), outstanding = round(Math.max(0, paid - settled));
+    // Paid money a customer return already gave back (cash or credit) is not refunded again on cancellation.
+    // (Without payment rows the invoice's own paid figure is used, and a return has already lowered it.)
+    const returnedPaid = payments.some(item => item.virtualReference) ? 0 : round(Number(context.invoice?.returnedPaid || 0));
+    const settled = round(refunded + credited + retained + returnedPaid), outstanding = round(Math.max(0, paid - settled));
     const candidates = list(db, "receipts").filter(item => active(item) && item.partyKind === "customer" && item.partyId === context.customerId && item.type === "دفع" && !refunds.some(row => row.linkedReceiptId === item.id)).map(item => ({ ...item, difference:round(Math.abs(Number(item.amount || 0) - outstanding)) })).filter(item => item.difference <= Math.max(1, outstanding * 0.05)).sort((a,b) => a.difference - b.difference);
-    return { ...context, payments:clone(payments), refunds:clone(refunds), candidates:clone(candidates), total:round(context.invoice?.total ?? context.order?.total ?? 0), paid, refunded, credited, pending, retained, settled, outstanding, canCancel:outstanding === 0 || (pending > 0 && outstanding === pending), pendingCancellation:outstanding > 0 && pending > 0 && outstanding === pending, customerName:context.customer?.name || context.order?.customerName || context.invoice?.customerSnapshot?.name || "—" };
+    return { ...context, payments:clone(payments), refunds:clone(refunds), candidates:clone(candidates), total:round(context.invoice?.total ?? context.order?.total ?? 0), paid, refunded, returnedPaid, credited, pending, retained, settled, outstanding, canCancel:outstanding === 0 || (pending > 0 && outstanding === pending), pendingCancellation:outstanding > 0 && pending > 0 && outstanding === pending, customerName:context.customer?.name || context.order?.customerName || context.invoice?.customerSnapshot?.name || "—" };
   }
 
   function createSettlement(db, reference, payload, actor, randomUUID) {

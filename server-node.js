@@ -14,6 +14,7 @@ const SeasonDataManagement = require("./app/season-data-management.js");
 const FactoryReset = require("./app/factory-reset.js");
 const AuditIds = require("./app/audit-id.js");
 const PurchaseInventoryIntegrity = require("./app/purchase-inventory-integrity.js");
+const Permissions = require("./app/permissions.js");
 const DuplicateOrders = require("./app/duplicate-orders.js");
 const OrderRefunds = require("./app/order-refund.js");
 const PaymentCorrection = require("./app/payment-correction.js");
@@ -46,7 +47,7 @@ const TRACKING_RPA_ENABLED = String(process.env.TRACKING_RPA_ENABLED || "").toLo
 const TRACKING_RPA_BASE_URL = String(process.env.TRACKING_RPA_BASE_URL || "").trim();
 const TRACKING_RPA_SHARED_SECRET = String(process.env.TRACKING_RPA_SHARED_SECRET || "");
 const TRACKING_RPA_TIMEOUT_MS = Number(process.env.TRACKING_RPA_TIMEOUT_MS || 120000);
-const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "db-delta.js", "shipment-followup.js", "styles.css"];
+const VERSIONED_ASSET_SOURCES = ["app.js", "audit-id.js", "purchase-inventory-integrity.js", "permissions.js", "order-finance.js", "egypt-cities.js", "duplicate-orders.js", "postal-shipping.js", "season-data-management.js", "factory-reset.js", "purchase-stale-retry.js", "live-updates.js", "db-delta.js", "shipment-followup.js", "styles.css"];
 const SEASON_PURGE_ENABLED = String(process.env.SEASON_PURGE_ENABLED || "").toLowerCase() === "true";
 const FACTORY_RESET_EXECUTION_ENABLED = String(process.env.FACTORY_RESET_EXECUTION_ENABLED ?? "false").trim().toLowerCase() === "true";
 const databasePersistence = createDatabasePersistence({ filePath:DB_PATH, logger:event => console.log(JSON.stringify({ timestamp:new Date().toISOString(), ...event })) });
@@ -110,12 +111,12 @@ const BASE_SECURITY_HEADERS = { "X-Content-Type-Options":"nosniff", "Referrer-Po
 // Origins a route may allow to embed one of its pages. Only /integrations/chatwood-panel opts in (Chatwood dashboard
 // app, CHATWOOD_ORIGIN, default https://chat.maktabaa.com):
 //   send(res, 200, html, "text/html; charset=utf-8", frameAncestorHeaders([FRAME_ANCESTOR_ORIGINS.chatwoot]))
-// Every other HTML page may only be framed by the system itself. (No script-src policy: the client relies on inline
-// handlers.)
+// Every other HTML page may only be framed by the system itself. Pages run no inline scripts or handlers.
 const FRAME_ANCESTOR_ORIGINS = Object.freeze({ chatwoot:INTEGRATION_CONFIG.chatwoodOrigin });
 function frameAncestorHeaders(extraOrigins = []) {
   const origins = extraOrigins.filter(origin => Object.values(FRAME_ANCESTOR_ORIGINS).includes(origin));
-  const headers = { "Content-Security-Policy":["frame-ancestors 'self'", ...origins].join(" ") };
+  // Scripts only from this server: a value someone managed to slip into a page as HTML cannot run.
+  const headers = { "Content-Security-Policy":`script-src 'self'; object-src 'none'; base-uri 'self'; ${["frame-ancestors 'self'", ...origins].join(" ")}` };
   // X-Frame-Options cannot name another origin, so it is only sent while framing stays same-origin.
   if (!origins.length) headers["X-Frame-Options"] = "SAMEORIGIN";
   return headers;
@@ -235,15 +236,31 @@ const loginFailures = new Map();
 const LOGIN_FAILURE_LIMIT = 10;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 
-function loginThrottleKey(req, username) {
-  return `${req.socket?.remoteAddress || ""}|${String(username || "").toLowerCase()}`;
+// The caller's own address. Behind the local proxy (OpenLiteSpeed ← Cloudflare) every request comes from 127.0.0.1, so
+// the forwarded address is used then; a direct caller cannot fake it, because it is only trusted from loopback.
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+function clientAddress(req) {
+  const remote = req.socket?.remoteAddress || "";
+  if (!LOOPBACK.has(remote)) return remote;
+  const forwarded = String(req.headers["cf-connecting-ip"] || String(req.headers["x-forwarded-for"] || "").split(",")[0] || "").trim();
+  return forwarded || remote;
 }
 
-function loginBlocked(key) {
+// Failures count per address and username, so wrong passwords from one place cannot lock the owner out everywhere;
+// an address that tries many usernames is held back as a whole.
+const LOGIN_ADDRESS_FAILURE_LIMIT = 30;
+function loginThrottleKey(req, username) {
+  return `${clientAddress(req)}|${String(username || "").toLowerCase()}`;
+}
+function loginAddressKey(req) {
+  return `${clientAddress(req)}|*`;
+}
+
+function loginBlocked(key, limit = LOGIN_FAILURE_LIMIT) {
   const entry = loginFailures.get(key);
   if (!entry) return false;
   if (Date.now() - entry.first > LOGIN_FAILURE_WINDOW_MS) { loginFailures.delete(key); return false; }
-  return entry.count >= LOGIN_FAILURE_LIMIT;
+  return entry.count >= limit;
 }
 
 function recordLoginFailure(key) {
@@ -1304,6 +1321,86 @@ function shipmentCollectionValues(db,shipment={}) {
   };
 }
 
+// Money the carrier collected for a parcel pays its invoice and order and lowers what the customer owes, by the same
+// amount on all three. What changed is kept on the collection so a reversal takes exactly that back.
+function applyCarrierPayment(db,sale,order,amount,now) {
+  const effect={salePaidDelta:0,saleRemainingDelta:0,customerId:"",balanceDelta:0,orderId:order?.id||""};
+  if(sale){
+    const total=Number(sale.total||0),beforePaid=Number(sale.paidAmount??sale.paid??0),beforeRemaining=Number(sale.remainingAmount??sale.remaining??Math.max(0,total-beforePaid));
+    const summary=OrderFinance.calculatePayment(total,Math.min(total,beforePaid+amount));
+    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
+    effect.salePaidDelta=Number((summary.paidAmount-beforePaid).toFixed(2));effect.saleRemainingDelta=Number((beforeRemaining-summary.remainingAmount).toFixed(2));
+    const customer=(db.customers||[]).find(item=>item.id===sale.customerId);
+    if(customer&&effect.saleRemainingDelta>0){const before=Number(customer.balance||0);customer.balance=Number(Math.max(0,before-effect.saleRemainingDelta).toFixed(2));effect.customerId=customer.id;effect.balanceDelta=Number((before-customer.balance).toFixed(2));}
+  }
+  if(order)orderPaymentFromCollections(db,order,amount);
+  return effect;
+}
+function orderPaymentFromCollections(db,order,collected) {
+  const confirmed=confirmedOrderPayments(db,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
+  const summary=OrderFinance.calculatePayment(Number(order.total||0),Math.min(Number(order.total||0),confirmed+collected));
+  Object.assign(order,{paidAmount:summary.paidAmount,remainingAmount:summary.remainingAmount,remaining:summary.remainingAmount,paymentStatus:summary.paymentStatus,amountDueAtDelivery:summary.remainingAmount});
+}
+function reverseCarrierPayment(db,effect={},sale,order,now) {
+  if(sale&&effect.salePaidDelta){
+    const total=Number(sale.total||0),paid=Math.max(0,Number(sale.paidAmount??sale.paid??0)-effect.salePaidDelta),summary=OrderFinance.calculatePayment(total,Math.min(total,paid));
+    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
+  }
+  const customer=effect.customerId&&(db.customers||[]).find(item=>item.id===effect.customerId);
+  if(customer&&effect.balanceDelta)customer.balance=Number((Number(customer.balance||0)+effect.balanceDelta).toFixed(2));
+  if(order){orderPaymentFromCollections(db,order,0);Object.assign(order,{collectionId:"",financialCollectionStatus:"",collectedAmount:0,collectedAt:"",updatedAt:now});}
+}
+// Customer balances that older collections and settlements left too high: a collection lowered the invoice's remaining
+// but not the customer's balance, and a settlement without a collection never paid the invoice at all. Each row says
+// what the correction does, so the owner sees it before applying it.
+function customerBalanceRepairPlan(db) {
+  const rows=[],customers=new Map((db.customers||[]).filter(item=>!item.deletedAt).map(item=>[item.id,item]));
+  const saleOf=ref=>(db.sales||[]).find(item=>!item.deletedAt&&item.status!=="ملغاة"&&(item.id===ref.invoiceId||item.id===ref.orderId));
+  for(const collection of db.orderCollections||[]){
+    if(collection.status==="reversed"||collection.paymentEffect||collection.balanceRepairedAt)continue;
+    const sale=saleOf(collection),customer=sale&&customers.get(sale.customerId);if(!sale||!customer)continue;
+    const deposits=(db.orderPayments||[]).filter(item=>item.orderId===sale.onlineOrderId&&item.status!=="reversed"&&!item.deletedAt&&item.confirmed!==false).reduce((sum,item)=>sum+Number(item.amount||0),0);
+    const byCarrier=Math.max(0,Number(sale.paid??sale.paidAmount??0)-deposits),change=Number(Math.min(Number(collection.amount||0),byCarrier).toFixed(2));
+    if(change>0)rows.push({kind:"collection",id:collection.id,customerId:customer.id,customerName:customer.name||"",invoiceId:sale.id,trackingNumber:collection.trackingNumber||"",amount:change,reason:"تحصيل شركة الشحن قلّل الفاتورة ومقللش رصيد العميل"});
+  }
+  for(const shipment of db.shipments||[]){
+    if(!shipment.settlementId||shipment.settlementPaymentEffect||shipment.deletedAt)continue;
+    if((db.orderCollections||[]).some(item=>item.shipmentId===shipment.id&&item.status!=="reversed"))continue;
+    const sale=saleOf(shipment),customer=sale&&customers.get(sale.customerId);if(!sale||!customer)continue;
+    const settlement=(db.carrierSettlements||[]).find(item=>item.id===shipment.settlementId||item.settlementId===shipment.settlementId);
+    const line=(settlement?.lines||[]).find(item=>item.shipmentId===shipment.id);
+    const amount=Number(Math.min(Number(line?.collectionAmount??shipment.collectionAmount??0),Number(sale.remaining??sale.remainingAmount??0)).toFixed(2));
+    if(amount>0)rows.push({kind:"settlement",id:shipment.id,customerId:customer.id,customerName:customer.name||"",invoiceId:sale.id,trackingNumber:shipment.trackingNumber||"",settlementId:shipment.settlementId,amount,reason:"اتسوّت مع شركة الشحن والفاتورة فضلت مش مدفوعة"});
+  }
+  const byCustomer=new Map();
+  for(const row of rows){const entry=byCustomer.get(row.customerId)||{customerId:row.customerId,customerName:row.customerName,balance:Number(customers.get(row.customerId).balance||0),change:0,rows:[]};entry.change=Number((entry.change+row.amount).toFixed(2));entry.rows.push(row);byCustomer.set(row.customerId,entry);}
+  return [...byCustomer.values()].map(entry=>({...entry,newBalance:Number(Math.max(0,entry.balance-entry.change).toFixed(2))})).sort((a,b)=>b.change-a.change);
+}
+function applyCustomerBalanceRepair(db,user,now=new Date().toISOString()) {
+  const plan=customerBalanceRepairPlan(db);
+  for(const entry of plan)for(const row of entry.rows){
+    const customer=(db.customers||[]).find(item=>item.id===row.customerId);
+    if(row.kind==="collection"){
+      const collection=db.orderCollections.find(item=>item.id===row.id),before=Number(customer.balance||0);
+      customer.balance=Number(Math.max(0,before-row.amount).toFixed(2));
+      // Kept on the collection, so reversing it later puts back exactly this.
+      collection.paymentEffect={salePaidDelta:Number(row.amount),saleRemainingDelta:Number(row.amount),customerId:customer.id,balanceDelta:Number((before-customer.balance).toFixed(2)),repaired:true};
+      collection.balanceRepairedAt=now;
+    }else{
+      const shipment=db.shipments.find(item=>item.id===row.id),sale=(db.sales||[]).find(item=>item.id===row.invoiceId),order=(db.onlineOrders||[]).find(item=>item.id===shipment.onlineOrderId);
+      shipment.settlementPaymentEffect=applyCarrierPayment(db,sale,order,row.amount,now);shipment.balanceRepairedAt=now;
+    }
+  }
+  if(plan.length){db.audit=db.audit||[];AuditIds.appendAuditRecord(db.audit,{operationType:"CUSTOMER_BALANCES_REPAIRED",action:"تصحيح أرصدة العملاء من التحصيلات والتسويات",entity:"العملاء",entityId:"balances",user:user.name||user.username,username:user.username,performedAt:now,details:JSON.stringify(plan.map(entry=>({customerId:entry.customerId,from:entry.balance,to:entry.newBalance,rows:entry.rows.map(row=>row.id)}))).slice(0,6000)});}
+  return plan;
+}
+
+// Only a parcel the carrier delivered has money to collect: a returned, refused or cancelled one never brought any in.
+function shipmentCannotBeCollected(shipment) {
+  const code=canonicalShippingStatus(shipment.shippingStatus||shipment.trackingStatus||shipment.normalizedStatus||shipment.status);
+  return shipment.refusedAt||shipment.returnedToWarehouseAt||isCancelledShipment(shipment)||["returned","refused","cancelled"].includes(code);
+}
+
 function createOrderCollectionAtomic(db,payload,user) {
   const next=ensureFinanceDb(JSON.parse(JSON.stringify(db)));
   const trackingNumber=normalizeCollectionTracking(payload.trackingNumber);
@@ -1316,6 +1413,8 @@ function createOrderCollectionAtomic(db,payload,user) {
   if(receivedProvided&&!(receivedCents>=0))throw Object.assign(new Error("المبلغ اللي نزل في الحساب لا يمكن أن يكون سالبًا."),{status:400});
   const shipment=next.shipments.find(item=>!item.deletedAt&&normalizeCollectionTracking(item.trackingNumber||item.tracking)===trackingNumber);
   if(!shipment)throw Object.assign(new Error("لم يتم العثور على أوردر مرتبط بكود الشحنة."),{status:404});
+  if(shipmentCannotBeCollected(shipment))throw Object.assign(new Error("الشحنة دي مرتجعة أو ملغاة؛ مفيش فلوس تتحصّل منها."),{status:409,code:"SHIPMENT_NOT_COLLECTABLE"});
+  if(shipment.settlementId)throw Object.assign(new Error("الشحنة دي اتسوّت مع شركة الشحن بالفعل."),{status:409,code:"SHIPMENT_ALREADY_SETTLED"});
   const sourceKey=`order-collection:${shipment.id}`;
   const previous=next.orderCollections.find(item=>item.sourceKey===sourceKey&&item.status!=="reversed");
   if(previous)throw Object.assign(new Error("تم تسجيل تحصيل هذه الشحنة سابقًا."),{status:409,previous});
@@ -1350,15 +1449,8 @@ function createOrderCollectionAtomic(db,payload,user) {
   Object.assign(shipment,{financialCollectionStatus:registrationType,collectionId:collection.id,collectedAmount:collection.amount,collectedAt:now,collectedBy:actor.name});
   const order=next.onlineOrders?.find(item=>item.id===shipment.onlineOrderId);
   const sale=values.sale;
-  if(sale){
-    const previousPaid=Number(sale.paidAmount??sale.paid??0),summary=OrderFinance.calculatePayment(Number(sale.total||0),Math.min(Number(sale.total||0),previousPaid+collection.amount));
-    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
-  }
-  if(order){
-    const confirmed=confirmedOrderPayments(next,order.id).reduce((sum,item)=>sum+Number(item.amount||0),0);
-    const summary=OrderFinance.calculatePayment(Number(order.total||0),Math.min(Number(order.total||0),confirmed+collection.amount));
-    Object.assign(order,{collectionId:collection.id,financialCollectionStatus:registrationType,collectedAmount:collection.amount,collectedAt:now,paidAmount:summary.paidAmount,remainingAmount:summary.remainingAmount,remaining:summary.remainingAmount,paymentStatus:summary.paymentStatus,amountDueAtDelivery:summary.remainingAmount,updatedAt:now});
-  }
+  collection.paymentEffect=applyCarrierPayment(next,sale,order,collection.amount,now);
+  if(order)Object.assign(order,{collectionId:collection.id,financialCollectionStatus:registrationType,collectedAmount:collection.amount,collectedAt:now,updatedAt:now});
   if(registrationType==="settled"){
     const collectionCash={id:nextId("TX-",next.cash),date:collection.collectionDate,type:"قبض",direction:"in",movementType:"تحصيل أوردر",account,party:values.company,amount:collection.amount,category:"تحصيل شركة شحن",collectionId:collection.id,shipmentId:shipment.id,orderId:collection.orderId,invoiceId:collection.invoiceId,sourceKey:`${sourceKey}:cash-in`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
     next.cash.push(collectionCash);collection.cashTransactionId=collectionCash.id;
@@ -1377,24 +1469,65 @@ function createOrderCollectionAtomic(db,payload,user) {
   return {next,collection};
 }
 
+// Treasury rows are checked one by one, not as "any cash change": a past row may not be rewritten alongside some other
+// finance change. Rows a document created (sale, purchase, receipt, expense, settlement…) are never edited or removed
+// by a save; plain rows need edit/delete rights; a new row is either part of a document saved with it or needs the
+// general cash-in / cash-out right. Fields the page stamps on old rows (who/when) are allowed to appear.
+const CASH_STAMP_FIELDS=new Set(["createdAt","updatedAt","createdBy","createdByUsername","createdByRole","createdById","category","direction","movementType"]);
+const CASH_LINK_FIELDS=["expenseId","incomeId","settlementId","receiptId","saleId","invoiceId","purchaseId","orderId","collectionId","paymentId","refundId","postalPaymentId","postalStatementId","returnId"];
+function isDocumentCash(row={}) {
+  return Boolean(row.locked||row.sourceKey||row.transferId||CASH_LINK_FIELDS.some(field=>row[field]));
+}
+function cashRowRewritten(old,row) {
+  for(const [key,value] of Object.entries(old))if(!isDeepStrictEqual(value,row[key]))return true;
+  return Object.keys(row).some(key=>!(key in old)&&!CASH_STAMP_FIELDS.has(key));
+}
+function cashWriteRequirements(current,next) {
+  const required=new Set(),before=new Map((current.cash||[]).map(row=>[row.id,row])),after=new Map((next.cash||[]).map(row=>[row.id,row]));
+  const documentIds=new Set();
+  for(const key of ["sales","purchases","receipts","expenses","otherIncome","carrierSettlements","onlineOrders"]){
+    const old=new Map((current[key]||[]).map(row=>[row.id,row]));
+    for(const row of next[key]||[])if(!old.has(row.id)||!isDeepStrictEqual(old.get(row.id),row))documentIds.add(String(row.id));
+  }
+  for(const [id,old] of before){
+    const row=after.get(id);
+    if(row&&!cashRowRewritten(old,row))continue;
+    if(isDocumentCash(old))required.add("reverse-financial-transaction:locked");
+    else if(!row||row.deletedAt&&!old.deletedAt)required.add("delete-cash");
+    else required.add("edit-cash");
+  }
+  for(const [id,row] of after){
+    if(before.has(id))continue;
+    const linked=CASH_LINK_FIELDS.some(field=>row[field]&&documentIds.has(String(row[field])))||[...documentIds].some(docId=>docId&&String(row.note||"").includes(docId));
+    if(linked)continue;
+    if(row.transferId)required.add("cash-transfer");
+    else if(row.category==="قيد عكسي")required.add("reverse-financial-transaction");
+    else required.add(row.type==="صرف"?"add-cash-out":"add-cash-in");
+  }
+  return [...required];
+}
+
 function financeWriteRequirements(current,next) {
   const changed=key=>JSON.stringify(current[key]||[])!==JSON.stringify(next[key]||[]);
   const requirements=new Set();
   if(changed("cashAccounts")||changed("expenseTypes")||changed("incomeTypes"))requirements.add("manage-finance-types");
+  // An approved document is changed (or removed) only by whoever may approve it; a new approval needs the same.
+  const approvedChanges=(key,isApproved)=>{
+    const before=new Map((current[key]||[]).map(item=>[item.id,item])),after=new Map((next[key]||[]).map(item=>[item.id,item]));
+    return [...after.values()].some(item=>isApproved(item)&&(!before.has(item.id)||!isApproved(before.get(item.id))||!isDeepStrictEqual(before.get(item.id),item)))
+      ||[...before.values()].some(item=>isApproved(item)&&!after.has(item.id));
+  };
   if(changed("expenses")) {
     requirements.add("add-expense");
-    const old=new Map((current.expenses||[]).map(item=>[item.id,item]));
-    if((next.expenses||[]).some(item=>item.status==="معتمد"&&old.get(item.id)?.status!=="معتمد"))requirements.add("approve-expense");
+    if(approvedChanges("expenses",item=>item.status==="معتمد"))requirements.add("approve-expense");
   }
   if(changed("otherIncome")) {
     requirements.add("add-other-income");
-    const old=new Map((current.otherIncome||[]).map(item=>[item.id,item]));
-    if((next.otherIncome||[]).some(item=>item.status==="معتمد"&&old.get(item.id)?.status!=="معتمد"))requirements.add("approve-other-income");
+    if(approvedChanges("otherIncome",item=>item.status==="معتمد"))requirements.add("approve-other-income");
   }
   if(changed("carrierSettlements")) {
     requirements.add("create-settlement");
-    const old=new Map((current.carrierSettlements||[]).map(item=>[item.id,item]));
-    if((next.carrierSettlements||[]).some(item=>item.approvedAt&&!old.get(item.id)?.approvedAt))requirements.add("approve-settlement");
+    if(approvedChanges("carrierSettlements",item=>Boolean(item.approvedAt)))requirements.add("approve-settlement");
   }
   if(changed("orderCollections")){
     requirements.add("finance.collection.create");
@@ -1402,7 +1535,7 @@ function financeWriteRequirements(current,next) {
     if((next.orderCollections||[]).some(item=>item.registrationType==="settled"&&!old.has(item.id)))requirements.add("finance.collection.settle");
     if((next.orderCollections||[]).some(item=>item.status==="reversed"&&old.get(item.id)?.status!=="reversed"))requirements.add("finance.collection.reverse");
   }
-  if(changed("cash")&&!requirements.size)requirements.add("add-cash-in");
+  for(const action of cashWriteRequirements(current,next))requirements.add(action);
   return [...requirements];
 }
 
@@ -1452,6 +1585,11 @@ function approveSettlementAtomic(db, settlementId, user) {
     const collection=next.orderCollections.find(item=>item.shipmentId===line.shipmentId&&item.status!=="reversed");
     if(collection)Object.assign(collection,{settlementId,status:"settled",financialSettlementStatus:"settled",settledAt:now,settledBy:actor.name,account:settlement.account,cashTransactionId:settlementCash.id});
     const order=next.onlineOrders?.find(item=>item.id===shipment.onlineOrderId);
+    // A parcel settled without a collection recorded first: the settlement is what pays its invoice and order.
+    if(!collection){
+      const sale=next.sales.find(item=>!item.deletedAt&&(item.id===shipment.invoiceId||item.id===shipment.orderId));
+      shipment.settlementPaymentEffect=applyCarrierPayment(next,sale,order,Number(line.collectionAmount||0),now);
+    }
     if(order)Object.assign(order,{collectionId:collection?.id||order.collectionId||"",settlementId,financialCollectionStatus:"settled",updatedAt:now});
   }
   Object.assign(settlement,{expectedNetSettlement:expected,settlementDifference:difference,status:Math.abs(difference)>.01?"يوجد فرق":"تمت التسوية",approvedAt:now,approvedBy:actor.name});
@@ -1564,6 +1702,103 @@ function validateInventoryWrite(currentDb, nextDb, user) {
     const broken = PurchaseInventoryIntegrity.inventoryConsistency(nextDb, scope).find(row => !row.valid && wasValid.get(row.productId));
     if (broken) { const book = oldBooks.get(broken.productId); return fail("INVENTORY_BATCH_STOCK_MISMATCH", `دفعات «${book?.name || broken.productId}» (${broken.batchRemaining}) مش هتطابق رصيده (${broken.stock}) بعد الحفظ. حدّث الصفحة وأعد المحاولة.`, { bookId:broken.productId }); }
   }
+  return { ok:true };
+}
+
+// A whole-database save may change only the data of screens its user can open. The UI already hides what a role
+// cannot do; this keeps a modified page (or one stuck on an old build) from doing it anyway.
+const COLLECTION_VIEWS = {
+  sales:["sales","onlineOrders","returns"], onlineOrders:["onlineOrders","omnichannel"], shipments:["shipping","onlineOrders"],
+  customers:["parties","sales","onlineOrders","omnichannel","returns"], suppliers:["parties","purchases"], purchases:["purchases"],
+  receipts:["parties"], employees:["hr"], shippingCompanies:["settings","shipping"], orderPayments:["onlineOrders","sales","omnichannel"],
+  complaints:["shipping","onlineOrders"], inventoryBatches:["books","purchases","sales","onlineOrders","returns"], stockMovements:["books","purchases","sales","onlineOrders","returns"]
+};
+// Stock fields of an item move with sales, orders and purchases; its catalogue data (name, prices, cost) is the
+// items screen's or a purchase's.
+const BOOK_STOCK_FIELDS = new Set(["stock","reservedStock","countHoldQty","countHoldClearedAt","countHoldReports","lastSale","updatedAt","batchRealignments"]);
+const BOOK_STOCK_VIEWS = ["books","purchases","sales","onlineOrders","returns"], BOOK_CATALOGUE_VIEWS = ["books","purchases"];
+// Written only by server endpoints (cancellation refunds, credits); a save never changes them.
+const SERVER_ONLY_COLLECTIONS = ["orderRefunds","customerCredits","customerCreditUses"];
+// Records are soft-deleted (deletedAt); a save never removes them from the file.
+const NO_HARD_DELETE = ["sales","onlineOrders","shipments","customers","suppliers","receipts","orderPayments","employees","complaints"];
+const COLLECTION_LABELS = { sales:"فواتير البيع", onlineOrders:"الطلبات", shipments:"الشحنات", customers:"العملاء", suppliers:"الموردين", purchases:"المشتريات", receipts:"الإيصالات", employees:"الموظفين", shippingCompanies:"شركات الشحن", orderPayments:"مدفوعات الطلبات", complaints:"الشكاوى", inventoryBatches:"دفعات المخزون", stockMovements:"حركات المخزون", books:"الأصناف", orderRefunds:"تسويات الإلغاء", customerCredits:"أرصدة العملاء الدائنة", customerCreditUses:"استخدام الأرصدة الدائنة" };
+const isQaRecord = row => /QA-/.test(String(row?.id || "")) || /QA-/.test(String(row?.trackingNumber || row?.tracking || "")) || ["01012345678","01099999999"].includes(String(row?.phone || "")) && /QA|اختبار/.test(String(row?.name || ""));
+function changedRows(current = [], next = []) {
+  const before = new Map(current.map(row => [String(row?.id), row])), after = new Map(next.map(row => [String(row?.id), row]));
+  const added = [], changed = [], removed = [];
+  for (const [id, row] of after) { const old = before.get(id); if (!old) added.push(row); else if (!isDeepStrictEqual(old, row)) changed.push([old, row]); }
+  for (const [id, row] of before) if (!after.has(id)) removed.push(row);
+  return { added, changed, removed };
+}
+function validateRoleWrites(currentDb, nextDb, user) {
+  const role = Permissions.roleOf(user);
+  const fail = (code, message, extra = {}) => ({ ok:false, code, message, ...extra });
+  for (const key of SERVER_ONLY_COLLECTIONS) {
+    if (!isDeepStrictEqual(currentDb[key] || [], nextDb[key] || [])) {
+      if (Array.isArray(currentDb[key])) nextDb[key] = JSON.parse(JSON.stringify(currentDb[key])); else delete nextDb[key];
+    }
+  }
+  for (const key of NO_HARD_DELETE) {
+    const removed = changedRows(currentDb[key] || [], nextDb[key] || []).removed.filter(row => !isQaRecord(row));
+    if (removed.length) return fail("RECORD_DELETE_FORBIDDEN", `مينفعش يتمسح سجل من ${COLLECTION_LABELS[key] || key} (${removed[0].id}) نهائيًا. حدّث الصفحة وأعد المحاولة.`, { key, id:removed[0].id });
+  }
+  // Record ids end up in the page's HTML: an id with quotes or angle brackets could carry a script, so it is refused.
+  const SAFE_ID = /^[^<>"'`\\\u0000-\u001f]{1,160}$/;
+  for (const key of [...Object.keys(COLLECTION_VIEWS), "books", "cash", "expenses", "otherIncome", "returns"]) {
+    const diff = changedRows(currentDb[key] || [], nextDb[key] || []);
+    for (const row of [...diff.added, ...diff.changed.map(pair => pair[1])]) {
+      if (!SAFE_ID.test(String(row?.id ?? ""))) return fail("INVALID_RECORD_ID", `رقم السجل «${String(row?.id ?? "").slice(0, 40)}» فيه رموز مش مسموحة.`, { key });
+      for (const line of [...(Array.isArray(row?.lines) ? row.lines : []), ...(Array.isArray(row?.preparationIssue?.missingLines) ? row.preparationIssue.missingLines : [])]) {
+        const qty = line?.qty ?? line?.quantity;
+        if (qty != null && qty !== "" && !Number.isFinite(Number(qty))) return fail("INVALID_QUANTITY", `كمية في ${row.id} مش رقم.`, { key, id:row.id });
+        if (line && line.qty != null && typeof line.qty === "string" && /[<>"']/.test(line.qty)) return fail("INVALID_QUANTITY", `كمية في ${row.id} مش رقم.`, { key, id:row.id });
+      }
+    }
+  }
+  // Values that are never valid, whoever saves them.
+  for (const book of nextDb.books || []) for (const field of ["price","cost","coverPrice","defaultSellingPrice","purchaseListPrice"]) if (book[field] != null && book[field] !== "" && !(Number(book[field]) >= 0)) return fail("INVALID_AMOUNT", `سعر «${book.name || book.id}» لازم يكون صفر أو أكتر.`, { key:"books", id:book.id });
+  for (const sale of nextDb.sales || []) for (const field of ["total","paid","remaining"]) if (sale[field] != null && sale[field] !== "" && !(Number(sale[field]) >= 0)) return fail("INVALID_AMOUNT", `قيمة الفاتورة ${sale.id} لازم تكون صفر أو أكتر.`, { key:"sales", id:sale.id });
+  if (role === "مالك" || user.username === "owner") return { ok:true };
+  // What an invoice or an order is for (its books, amounts, customer, date) is changed only through the server's
+  // order and return screens; a save from the page may update payments and status fields, not these.
+  if (role !== "مدير") {
+    // Missing, empty and blank count as the same value: the page fills in defaults (lines:[]) when it loads.
+    const plain = value => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length) ? null : value;
+    for (const [key, fields] of [["sales", ["lines","total","subtotal","customerId","date","discount","invoiceDiscount","shippingFee"]], ["onlineOrders", ["lines","total"]]]) {
+      for (const [old, row] of changedRows(currentDb[key] || [], nextDb[key] || []).changed) {
+        const field = fields.find(name => !isDeepStrictEqual(plain(old[name]), plain(row[name])));
+        if (field && !isQaRecord(row)) return fail("WRITE_PERMISSION_DENIED", `${key === "sales" ? "بيانات الفاتورة" : "كتب ومبلغ الطلب"} ${row.id} مبتتعدّلش من هنا.`, { key, id:row.id, field });
+      }
+    }
+  }
+  const views = new Set(Permissions.viewsFor(currentDb.settings || {}, user));
+  const allowed = list => list.some(view => views.has(view));
+  // Settings belong to the settings screen; other users' pages may carry a stale or normalised copy, which is put back.
+  if (!views.has("settings")) {
+    const keep = currentDb.settings || {};
+    nextDb.settings = { ...JSON.parse(JSON.stringify(keep)), permissions:nextDb.settings?.permissions ?? keep.permissions };
+  }
+  for (const [key, needed] of Object.entries(COLLECTION_VIEWS)) {
+    if (allowed(needed)) continue;
+    const diff = changedRows(currentDb[key] || [], nextDb[key] || []);
+    const touched = [...diff.added, ...diff.changed.map(pair => pair[1])].filter(row => !isQaRecord(row));
+    if (touched.length) return fail("WRITE_PERMISSION_DENIED", `ليس لديك صلاحية تعديل ${COLLECTION_LABELS[key] || key}.`, { key, id:touched[0].id });
+  }
+  // A customer's money (balance, credit limit, points, advance) is the sales, parties and accounts screens' business;
+  // order screens may add customers and update their contact details only.
+  for (const [old, row] of changedRows(currentDb.customers || [], nextDb.customers || []).changed) {
+    const moneyField = ["balance","creditLimit","points","advance"].find(field => Number(old[field] || 0) !== Number(row[field] || 0));
+    if (moneyField && !allowed(["parties","sales","accounting"])) return fail("WRITE_PERMISSION_DENIED", `ليس لديك صلاحية تعديل رصيد العميل «${row.name || row.id}».`, { key:"customers", id:row.id, field:moneyField });
+  }
+  const bookDiff = changedRows(currentDb.books || [], nextDb.books || []);
+  for (const [old, row] of bookDiff.changed) {
+    // allowPreorder has its own permission (book.preorder.manage), checked by validatePreorderPermission.
+    const fields = [...new Set([...Object.keys(old), ...Object.keys(row)])].filter(field => field !== "allowPreorder" && !isDeepStrictEqual(old[field], row[field]));
+    if (!fields.length) continue;
+    const needed = fields.every(field => BOOK_STOCK_FIELDS.has(field)) ? BOOK_STOCK_VIEWS : BOOK_CATALOGUE_VIEWS;
+    if (!allowed(needed)) return fail("WRITE_PERMISSION_DENIED", `ليس لديك صلاحية تعديل الصنف «${row.name || row.id}».`, { key:"books", id:row.id });
+  }
+  if (bookDiff.added.filter(row => !isQaRecord(row)).length && !allowed(BOOK_CATALOGUE_VIEWS)) return fail("WRITE_PERMISSION_DENIED", "ليس لديك صلاحية إضافة أصناف.", { key:"books" });
   return { ok:true };
 }
 
@@ -3572,12 +3807,12 @@ const server = http.createServer(async (req, res) => {
 
     if (route === "/api/login" && req.method === "POST") {
       const payload = await readJsonBody(req, BODY_LIMIT_CREDENTIALS);
-      const throttleKey = loginThrottleKey(req, payload.username);
-      if (loginBlocked(throttleKey)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات دخول خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
+      const throttleKey = loginThrottleKey(req, payload.username), addressKey = loginAddressKey(req);
+      if (loginBlocked(throttleKey) || loginBlocked(addressKey, LOGIN_ADDRESS_FAILURE_LIMIT)) return send(res, 429, { ok:false, code:"LOGIN_TEMPORARILY_BLOCKED", message:"محاولات دخول خاطئة كثيرة. حاول مرة أخرى بعد 15 دقيقة." });
       const loginName = String(payload.username || "").trim().toLowerCase();
       const user = users().find(item => String(item.username || "").toLowerCase() === loginName && item.active !== false);
       if (!user || !verifyPassword(user, payload.password)) {
-        recordLoginFailure(throttleKey);
+        recordLoginFailure(throttleKey); recordLoginFailure(addressKey);
         return send(res, 401, { ok:false, message:"Invalid username or password." });
       }
       loginFailures.delete(throttleKey);
@@ -4165,6 +4400,20 @@ const server = http.createServer(async (req, res) => {
         writeDb(db,{expectedRevision:req.headers["x-db-revision"],operationType:"REFUSAL_CARRIER_CHARGES",performedBy:user.username});
         return send(res,200,{ok:true,order:result.order,shipment:result.shipment,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }catch(error){return send(res,error.status||409,{ok:false,code:error.code||"REFUSAL_CARRIER_FAILED",message:error.message});}
+    }
+
+    if (route === "/api/admin/customer-balance-repair" && (req.method === "GET" || req.method === "POST")) {
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});
+      const role=orderRole(user),owner=role==="مالك"||user.username==="owner";
+      if(!(owner||role==="مدير"||role==="محاسب"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"مراجعة أرصدة العملاء للمالك والمدير والمحاسب."});
+      if(req.method==="GET"){const db=readDb();return send(res,200,{ok:true,rows:customerBalanceRepairPlan(db),revision:dbRevision()});}
+      if(!(owner||role==="مدير"))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"تطبيق التصحيح للمالك والمدير."});
+      const payload=await readJsonBody(req,16*1024);
+      const {db,revision}=readDbForWrite();
+      if(String(payload.revision||"")!==String(revision))return send(res,409,{ok:false,code:"DB_REVISION_CONFLICT",message:"البيانات اتغيّرت من وقت المعاينة؛ افتح المراجعة تاني."});
+      const plan=applyCustomerBalanceRepair(db,user);
+      if(plan.length)writeDb(db,{expectedRevision:revision,operationType:"CUSTOMER_BALANCES_REPAIRED",performedBy:user.username});
+      return send(res,200,{ok:true,rows:plan,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
     }
 
     if (route === "/api/refusals/repair/preview" && req.method === "GET") {
@@ -4869,7 +5118,7 @@ const server = http.createServer(async (req, res) => {
         const collection=persisted.orderCollections.find(item=>item.id===result.collection.id);
         return send(res,201,{ok:true,collection,revision:dbRevision()},"application/json; charset=utf-8",{"X-DB-Revision":dbRevision()});
       }catch(error){
-        return send(res,error.status||500,{ok:false,message:error.message||"تعذر تسجيل التحصيل.",previous:error.previous||null});
+        return send(res,error.status||500,{ok:false,code:error.code,message:error.message||"تعذر تسجيل التحصيل.",previous:error.previous||null});
       }
     }
 
@@ -4884,10 +5133,17 @@ const server = http.createServer(async (req, res) => {
       const collection=next.orderCollections.find(item=>item.id===id);
       if(!collection)return send(res,404,{ok:false,message:"عملية التحصيل غير موجودة."});
       if(collection.status==="reversed")return send(res,409,{ok:false,message:"تم عكس العملية سابقًا."});
+      // Once a settlement took this collection its money is in the settlement's cash entry; undo the settlement instead.
+      if(collection.settlementId)return send(res,409,{ok:false,code:"COLLECTION_SETTLED",message:`التحصيل ده دخل في تسوية ${collection.settlementId}؛ مينفعش يتعكس لوحده.`});
       const now=new Date().toISOString(),actor=financeActor(user);
       collection.status="reversed";collection.reversedAt=now;collection.reversedBy=actor.name;
       const shipment=next.shipments.find(item=>item.id===collection.shipmentId);
       if(shipment?.collectionId===collection.id)Object.assign(shipment,{financialCollectionStatus:"",collectionId:"",collectedAmount:0,collectedAt:"",collectedBy:""});
+      // The invoice, order and customer balance go back by what this collection changed (older collections, recorded
+      // before that was kept, take the collected amount back from the invoice).
+      const reversedSale=next.sales.find(item=>item.id===collection.invoiceId||item.id===collection.orderId),reversedOrder=(next.onlineOrders||[]).find(item=>item.id===collection.onlineOrderId);
+      const effect=collection.paymentEffect||{salePaidDelta:Math.min(Number(collection.amount||0),Number(reversedSale?.paidAmount??reversedSale?.paid??0)),customerId:"",balanceDelta:0};
+      reverseCarrierPayment(next,effect,reversedSale,reversedOrder?.collectionId===collection.id?reversedOrder:null,now);
       (next.cash||[]).filter(item=>item.collectionId===collection.id&&!item.deletedAt).forEach(item=>{item.deletedAt=now;item.reversedBy=actor.name;});
       (next.expenses||[]).filter(item=>item.collectionId===collection.id&&item.status!=="ملغي").forEach(item=>{item.status="ملغي";item.reversedAt=now;item.reversedBy=actor.name;});
       AuditIds.appendAuditRecord(next.audit,{date:now,createdAt:now,action:"عكس تحصيل أوردر",entity:"المالية",entityId:id,user:actor.name,username:actor.username,role:actor.role,reference:collection.trackingNumber,details:String(payload.reason||"")});
@@ -5012,7 +5268,15 @@ const server = http.createServer(async (req, res) => {
           return send(res, 403, { ok:false, code:"PERMISSIONS_CHANGE_FORBIDDEN", message:"ليس لديك صلاحية تعديل صلاحيات المستخدمين أو الأدوار." });
         }
       }
-      try { parsed.audit = AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || []); }
+      try {
+        parsed.audit = AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || []);
+        // New log rows carry the user who really made this save; a name the page wrote differently is kept beside it.
+        for (const row of parsed.audit.slice((currentDb.audit || []).length)) {
+          const claimed = row.username || row.user || "";
+          if (claimed && claimed !== user.username && claimed !== user.name) row.claimedUser = claimed;
+          Object.assign(row, { user:user.name || user.username, username:user.username, role:user.role || row.role || "" });
+        }
+      }
       catch (error) { return send(res, 409, { ok:false, code:error.code || "AUDIT_HISTORY_INVALID", message:error.message, index:error.index }); }
       const currentBookIds = new Set((currentDb.books || []).map(book => String(book.id || "")));
       const acceptedBooks = [...(currentDb.books || [])];
@@ -5045,7 +5309,13 @@ const server = http.createServer(async (req, res) => {
       if(!shippingPermission.ok)return send(res,403,{ok:false,code:"SHIPPING_OVERRIDE_FORBIDDEN",message:"ليس لديك صلاحية تعديل رسوم الشحن المحسوبة حسب المحافظة.",recordId:shippingPermission.recordId});
       const preorderPermission=validatePreorderPermission(currentDb,parsed,user);
       if(!preorderPermission.ok)return send(res,403,{ok:false,code:"PREORDER_PERMISSION_DENIED",message:"تعديل «يسمح بالحجز المسبق» متاح للمالك والمدير فقط.",bookId:preorderPermission.bookId});
+      const roleWrites=validateRoleWrites(currentDb,parsed,user);
+      if(!roleWrites.ok){
+        console.warn(JSON.stringify({timestamp:new Date().toISOString(),operationType:"ROLE_WRITE_BLOCKED",performedBy:user.username,code:roleWrites.code,key:roleWrites.key,id:roleWrites.id}));
+        return send(res,roleWrites.code==="WRITE_PERMISSION_DENIED"?403:409,roleWrites);
+      }
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
+      if(financeRequirements.includes("reverse-financial-transaction:locked"))return send(res,409,{ok:false,code:"CASH_DOCUMENT_PROTECTED",message:"حركات الخزنة المرتبطة بمستند (فاتورة، إيصال، مصروف، تحصيل…) مبتتعدّلش من هنا. ألغِ المستند نفسه أو اعمل قيد عكسي."});
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
       if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});
       try{reconcileReservationWrite(currentDb,parsed,user);}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INVENTORY_RESERVATION_FAILED",message:error.message,bookId:error.bookId,available:error.available});}

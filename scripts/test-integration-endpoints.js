@@ -144,18 +144,18 @@ function openEvents(base, { now } = {}) {
     // ---- frame-ancestors: only the panel page may be framed by Chatwood.
     let page = await fetch(on.base + '/integrations/chatwood-panel');
     assert.equal(page.status, 200);
-    assert.equal(page.headers.get('content-security-policy'), "frame-ancestors 'self' https://chat.maktabaa.com");
+    assert.equal(page.headers.get('content-security-policy'), "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self' https://chat.maktabaa.com");
     assert.equal(page.headers.get('x-frame-options'), null);
     assert.match(await page.text(), /<meta name="chatwood-origin" content="https:\/\/chat\.maktabaa\.com">/);
     page = await fetch(on.base + '/');
-    assert.equal(page.headers.get('content-security-policy'), "frame-ancestors 'self'"); assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
+    assert.equal(page.headers.get('content-security-policy'), "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"); assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
     page = await fetch(on.base + '/integrations/chatwood-panel.html');
-    assert.equal(page.headers.get('content-security-policy'), "frame-ancestors 'self'", 'the raw static file is not framable');
+    assert.equal(page.headers.get('content-security-policy'), "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'", 'the raw static file is not framable');
     assert.equal((await fetch(on.base + '/integrations/chatwood-panel.js')).status, 200);
     const custom = await H.startSystem({ env:{ ...H.integrationEnv(null), CHATWOOD_ORIGIN:'https://chat.example.test' }, name:'integration-origin-' }); servers.push(custom);
     page = await fetch(custom.base + '/integrations/chatwood-panel');
-    assert.equal(page.headers.get('content-security-policy'), "frame-ancestors 'self' https://chat.example.test");
-    assert.equal((await fetch(custom.base + '/')).headers.get('content-security-policy'), "frame-ancestors 'self'");
+    assert.equal(page.headers.get('content-security-policy'), "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self' https://chat.example.test");
+    assert.equal((await fetch(custom.base + '/')).headers.get('content-security-policy'), "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
     console.log("PASS panel page allows frame-ancestors CHATWOOD_ORIGIN; every other page keeps 'self'");
     console.log('PASS integration endpoint checks completed');
   } finally {

@@ -38,7 +38,7 @@ const legacy=(salt,password)=>crypto.createHash('sha256').update(`${salt}:${pass
   const afterSave=dbFile();
   assert.equal(afterSave.users.find(u=>u.username==='cashier').role,'كاشير','client cannot change user roles');
   assert.equal(afterSave.users.find(u=>u.username==='owner').passwordHash,users[0].passwordHash,'credentials survive client saves');
-  assert.equal(afterSave.settings.companyName,'Cashier save');
+  assert.notEqual(afterSave.settings.companyName,'Cashier save','a cashier cannot change the settings (the server keeps its copy)');
   console.log('PASS client saves keep server users and credentials unchanged');
 
   db.settings.permissions.users.cashier={views:['settings'],actions:['customize-user']};

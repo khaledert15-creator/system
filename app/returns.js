@@ -138,6 +138,13 @@
     return active(list(db, "shipments")).find(item => item.invoiceId === sale.id || item.orderId === sale.id || (sale.onlineOrderId && item.onlineOrderId === sale.onlineOrderId)) || null;
   }
 
+  // Paid money of an invoice already settled through the cancellation screen (orderRefunds: cash refund, credit,
+  // linked disbursement, retained fee) — for the invoice or its order.
+  function settledOutsideReturns(db, sale) {
+    return list(db, "orderRefunds").filter(item => !item.deletedAt && !["reversed", "void"].includes(String(item.status || "")) && ["cash_refund", "customer_credit", "linked_disbursement", "retained_fee"].includes(item.settlementType)
+      && (item.invoiceId === sale.id || (sale.onlineOrderId && item.orderId === sale.onlineOrderId))).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  }
+
   // payload: { customerId, invoiceId? (one invoice), lines:[{documentId,lineIndex,qty}], settlement, account,
   //            replacementDeduction, returnShippingDeduction, reason, date, operationKey }
   function createSaleReturn(db, payload = {}, actor) {
@@ -166,11 +173,12 @@
     for (const row of perSale.values()) {
       const sale = row.sale, total = Math.max(1, Number(sale.total || 0));
       row.debt = Math.min(Number(sale.remaining || 0), (Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0)) * row.amount / total);
-      row.due = row.amount - row.debt;
+      // Money already given back for this invoice outside returns (a cancellation refund or credit) is not paid again.
+      row.due = Math.max(0, Math.min(row.amount - row.debt, Number(sale.paid || 0) - settledOutsideReturns(db, sale)));
     }
     const amount = round([...perSale.values()].reduce((sum, row) => sum + row.amount, 0));
-    const debt = [...perSale.values()].reduce((sum, row) => sum + row.debt, 0), dueBefore = amount - debt;
-    const replacement = Math.max(0, Math.min(Number(payload.replacementDeduction || 0), Math.max(0, amount - debt)));
+    const debt = [...perSale.values()].reduce((sum, row) => sum + row.debt, 0), dueBefore = [...perSale.values()].reduce((sum, row) => sum + row.due, 0);
+    const replacement = Math.max(0, Math.min(Number(payload.replacementDeduction || 0), Math.max(0, dueBefore)));
     // Return shipping the customer bears comes out of the money due first, then out of the debt being cleared.
     const shipping = Math.max(0, Math.min(Number(payload.returnShippingDeduction || 0), Math.max(0, amount - replacement)));
     const fromDue = Math.min(shipping, Math.max(0, dueBefore - replacement)), fromDebt = Math.min(shipping - fromDue, debt);

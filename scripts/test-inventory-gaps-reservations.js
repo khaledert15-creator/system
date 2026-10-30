@@ -45,11 +45,13 @@ async function deletedAndClosedOrders() {
     await H.until(() => order(system.readDb(), 'ORD-NEW').workflowStage === 'awaiting_preparation', 'backorder promotion');
     assert.equal(order(system.readDb(), 'ORD-OLD').workflowStage, 'awaiting_stock');
     const page = await system.api('/api/db');
-    order(page.body, 'ORD-C').deletedAt = new Date().toISOString();
-    page.body.onlineOrders = page.body.onlineOrders.filter(item => item.id !== 'ORD-D');
-    let r = await system.api('/api/db', { method:'PUT', body:page.body, headers:{ 'If-Match':page.headers.get('x-db-revision') } });
+    const removed = JSON.parse(JSON.stringify(page.body)); removed.onlineOrders = removed.onlineOrders.filter(item => item.id !== 'ORD-D');
+    let r = await system.api('/api/db', { method:'PUT', body:removed, headers:{ 'If-Match':page.headers.get('x-db-revision') } });
+    assert.equal(r.status, 409, r.text); assert.equal(r.body.code, 'RECORD_DELETE_FORBIDDEN', 'orders are never removed from the file');
+    order(page.body, 'ORD-C').deletedAt = new Date().toISOString(); order(page.body, 'ORD-D').deletedAt = new Date().toISOString();
+    r = await system.api('/api/db', { method:'PUT', body:page.body, headers:{ 'If-Match':page.headers.get('x-db-revision') } });
     assert.equal(r.status, 200, r.text);
-    assert.equal(book(system.readDb(), 'B1').reservedStock, 0, 'deleted and removed orders give their copies back');
+    assert.equal(book(system.readDb(), 'B1').reservedStock, 0, 'deleted orders give their copies back');
     assert.equal(order(system.readDb(), 'ORD-C').inventoryReservation.status, 'released');
     const x = order(system.readDb(), 'ORD-X');
     r = await system.api('/api/orders/ORD-X/quick', { method:'PATCH', body:{ ...x, phone:'01000000001', customerName:'x', address:'x', city:'مدينة نصر', lines:[{ bookId:'B2', qty:1 }] } });

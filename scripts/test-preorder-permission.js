@@ -25,8 +25,11 @@ const H = require('./integration-test-helpers.js');
     assert.equal((await catalogBook('B0001')).allowPreorder, false);
     console.log('PASS other roles cannot change the pre-order permission');
 
-    r = await save('cashier', db => { db.books.find(book => book.id === 'B0001').shelf = 'رف QA'; });
+    r = await save('warehouse', db => { db.books.find(book => book.id === 'B0001').shelf = 'رف QA'; });
     assert.equal(r.status, 200, r.text);
+    // The cashier has no items screen, so editing an item's data is not theirs either.
+    r = await save('cashier', db => { db.books.find(book => book.id === 'B0001').shelf = 'رف آخر'; });
+    assert.equal(r.status, 403, r.text); assert.equal(r.body.code, 'WRITE_PERMISSION_DENIED');
     console.log('PASS other book edits by other roles are unaffected');
 
     r = await save('manager', db => { db.books.find(book => book.id === 'B0001').allowPreorder = true; });

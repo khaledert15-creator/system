@@ -69,7 +69,7 @@ function raw(port,{method='GET',path:requestPath='/',headers={},body}={}){
   assert.equal(r.headers.get('x-frame-options'),null,'JSON is not given frame headers');
   r=await fetch(server.base+'/');
   assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/text\/html/);
-  assert.equal(r.headers.get('content-security-policy'),"frame-ancestors 'self'");assert.equal(r.headers.get('x-frame-options'),'SAMEORIGIN');
+  assert.equal(r.headers.get('content-security-policy'),"script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");assert.equal(r.headers.get('x-frame-options'),'SAMEORIGIN');
   assert.equal(r.headers.get('x-content-type-options'),'nosniff');
   r=await fetch(server.base+'/styles.css');assert.equal(r.headers.get('x-content-type-options'),'nosniff');
   r=await fetch(server.base+'/missing-file.txt');assert.equal(r.status,404);assert.equal(r.headers.get('x-content-type-options'),'nosniff');
