@@ -214,6 +214,37 @@
   const CURRENT = ["awaiting_confirmation", "awaiting_deposit", "preparing", "shipped", "preorder"];
   const HISTORY = ["delivered", "cancelled", "returned", "not_completed", "previous"];
   const PHASE_TITLES = { awaiting_confirmation: "بانتظار التأكيد", awaiting_deposit: "بانتظار العربون", preparing: "قيد التجهيز", shipped: "تم الشحن", preorder: "حجوزات مسبقة جارية", delivered: "تم التسليم", cancelled: "ملغية", returned: "مرتجعات", not_completed: "لم تكتمل (مؤرشفة)", previous: "طلبات سابقة" };
+  // How each phase looks: badge colour, and the step it reached on التأكيد ← التجهيز ← الشحن ← التسليم (step 4 means
+  // every step is done). Phases without a step (cancelled, returned, archived, older orders) show a closing note instead.
+  const STEPS = ["التأكيد", "التجهيز", "الشحن", "التسليم"];
+  const PHASE_LOOK = {
+    awaiting_confirmation: { tone: "amber", step: 0 }, awaiting_deposit: { tone: "orange", step: 1 }, preparing: { tone: "blue", step: 1 },
+    preorder: { tone: "violet", step: 1 }, shipped: { tone: "teal", step: 2 }, delivered: { tone: "green", step: 4 },
+    cancelled: { tone: "red", end: "الطلب اتلغى ومش هيتشحن." }, returned: { tone: "rose", end: "الطلب رجع بعد الشحن." },
+    not_completed: { tone: "gray", end: "الطلب مكملش واتنقل للأرشيف." }, previous: { tone: "slate" }
+  };
+  const phaseLook = order => order.awaitingApproval ? { tone: "amber", step: 0 } : PHASE_LOOK[order.phase] || { tone: "gray" };
+  const statusBadge = order => el("span", { class: `state-badge ${phaseLook(order).tone}` }, el("i", { "aria-hidden": "true" }),
+    order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.phaseLabel || order.status || "حالة غير معروفة");
+
+  function progress(order) {
+    const look = phaseLook(order);
+    if (look.end) return el("div", { class: `state-end ${look.tone}`, text: look.end });
+    if (look.step === undefined) return "";
+    const hint = order.phase === "awaiting_deposit" ? "التجهيز مستني العربون" : order.phase === "preorder" ? "مستني وصول الكتب" : "";
+    return el("div", {},
+      el("ol", { class: `steps ${look.tone}`, "aria-label": `مرحلة الطلب: ${STEPS[Math.min(look.step, 3)]}` },
+        STEPS.map((label, index) => el("li", { class: index < look.step ? "done" : index === look.step ? "current" : "" }, el("i", { "aria-hidden": "true", text: index < look.step ? "✓" : "" }), el("span", { text: label })))),
+      hint ? el("div", { class: `step-hint ${look.tone}`, text: hint }) : "");
+  }
+
+  // Shipping carrier, shipment status and the tracking number (selected with one click, ready to copy).
+  function shippingLine(order) {
+    const tracking = order.trackingNumber ? el("span", { class: "tracking", dir: "ltr", text: order.trackingNumber }) : "";
+    if (!order.shipment && !tracking) return order.kind === "sale" || phaseLook(order).end ? "" : el("div", { class: "ship muted small", text: "🚚 لم يُشحن بعد" });
+    const parts = [order.shipment?.carrier, order.shipment ? order.shipment.statusLabel || order.shipment.status : ""].filter(Boolean).join(" · ");
+    return el("div", { class: "ship small" }, el("span", { text: `🚚 ${parts || "شحنة"}` }), tracking);
+  }
 
   function render() {
     // While the order form is open it gets the room: the conversation card and the manual phone box are hidden.
@@ -238,9 +269,11 @@
       const groups = phases.map(phase => [phase, orders.filter(order => order.phase === phase)]).filter(([, list]) => list.length);
       if (!groups.length) return el("section", { class: "orders-section" }, el("h2", { text: `${title} (0)` }), el("p", { class: "muted small", text: "لا يوجد." }));
       return el("section", { class: "orders-section" }, el("h2", { text: `${title} (${groups.reduce((sum, [, list]) => sum + list.length, 0)})` }),
-        groups.map(([phase, list]) => el("div", { class: "phase" }, el("h3", { text: `${PHASE_TITLES[phase]} (${list.length})` }), list.map(orderCard))));
+        groups.map(([phase, list]) => el("div", { class: "phase" }, el("h3", { text: `${PHASE_TITLES[phase] || list[0].phaseLabel || "حالة غير معروفة"} (${list.length})` }), list.map(orderCard))));
     };
-    $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), section("الطلبات الحالية", CURRENT), section("سجل الطلبات", HISTORY), recipientSection(),
+    // A phase this panel does not know yet still shows, under its own group, instead of disappearing.
+    const unknown = group => [...new Set(orders.filter(order => !CURRENT.includes(order.phase) && !HISTORY.includes(order.phase) && (order.group === "current") === (group === "current")).map(order => order.phase))];
+    $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), section("الطلبات الحالية", [...CURRENT, ...unknown("current")]), section("سجل الطلبات", [...HISTORY, ...unknown("history")]), recipientSection(),
       state.data.truncated ? el("p", { class: "muted small", text: `يظهر أحدث ${orders.length} من ${state.data.totalOrders} طلب.` }) : "");
   }
 
@@ -295,32 +328,43 @@
     if (!list.length) return "";
     return el("section", { class: "orders-section recipient" }, el("h2", { text: `طلبات الرقم ده فيها مستلم بس (${list.length})` }),
       el("p", { class: "muted small", text: "صاحب الطلب عميل تاني. بيظهر رقم الطلب وحالة الشحن بس." }),
-      list.map(order => el("article", { class: "card order recipient" },
-        el("div", { class: "row" }, el("span", { class: "badge sys", text: order.salesOrderId }), el("span", { class: "status", text: order.phaseLabel })),
-        el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "", order.shipment ? ` · ${order.shipment.statusLabel || order.shipment.status}` : " · لم يُشحن", order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : ""),
+      list.map(order => el("article", { class: `card order recipient tone-${phaseLook(order).tone}` },
+        el("div", { class: "order-top" },
+          el("div", { class: "order-ref" }, el("strong", { dir: "ltr", text: order.salesOrderId }), el("span", { class: "muted small", text: order.createdAt ? dateLabel(order.createdAt) : "" })),
+          statusBadge(order)),
+        progress(order),
+        shippingLine(order),
         el("div", { class: "actions" }, el("a", { class: "btn ghost", href: order.links.system, target: "_blank", rel: "noopener noreferrer", text: "فتح في السيستم" })))));
   }
 
   function orderCard(order) {
+    const reference = order.salesOrderId || order.websiteOrderNumber || order.invoiceId || "—";
     const numbers = [
       el("span", { class: `badge src ${order.source}`, text: order.sourceLabel || order.source }),
-      order.websiteOrderNumber && el("span", { class: "badge web", text: `🌐 ${order.websiteOrderNumber}` }),
-      order.salesOrderId && el("span", { class: "badge sys", text: order.salesOrderId }),
-      order.invoiceId && el("span", { class: "badge inv", text: order.invoiceId }),
+      order.websiteOrderNumber && order.websiteOrderNumber !== reference && el("span", { class: "badge web", text: `🌐 ${order.websiteOrderNumber}` }),
+      order.invoiceId && order.invoiceId !== reference && el("span", { class: "badge inv", text: order.invoiceId }),
       order.splitPart && el("span", { class: "badge", text: `شحنة ${order.splitPart}` })];
-    const shipment = order.shipment ? `${order.shipment.statusLabel || order.shipment.status}${order.shipment.carrier ? ` · ${order.shipment.carrier}` : ""}` : "لم يُشحن";
     const canLink = order.websiteOrderNumber && state.conversationId && !order.linkedToConversation && !order.chatwootConversationId;
-    return el("article", { class: `card order ${order.linkedToConversation ? "linked" : ""}` },
-      el("div", { class: "row" }, el("div", { class: "numbers" }, numbers), el("span", { class: `status ${order.group}`, text: order.awaitingApproval ? "بانتظار الاعتماد في السيستم" : order.phaseLabel || order.status || "—" })),
-      el("div", { class: "muted small" }, order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ", order.kind !== "website_order" && order.status && order.phaseLabel && order.status !== order.phaseLabel ? ` · ${order.status}` : "", order.matchedBy === "conversation" ? " · مربوط بالمحادثة" : order.matchedBy === "contact" ? " · مربوط بجهة الاتصال" : ""),
+    const closed = Boolean(phaseLook(order).end);
+    const paidShare = order.total > 0 ? Math.min(100, Math.round((Number(order.paid) / Number(order.total)) * 100)) : 0;
+    return el("article", { class: `card order tone-${phaseLook(order).tone} ${order.linkedToConversation ? "linked" : ""}` },
+      el("div", { class: "order-top" },
+        el("div", { class: "order-ref" }, el("strong", { dir: "ltr", text: reference }),
+          el("span", { class: "muted small", text: order.createdAt ? dateLabel(order.createdAt) : "بدون تاريخ" })),
+        statusBadge(order)),
+      progress(order),
+      el("div", { class: "numbers" }, numbers),
+      el("div", { class: "muted small", text: [order.kind !== "website_order" && order.status && order.phaseLabel && order.status !== order.phaseLabel ? `حالة السيستم: ${order.status}` : "",
+        order.matchedBy === "conversation" ? "مربوط بالمحادثة" : order.matchedBy === "contact" ? "مربوط بجهة الاتصال" : ""].filter(Boolean).join(" · ") }),
       el("ul", { class: "products" }, (order.products || []).slice(0, 8).map(item => el("li", {}, `${item.name} × ${item.qty}`))),
       // Total, deposit (everything paid so far) and what is left; the required deposit shows only while it is not reached.
       el("div", { class: "stats" },
         el("div", {}, el("span", { text: "الإجمالي" }), el("b", { text: money(order.total) })),
-        el("div", {}, el("span", { text: "العربون" }), el("b", { text: money(order.paid) }),
+        el("div", {}, el("span", { text: "العربون" }), el("b", { class: order.paid > 0 ? "ok" : "", text: money(order.paid) }),
           order.depositRequired != null && Number(order.paid) < Number(order.depositRequired) && order.group !== "history" ? el("small", { class: "warn", text: `المطلوب ${money(order.depositRequired)}` }) : ""),
-        el("div", {}, el("span", { text: "الباقي" }), el("b", { class: order.remaining > 0 ? "due" : "", text: money(order.remaining) }))),
-      el("div", { class: "muted small" }, `الشحن: ${shipment}`, order.trackingNumber ? el("span", { dir: "ltr", class: "tracking", text: ` ${order.trackingNumber}` }) : ""),
+        el("div", {}, el("span", { text: "الباقي" }), el("b", { class: closed ? "" : order.remaining > 0 ? "due" : "ok", text: money(order.remaining) }))),
+      order.total > 0 && !closed ? el("div", { class: "paid-bar", title: `مدفوع ${paidShare}%` }, el("i", { style: `width:${paidShare}%` })) : "",
+      shippingLine(order),
       order.linkedToConversation ? el("div", { class: "small ok", text: "✓ مربوط بهذه المحادثة" }) : order.chatwootConversationId ? el("div", { class: "small muted", text: `مربوط بمحادثة أخرى #${order.chatwootConversationId}` }) : "",
       el("div", { class: "actions" },
         order.links?.system && el("a", { class: "btn ghost", href: order.links.system, target: "_blank", rel: "noopener noreferrer", text: "فتح في السيستم" }),
