@@ -60,8 +60,10 @@ const form = { querySelectorAll:() => [input], querySelector:() => cashField, el
 const summaryContext = vm.createContext({
   document:{ getElementById:id => id === "sale-customer-return-form" ? form : metricCells[id] },
   customerSaleReturnCalculation:lines => ({ returnAmount:lines[0].amount, debtReduction:0, replacement:0, customerDue:lines[0].amount }),
+  returnReplacementLines:() => [], renderReplacementTotal:() => {},
   money:value => `${Number(value || 0).toFixed(2)} ج.م`
 });
+vm.runInContext(app.slice(app.indexOf("function withReturnReplacement("), app.indexOf("\nfunction renderReplacementTotal(")), summaryContext);
 vm.runInContext(app.slice(summaryStart, summaryEnd), summaryContext);
 vm.runInContext("updateCustomerSaleReturnSummary()", summaryContext);
 assert.equal(valueCell.textContent, "87.08 ج.م", "selected return value updates from the saved final unit price");
@@ -80,6 +82,7 @@ const customer = { id:"C1", name:"عميل اختبار", balance:275 };
 const captured = [];
 const context = vm.createContext({
   getCustomer: () => customer,
+  returnReplacementMarkup: () => "<section data-return-replacement></section>",
   customerReturnableSaleLines: () => [{ ...line, saleId:"INV-1", lineIndex:0, saleDate:"2026-10-11", invoiceDiscountTotal:30 }],
   getBook: () => ({ name:"كتاب اختبار", barcode:"BOOK-1" }),
   saleLineNet: (_line, qty) => qty * 90,

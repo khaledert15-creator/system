@@ -134,6 +134,53 @@ pass("Refused deliveries and old returns without recorded effects are not revers
   assert.throws(()=>Returns.reverseReturn(db,"RET-0010",{reason:"x"},actor),/قبل إضافة الإلغاء/);
 });
 
+pass("Replacement books from stock: a real invoice paid by the return, the rest on the customer",()=>{
+  const db=fixture(),collections=d=>d.sales.filter(x=>x.status!=="ملغاة").reduce((s,x)=>s+x.paid+(x.returnedPaid||0),0),before=collections(db);
+  // I2 was paid in full (150). The customer returns it, takes 2 × B1 (300, 10% off = 270): 150 pays for part, 120 stays owed.
+  const r=Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B1",qty:2,discount:10}],settlement:"cash",reason:"استبدال",operationKey:key()},actor).record;
+  const inv=db.sales.find(x=>x.id===r.replacementSaleId);
+  assert.ok(inv,"replacement invoice created");assert.equal(inv.total,270);assert.equal(inv.paid,150);assert.equal(inv.paidFromReturn,150);assert.equal(inv.remaining,120);
+  assert.equal(inv.lines[0].costOfGoodsSold,160,"FIFO: both from the oldest batch at 80");assert.equal(db.books[0].stock,3);assert.equal(stockSum(db,"B1"),3);
+  assert.equal(r.customerDue,0);assert.equal(r.paidAmount,0);assert.equal(db.cash.length,0,"no cash leaves");
+  assert.equal(db.customers[0].balance,320,"200 before + 120 owed on the replacement");
+  assert.equal(db.sales[1].exchangedPaid,150);assert.equal(db.sales[1].returnedPaid||0,0);
+  assert.equal(collections(db),before,"the money is counted once");
+  assert.equal(r.statementCredit,0);
+  // Reverse: invoice cancelled, stock and batches back, balance back.
+  Returns.reverseReturn(db,r.id,{reason:"غلط"},actor);
+  assert.equal(inv.status,"ملغاة");assert.equal(db.books[0].stock,5);assert.equal(stockSum(db,"B1"),5);assert.equal(batch(db,"BAT-001"),2);
+  assert.equal(db.customers[0].balance,200);assert.equal(db.sales[1].paid,150);assert.equal(db.sales[1].exchangedPaid,0);assert.equal(db.sales[1].status,"معتمدة");
+});
+
+pass("Cheaper replacement: the difference is refunded; on an unpaid invoice the replacement is owed",()=>{
+  let db=fixture();
+  let r=Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B1",qty:1,discount:20}],settlement:"cash",reason:"استبدال",operationKey:key()},actor).record;
+  assert.equal(r.replacementTotal,120);assert.equal(r.customerDue,30);assert.equal(db.cash[0].amount,30);assert.equal(db.customers[0].balance,200);
+  assert.equal(db.sales[1].returnedPaid,30);assert.equal(db.sales[1].exchangedPaid,120);
+  db=fixture();
+  // I1: 200 of 300 still owed. Returning one copy (150) clears 100 of debt and 50 of paid money; replacement 150.
+  r=Returns.createSaleReturn(db,{invoiceId:"I1",lines:[{documentId:"I1",lineIndex:0,qty:1}],replacements:[{bookId:"B2",qty:1}],settlement:"cash",reason:"استبدال",operationKey:key()},actor).record;
+  const inv=db.sales.find(x=>x.id===r.replacementSaleId);
+  assert.equal(r.debtReduction,100);assert.equal(inv.paid,50);assert.equal(inv.remaining,100);assert.equal(db.customers[0].balance,200);
+});
+
+pass("Replacement checks: stock, discount, and copies coming back count",()=>{
+  const db={...fixture(),orderRefunds:[]},before=JSON.stringify(db);
+  assert.throws(()=>Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B1",qty:6}],reason:"x",operationKey:key()},actor),/المتاح/);
+  assert.throws(()=>Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B1",qty:1,discount:120}],reason:"x",operationKey:key()},actor),/خصم/);
+  assert.equal(JSON.stringify(db),before);
+  db.books[1].stock=0;db.inventoryBatches.find(b=>b.id==="BAT-003").remainingQty=0;
+  const r=Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B2",qty:1}],reason:"نفس الكتاب",operationKey:key()},actor).record;
+  assert.equal(db.books[1].stock,0,"the copy that came back left again");assert.equal(r.customerDue,0);
+});
+
+pass("Reverse is refused while the replacement invoice has its own return",()=>{
+  const db=fixture();
+  const r=Returns.createSaleReturn(db,{invoiceId:"I2",lines:[{documentId:"I2",lineIndex:0,qty:1}],replacements:[{bookId:"B1",qty:1}],settlement:"cash",reason:"استبدال",operationKey:key()},actor).record;
+  Returns.createSaleReturn(db,{invoiceId:r.replacementSaleId,lines:[{documentId:r.replacementSaleId,lineIndex:0,qty:1}],settlement:"cash",reason:"تاني",operationKey:key()},actor);
+  assert.throws(()=>Returns.reverseReturn(db,r.id,{reason:"x"},actor),/مرتجع/);
+});
+
 (async()=>{
   const fs=require("fs"),os=require("os"),path=require("path"),net=require("net"),crypto=require("crypto"),{spawn}=require("child_process");
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),"returns-api-"));let child;

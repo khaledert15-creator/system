@@ -10387,6 +10387,15 @@ modalBody.addEventListener("click", event => {
   // The return picker and the order details dialog offer «رفض استلام»; its own dialog replaces this one.
   if (chatwoodAction === "refuse-online-order") { openOrderRefusal(appAction.dataset.id); return; }
   if (chatwoodAction === "reverse-return") { openReverseReturn(appAction.dataset.id); return; }
+  if (chatwoodAction === "add-return-replacement" || chatwoodAction === "remove-return-replacement") {
+    const form = appAction.closest("form");
+    // After this click is handled: a clicked button taken out of the page would read as a click outside the dialog.
+    setTimeout(() => {
+      if (chatwoodAction === "add-return-replacement") addReturnReplacement(form, appAction.dataset.id); else appAction.closest("tr")?.remove();
+      form?.id === "sale-return-form" ? updateSaleReturnSummary() : updateCustomerSaleReturnSummary();
+    }, 0);
+    return;
+  }
   if (chatwoodAction === "order-not-delivered") { openOrderNotDelivered(appAction.dataset.id); return; }
   if (chatwoodAction === "not-delivered-cancel") { cancelOnlineOrder(appAction.dataset.id,{courierNotPickedUp:true}); return; }
   if (chatwoodAction === "not-delivered-refused") { openOrderRefusal(appAction.dataset.id); return; }
@@ -10845,7 +10854,11 @@ modalBody.addEventListener("input", event => {
     updateAuditLogResults();
     return;
   }
-  if (event.target.closest("#sale-customer-return-form") && event.target.matches(".customer-return-qty, [name='replacementDeduction'], [name='returnShippingDeduction']")) {
+  if (event.target.matches(".return-replacement-search")) {
+    renderReplacementSuggestions(event.target.closest("form"));
+    return;
+  }
+  if (event.target.closest("#sale-customer-return-form") && event.target.matches(".customer-return-qty, .return-replacement-qty, .return-replacement-discount, [name='returnShippingDeduction']")) {
     updateCustomerSaleReturnSummary();
     return;
   }
@@ -10853,7 +10866,7 @@ modalBody.addEventListener("input", event => {
     updateSupplierPurchaseReturnSummary();
     return;
   }
-  if (event.target.closest("#sale-return-form") && event.target.matches(".sale-return-qty, [name='replacementDeduction'], [name='returnShippingDeduction']")) {
+  if (event.target.closest("#sale-return-form") && event.target.matches(".sale-return-qty, .return-replacement-qty, .return-replacement-discount, [name='returnShippingDeduction']")) {
     updateSaleReturnSummary();
     return;
   }
@@ -12642,7 +12655,7 @@ function statementRows(id, kind) {
       debit: 0,
       // The document row already shows its remaining amount after the return lowered it, so the return row credits
       // only the rest of its effect on the balance (a refused delivery has no rest).
-      credit: item.mode === "refusal" || item.refusalRepaired ? 0 : Math.max(0, Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))) - Number(item.debtReduction ?? item.remainingReduction ?? 0)),
+      credit: item.mode === "refusal" || item.refusalRepaired ? 0 : item.statementCredit != null ? Number(item.statementCredit) : Math.max(0, Math.abs(Number(item.balanceEffect ?? ((item.debtReduction || 0) + (["customer-credit", "debt-only", "no-settlement"].includes(item.settlement) ? Number(item.customerDue || 0) : 0)))) - Number(item.debtReduction ?? item.remainingReduction ?? 0)),
       status: item.status || "معتمد",user:item.createdBy||item.user||"—",links:{invoiceId:item.documentId||""}
     })),
     ...vouchers.map(receipt => ({
@@ -13964,6 +13977,67 @@ function selectedCustomerReturnLinesFromForm(formData, returnableLines) {
   }).filter(Boolean);
 }
 
+// Books the customer takes instead of the returned ones. The server sells them on a new invoice (stock and cost
+// leave like any sale); the money the return owes the customer pays for them and the rest stays on that invoice.
+function returnReplacementMarkup() {
+  return `<section class="return-replacement" data-return-replacement>
+    <div class="return-replacement-head"><strong>كتب بديلة أخدها العميل</strong><span>اختار الكتاب من المخزن؛ هيتخصم من المخزون ويتسجل في فاتورة بيع جديدة باسم العميل.</span></div>
+    <div class="search"><input class="return-replacement-search" autocomplete="off" placeholder="ابحث عن الكتاب البديل بالاسم أو الباركود..." aria-label="بحث عن كتاب بديل"></div>
+    <div class="return-replacement-suggestions" data-replacement-suggestions></div>
+    <div class="table-wrap return-replacement-lines" hidden><table><thead><tr><th>الكتاب البديل</th><th>المتاح</th><th>السعر</th><th>خصم %</th><th>الكمية</th><th>الإجمالي</th><th></th></tr></thead><tbody data-replacement-rows></tbody></table></div>
+    <div class="return-replacement-total" data-replacement-total hidden></div>
+  </section>`;
+}
+
+function renderReplacementSuggestions(form) {
+  const box = form.querySelector("[data-replacement-suggestions]"), term = form.querySelector(".return-replacement-search")?.value || "";
+  if (!box) return;
+  box.innerHTML = smartBookSearch(term, 6).map(book => {
+    const free = bookAvailableStock(book);
+    return `<button type="button" class="return-replacement-option" data-action="add-return-replacement" data-id="${esc(book.id)}" ${free > 0 ? "" : "disabled"}><strong>${esc(book.name)}</strong><span>${money(book.price)} · ${free > 0 ? `متاح ${free.toLocaleString("ar-EG")}` : "مش متاح في المخزن"}</span></button>`;
+  }).join("") || (term.trim() ? `<div class="muted small">مفيش كتاب بالاسم ده.</div>` : "");
+}
+
+function addReturnReplacement(form, bookId) {
+  const book = getBook(bookId), rows = form.querySelector("[data-replacement-rows]");
+  if (!book || !rows) return;
+  const existing = rows.querySelector(`tr[data-book-id="${CSS.escape(book.id)}"] .return-replacement-qty`);
+  if (existing) existing.value = Number(existing.value || 0) + 1;
+  else rows.insertAdjacentHTML("beforeend", `<tr data-book-id="${esc(book.id)}" data-price="${esc(Number(book.price || 0))}"><td><strong>${esc(book.name)}</strong></td><td>${bookAvailableStock(book).toLocaleString("ar-EG")}</td><td class="money">${money(book.price)}</td><td><input class="return-replacement-discount" type="number" min="0" max="100" step="0.01" value="0" aria-label="خصم ${esc(book.name)}"></td><td><input class="return-replacement-qty" type="number" min="1" step="1" max="${esc(bookAvailableStock(book))}" value="1" aria-label="كمية ${esc(book.name)}"></td><td class="money" data-replacement-line-total>${money(0)}</td><td><button class="btn ghost small danger" type="button" data-action="remove-return-replacement" aria-label="شيل ${esc(book.name)}">✕</button></td></tr>`);
+  const search = form.querySelector(".return-replacement-search");
+  if (search) { search.value = ""; search.focus(); }
+  renderReplacementSuggestions(form);
+}
+
+// [{bookId, qty, discount}] and their value, as the server prices them (book price less the discount %).
+function returnReplacementLines(form) {
+  return [...(form?.querySelectorAll("[data-replacement-rows] tr[data-book-id]") || [])].map(row => {
+    const qty = Math.max(0, Math.trunc(Number(row.querySelector(".return-replacement-qty")?.value || 0)));
+    const discount = Math.max(0, Math.min(100, Number(row.querySelector(".return-replacement-discount")?.value || 0)));
+    const total = Math.round(qty * Number(row.dataset.price || 0) * (1 - discount / 100) * 100) / 100;
+    const cell = row.querySelector("[data-replacement-line-total]"); if (cell) cell.textContent = money(total);
+    return { bookId: row.dataset.bookId, qty, discount, total };
+  }).filter(line => line.qty > 0);
+}
+
+// The return with replacement books: shipping comes out of the money due first, the rest pays for the books, and
+// what the books cost beyond it goes on the new invoice (the customer's debt).
+function withReturnReplacement(result, replacementTotal, shippingDeduction) {
+  const shipping = Math.max(0, Math.min(Number(shippingDeduction || 0), result.returnAmount));
+  const fromDue = Math.min(shipping, result.dueBeforeReplacement), fromDebt = Math.min(shipping - fromDue, result.debtReduction);
+  const available = result.dueBeforeReplacement - fromDue, applied = Math.min(replacementTotal, available);
+  return { ...result, replacement: applied, replacementTotal, replacementRemaining: replacementTotal - applied, shippingDeduction: fromDue + fromDebt, debtReduction: result.debtReduction - fromDebt, customerDue: available - applied };
+}
+
+function renderReplacementTotal(form, result) {
+  const box = form.querySelector("[data-replacement-total]"), table = form.querySelector(".return-replacement-lines");
+  const any = Boolean(form.querySelector("[data-replacement-rows] tr"));
+  if (table) table.hidden = !any;
+  if (!box) return;
+  box.hidden = !(result.replacementTotal > 0);
+  box.innerHTML = result.replacementTotal > 0 ? `<span>قيمة الكتب البديلة <strong>${money(result.replacementTotal)}</strong></span><span>يتدفع من المرتجع <strong>${money(result.replacement)}</strong></span><span>${result.replacementRemaining > 0 ? `الباقي على العميل في الفاتورة الجديدة <strong class="due">${money(result.replacementRemaining)}</strong>` : "مفيش باقي على العميل"}</span>` : "";
+}
+
 // Return shipping the customer bears comes out of what we would give back first, then out of the debt the return
 // would have cleared, so the customer keeps owing it. It never exceeds the value of the returned books.
 function withReturnShippingDeduction(result, shippingDeduction = 0) {
@@ -14013,13 +14087,13 @@ function updateSaleReturnSummary() {
   const saleTotal = Math.max(1, Number(form.dataset.saleTotal || 0));
   const returnedRemaining = Number(form.dataset.returnedRemaining || 0);
   const debtReduction = Math.min(saleRemaining, (saleRemaining + returnedRemaining) * returnAmount / saleTotal);
-  const replacementInput = form.querySelector('[name="replacementDeduction"]');
-  const replacement = Math.max(0, Math.min(Number(replacementInput?.value || 0), Math.max(0, returnAmount - debtReduction)));
-  const result = withReturnShippingDeduction({ returnAmount, debtReduction, replacement, customerDue: Math.max(0, returnAmount - debtReduction - replacement) }, form.elements.returnShippingDeduction?.value);
+  const replacementTotal = returnReplacementLines(form).reduce((sum, line) => sum + line.total, 0);
+  const result = withReturnReplacement({ returnAmount, debtReduction, dueBeforeReplacement: Math.max(0, returnAmount - debtReduction) }, replacementTotal, form.elements.returnShippingDeduction?.value);
+  renderReplacementTotal(form, result);
   const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = money(value); };
   set("sale-return-gross", returnAmount);
   set("sale-return-debt", result.debtReduction);
-  set("sale-return-replacement", replacement + result.shippingDeduction);
+  set("sale-return-replacement", result.replacement + result.shippingDeduction);
   set("sale-return-due", result.customerDue);
   const settlement = form.elements.settlement?.value || "cash";
   const cashField = form.querySelector('[data-cash-account-field]');
@@ -14037,7 +14111,10 @@ function updateCustomerSaleReturnSummary() {
     if (rowValue) rowValue.textContent = money(amount);
     return qty > 0 ? { documentId: input.dataset.saleId, amount } : null;
   }).filter(Boolean);
-  const { returnAmount, debtReduction, replacement, customerDue, shippingDeduction } = customerSaleReturnCalculation(selectedLines, form.elements.replacementDeduction?.value, form.elements.returnShippingDeduction?.value);
+  const base = customerSaleReturnCalculation(selectedLines, 0, 0), replacementTotal = returnReplacementLines(form).reduce((sum, line) => sum + line.total, 0);
+  const result = withReturnReplacement({ returnAmount: base.returnAmount, debtReduction: base.debtReduction, dueBeforeReplacement: base.customerDue }, replacementTotal, form.elements.returnShippingDeduction?.value);
+  renderReplacementTotal(form, result);
+  const { returnAmount, debtReduction, replacement, customerDue, shippingDeduction } = result;
   const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = money(value); };
   set("customer-return-gross", returnAmount);
   set("customer-return-debt", debtReduction);
@@ -14138,7 +14215,7 @@ function saleReturnByCustomerModal(customerId = "") {
         <div class="mini-metric"><span>المطلوب رده للعميل</span><strong id="customer-return-due">${money(0)}</strong></div>
       </div>
       <div class="form-grid">
-        <div class="form-field"><label>لو العميل أخذ صنف/منتج بديل</label><input name="replacementDeduction" type="number" min="0" value="0" placeholder="قيمة تخصم من المرتجع"></div>
+        <div class="form-field full">${returnReplacementMarkup()}</div>
         <div class="form-field"><label>مصاريف شحن المرتجع على العميل</label><input name="returnShippingDeduction" type="number" min="0" step="0.01" value="0" placeholder="تخصم من المبلغ المستحق له"></div>
         <div class="form-field"><label>تسوية المبلغ المطلوب للعميل</label><select name="settlement"><option value="cash">رد نقدي من الخزنة</option><option value="customer-credit">خصم من رصيد العميل / حفظ كرصيد دائن</option><option value="no-settlement">بدون تسوية حالية، يضاف كرصيد مستحق</option><option value="debt-only">خصم من مديونية العميل فقط</option></select></div>
         <div class="form-field" data-cash-account-field><label>خزنة رد المبلغ</label><select name="account">${cashAccountOptions("الخزينة الرئيسية")}</select></div>
@@ -14222,7 +14299,7 @@ async function submitReturnForm(form, formData) {
     lines, account: formData.account || "", date: formData.date || "", reason: formData.reason || "", notes: formData.notes || "",
     operationKey: form.dataset.operationKey || (form.dataset.operationKey = globalThis.crypto?.randomUUID?.() || `return-${Date.now()}`),
     ...(sale
-      ? { customerId: form.dataset.customerId || "", invoiceId: single ? form.dataset.id : "", settlement: formData.settlement || "cash", replacementDeduction: Number(formData.replacementDeduction || 0), returnShippingDeduction: Number(formData.returnShippingDeduction || 0) }
+      ? { customerId: form.dataset.customerId || "", invoiceId: single ? form.dataset.id : "", settlement: formData.settlement || "cash", replacements: returnReplacementLines(form).map(({ bookId, qty, discount }) => ({ bookId, qty, discount })), returnShippingDeduction: Number(formData.returnShippingDeduction || 0) }
       : { supplierId: form.dataset.supplierId || "", purchaseId: single ? form.dataset.id : "", settlement: formData.settlement || "cash", supplierInvoiceNumber: formData.supplierInvoiceNumber || "", supplierReturnInvoiceNumber: formData.supplierReturnInvoiceNumber || "" })
   };
   if (button) { button.disabled = true; button.dataset.label = button.textContent; button.textContent = "جارٍ التسجيل..."; }
@@ -14263,6 +14340,13 @@ async function submitReverseReturn(form) {
   } catch (error) { button.disabled = false; toast(error.message, "error"); }
 }
 
+// Enter in the replacement search adds the first book found instead of submitting the return.
+document.addEventListener("keydown", event => {
+  if (event.key !== "Enter" || !event.target.matches?.(".return-replacement-search")) return;
+  event.preventDefault();
+  event.target.closest("form")?.querySelector('[data-action="add-return-replacement"]:not([disabled])')?.click();
+});
+
 document.addEventListener("submit", event => {
   if (event.target.id !== "return-reverse-form") return;
   event.preventDefault();
@@ -14285,12 +14369,13 @@ function viewReturn(id) {
     <div class="alert-item" style="margin-bottom:14px"><div class="alert-badge red">↶</div><div><strong>${esc(party || "—")}</strong><span>${esc(item.reason || item.notes || "بدون سبب مسجل")} — ${esc(returnSettlementLabel(item))}</span></div></div>
     <div class="metric-strip" style="margin-bottom:14px">
       <div class="mini-metric"><span>خصم مديونية</span><strong>${money(item.debtReduction || 0)}</strong></div>
-      <div class="mini-metric"><span>أصناف/قيمة بديلة</span><strong>${money(item.replacementDeduction || 0)}</strong></div>${item.returnShippingDeduction ? `<div class="mini-metric"><span>شحن مرتجع على العميل</span><strong>${money(item.returnShippingDeduction)}</strong></div>` : ""}${item.mode === "refusal" ? `<div class="mini-metric"><span>رفض استلام</span><strong>${esc(refusalOutcomeLabel(item.refusalOutcome))}</strong></div>` : ""}
+      <div class="mini-metric"><span>${item.replacementSaleId ? "اتدفع في الكتب البديلة" : "أصناف/قيمة بديلة"}</span><strong>${money(item.replacementDeduction || 0)}</strong></div>${item.returnShippingDeduction ? `<div class="mini-metric"><span>شحن مرتجع على العميل</span><strong>${money(item.returnShippingDeduction)}</strong></div>` : ""}${item.mode === "refusal" ? `<div class="mini-metric"><span>رفض استلام</span><strong>${esc(refusalOutcomeLabel(item.refusalOutcome))}</strong></div>` : ""}
       <div class="mini-metric"><span>المرتجع</span><strong>${esc(documentDisplayName(returnNo(item), "return"))}</strong></div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>الفاتورة الأصلية</th><th>الصنف</th><th>الكمية</th><th>السعر الأساسي</th><th>خصم ${isSale ? "الكتاب" : "الصنف"} %</th><th>خصم ${isSale ? "الكتاب" : "الصنف"} ج.م</th>${isSale ? "<th>خصم الفاتورة للنسخة</th>" : ""}<th>سعر النسخة النهائي</th><th>الإجمالي</th></tr></thead><tbody>
       ${items.map(line => { const pricing=returnLinePricing(item,line); return `<tr><td>${esc(line.sourceInvoiceNo || line.sourceInvoiceId || line.documentId || item.documentId || "—")}</td><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${isSale ? pricing.bookDiscountPercent : pricing.discountPercent}%</td><td class="money">${money(isSale ? pricing.bookDiscountUnit : pricing.discountAmount)}</td>${isSale ? `<td class="money">${money(pricing.invoiceDiscountUnit)}</td>` : ""}<td class="money">${money(isSale ? pricing.finalUnit : pricing.after)}</td><td class="money">${money(line.total || line.amount || 0)}</td></tr>`; }).join("") || `<tr><td colspan="${isSale ? 9 : 8}" class="text-center muted">مرتجع قديم بدون تفاصيل أصناف.</td></tr>`}
     </tbody></table></div>
+    ${item.replacementSaleId ? `<div class="return-replacement-view"><strong>الكتب البديلة — فاتورة ${esc(item.replacementSaleId)}</strong><span>${(item.replacementItems || []).map(line => `${esc(getBook(line.bookId)?.name || line.bookId)} × ${Number(line.qty || 0).toLocaleString("ar-EG")} (${money(line.total)})`).join("، ")}</span><span>الإجمالي ${money(item.replacementTotal)} · اتدفع من المرتجع ${money(item.replacementDeduction)}${item.replacementRemaining > 0 ? ` · الباقي على العميل ${money(item.replacementRemaining)}` : ""}</span></div>` : ""}
     <div class="form-actions"><button class="btn" type="button" data-action="print-return" data-id="${esc(item.id)}">طباعة</button>${canReverseReturn(item) ? `<button class="btn danger" type="button" data-action="reverse-return" data-id="${esc(item.id)}">إلغاء المرتجع</button>` : ""}<button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
 }
 
@@ -14305,10 +14390,12 @@ function saleReturnModal(id) {
     <form id="sale-return-form" data-id="${esc(id)}" data-sale-total="${Number(sale.total || 0)}" data-sale-remaining="${Number(sale.remaining || 0)}" data-returned-remaining="${Number(sale.returnedRemaining || 0)}">
       <div class="alert-item" style="margin-bottom:15px"><div class="alert-badge red">↶</div><div><strong>${esc(customer.name)} — ${esc(customer.id)}</strong><span>فاتورة مرتجع مرتبطة بحساب العميل. يتم اختيار أصناف من فواتير العميل فقط.</span></div><button class="btn ghost small" type="button" data-action="statement" data-kind="customer" data-id="${esc(customer.id)}">كشف الحساب</button></div>
       ${saleInvoiceDiscountTotal(sale) > 0 ? `<div class="customer-return-explainer"><strong>خصم إضافي على الفاتورة: ${money(saleInvoiceDiscountTotal(sale))}</strong> موزع على الكتب، وخصم كل نسخة ظاهر في الجدول.</div>` : ""}
-      <div class="table-wrap" style="margin-bottom:14px"><table><thead><tr><th>الكتاب</th><th>المباع</th><th>المتاح للمرتجع</th><th>سعر الكتاب</th><th>خصم الكتاب %</th><th>خصم الكتاب ج.م</th><th>خصم الفاتورة للنسخة</th><th>سعر النسخة النهائي</th><th>كمية المرتجع</th><th>قيمة المرتجع</th></tr></thead><tbody>
+      <div class="table-wrap sale-return-lines" style="margin-bottom:14px"><table><thead><tr><th>الكتاب</th><th>المباع</th><th>المتاح للمرتجع</th><th>سعر النسخة</th><th>كمية المرتجع</th><th>قيمة المرتجع</th></tr></thead><tbody>
         ${returnableLines.map(line => {
           const pricing = saleLinePriceBreakdown(line);
-          return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money">${money(pricing.base)}</td><td>${pricing.bookDiscountPercent}%</td><td class="money">${money(pricing.bookDiscountUnit)}</td><td class="money">${money(pricing.invoiceDiscountUnit)}</td><td class="money">${money(pricing.finalUnit)}</td><td><input class="sale-return-qty" name="returnQty-${line.lineIndex}" type="number" min="0" max="${esc(line.remaining)}" data-unit-value="${esc(pricing.finalUnit)}" value="0"></td><td class="money" data-return-line-value>${money(0)}</td></tr>`;
+          // One price column: the copy's final price, with what it came down from and why under it.
+          const discounts = [pricing.bookDiscountUnit > 0 ? `خصم الكتاب ${pricing.bookDiscountPercent}%` : "", pricing.invoiceDiscountUnit > 0 ? `خصم الفاتورة ${money(pricing.invoiceDiscountUnit)}` : ""].filter(Boolean);
+          return `<tr><td>${esc(getBook(line.bookId)?.name || line.bookId)}</td><td>${Number(line.qty || 0).toLocaleString("ar-EG")}</td><td>${Number(line.remaining || 0).toLocaleString("ar-EG")}</td><td class="money"><strong>${money(pricing.finalUnit)}</strong>${discounts.length ? `<small>بدل ${money(pricing.base)} · ${discounts.join(" · ")}</small>` : ""}</td><td><input class="sale-return-qty" name="returnQty-${line.lineIndex}" type="number" min="0" max="${esc(line.remaining)}" data-unit-value="${esc(pricing.finalUnit)}" value="0"></td><td class="money" data-return-line-value>${money(0)}</td></tr>`;
         }).join("")}
       </tbody></table></div>
       <div class="metric-strip" style="margin-bottom:14px">
@@ -14318,7 +14405,7 @@ function saleReturnModal(id) {
         <div class="mini-metric"><span>المطلوب رده للعميل</span><strong id="sale-return-due">${money(0)}</strong></div>
       </div>
       <div class="form-grid">
-        <div class="form-field"><label>لو العميل أخذ صنف/منتج بديل</label><input name="replacementDeduction" type="number" min="0" value="0" placeholder="قيمة تخصم من المرتجع"></div>
+        <div class="form-field full">${returnReplacementMarkup()}</div>
         <div class="form-field"><label>مصاريف شحن المرتجع على العميل</label><input name="returnShippingDeduction" type="number" min="0" step="0.01" value="0" placeholder="تخصم من المبلغ المستحق له"></div>
         <div class="form-field"><label>تسوية المبلغ المطلوب للعميل</label><select name="settlement"><option value="cash">رد نقدي من الخزنة</option><option value="customer-credit">خصم من رصيد العميل / حفظ كرصيد دائن</option><option value="no-settlement">بدون تسوية حالية، يضاف كرصيد مستحق</option><option value="debt-only">خصم من مديونية العميل فقط</option></select></div>
         <div class="form-field" data-cash-account-field><label>خزنة رد المبلغ</label><select name="account">${cashAccountOptions(sale.payment === "نقدي" || sale.payment === "آجل" ? "الخزينة الرئيسية" : sale.payment)}</select></div>

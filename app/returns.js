@@ -15,6 +15,9 @@
   const active = rows => rows.filter(item => item && !item.deletedAt);
   const fail = (message, code, status = 409) => Object.assign(new Error(message), { code, status });
   const SALE_TYPES = ["sale", "sales_return"], PURCHASE_TYPES = ["purchase", "purchase_return"];
+  // Server-only helpers for the replacement invoice (this file runs on the server).
+  const Finance = typeof require === "function" ? require("./order-finance.js") : null;
+  const Inventory = typeof require === "function" ? require("./purchase-inventory-integrity.js") : null;
 
   function nextNumber(prefix, rows, pad = 4) {
     const max = rows.reduce((acc, item) => {
@@ -145,8 +148,60 @@
       && (item.invoiceId === sale.id || (sale.onlineOrderId && item.orderId === sale.onlineOrderId))).reduce((sum, item) => sum + Number(item.amount || 0), 0);
   }
 
+  // Books the customer takes instead of the returned ones: [{ bookId, qty, discount (%) }] at the book's current price.
+  // Copies of a book coming back in the same return count as available.
+  function resolveReplacements(db, requested, returning) {
+    if (!Array.isArray(requested) || !requested.length) return [];
+    const merged = new Map();
+    for (const input of requested) {
+      const bookId = String(input?.bookId || ""), qty = Number(input?.qty), discount = Number(input?.discount || 0);
+      if (!bookId || !qty) continue;
+      if (!Number.isInteger(qty) || qty < 0) throw fail("كمية الكتاب البديل لازم تكون رقم صحيح.", "INVALID_REPLACEMENT_QTY", 400);
+      if (!(discount >= 0 && discount <= 100)) throw fail("خصم الكتاب البديل لازم يكون من 0 لـ 100%.", "INVALID_REPLACEMENT_DISCOUNT", 400);
+      const row = merged.get(bookId) || { bookId, qty: 0, discount };
+      row.qty += qty; merged.set(bookId, row);
+    }
+    const lines = [];
+    for (const row of merged.values()) {
+      const book = active(list(db, "books")).find(item => item.id === row.bookId);
+      if (!book) throw fail("الكتاب البديل غير موجود.", "REPLACEMENT_BOOK_NOT_FOUND", 400);
+      const back = returning.filter(line => line.bookId === book.id).reduce((sum, line) => sum + line.qty, 0);
+      const free = Number(book.stock || 0) + back - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0));
+      if (row.qty > free) throw fail(`المتاح من «${book.name}» ${Math.max(0, free)} نسخة بس.`, "REPLACEMENT_STOCK_SHORT");
+      lines.push({ bookId: book.id, qty: row.qty, price: Number(book.price || 0), discount: row.discount, discountType: "percent" });
+    }
+    return lines;
+  }
+
+  // The replacement is a real sales invoice: stock and batch costs leave like any sale, and the money the return owes
+  // the customer pays for it (`paidFromReturn`); what it does not cover stays on the invoice as the customer's debt.
+  function createReplacementSale(db, { lines, totals, applied, customer, firstSale, returnId, returnNo, operationKey, date, actor, now, effects }) {
+    const id = nextNumber("INV-", list(db, "sales"));
+    const payment = Finance.calculatePayment(totals.total, applied);
+    const sale = {
+      id, operationKey: `${operationKey}:replacement`, date, customerId: customer.id, channel: firstSale.channel || "", saleOperationType: "استبدال", status: "معتمدة",
+      payment: "استبدال من مرتجع", paymentStatus: payment.paymentStatus, paid: payment.paidAmount, paidAmount: payment.paidAmount, paidFromReturn: payment.paidAmount,
+      remaining: payment.remainingAmount, remainingAmount: payment.remainingAmount, subtotal: totals.subtotal, subtotalBeforeDiscount: totals.subtotalBeforeDiscount,
+      productDiscountTotal: totals.productDiscountTotal, orderDiscount: 0, discount: totals.discountTotal, subtotalAfterDiscount: totals.goods, shipping: 0, shippingFee: 0, shippingCost: 0, total: totals.total,
+      notes: `بديل في المرتجع ${returnNo}`, replacementForReturnId: returnId, replacementForReturnNo: returnNo,
+      createdByName: actor.name || actor.username, createdByUsername: actor.username, pointsAwarded: 0, createdAt: now, updatedAt: now, deletedAt: null,
+      lines: totals.lines.map(line => ({ ...line, productId: line.bookId, quantity: line.qty, originalPrice: line.price, unitSellingPrice: line.finalUnitPrice, totalSellingPrice: line.finalNet }))
+    };
+    for (const line of sale.lines) {
+      const book = list(db, "books").find(item => item.id === line.bookId), before = Number(book.stock || 0);
+      const costing = Inventory.consumeBatchesFIFO(db, book.id, line.qty);
+      Object.assign(line, { costMethod: "FIFO", batchAllocations: costing.allocations, costIncomplete: costing.costIncomplete, costOfGoodsSold: costing.costIncomplete ? null : costing.costOfGoodsSold, grossProfit: costing.costIncomplete ? null : round(line.finalNet - costing.costOfGoodsSold) });
+      book.stock = before - line.qty; book.lastSale = date; book.updatedAt = now;
+      stockMovement(db, book, "بيع بديل في مرتجع", -line.qty, before, id, `بديل في المرتجع ${returnNo}`, actor, now);
+    }
+    list(db, "sales").push(sale);
+    effects.replacementSaleId = id;
+    return sale;
+  }
+
   // payload: { customerId, invoiceId? (one invoice), lines:[{documentId,lineIndex,qty}], settlement, account,
-  //            replacementDeduction, returnShippingDeduction, reason, date, operationKey }
+  //            replacements:[{bookId,qty,discount}], returnShippingDeduction, reason, date, operationKey }
+  // (replacementDeduction, a plain amount, is still accepted from pages opened before replacements existed.)
   function createSaleReturn(db, payload = {}, actor) {
     const operationKey = String(payload.operationKey || "").trim();
     if (!operationKey) throw fail("Operation Key مطلوب.", "OPERATION_KEY_REQUIRED", 400);
@@ -178,10 +233,21 @@
     }
     const amount = round([...perSale.values()].reduce((sum, row) => sum + row.amount, 0));
     const debt = [...perSale.values()].reduce((sum, row) => sum + row.debt, 0), dueBefore = [...perSale.values()].reduce((sum, row) => sum + row.due, 0);
-    const replacement = Math.max(0, Math.min(Number(payload.replacementDeduction || 0), Math.max(0, dueBefore)));
-    // Return shipping the customer bears comes out of the money due first, then out of the debt being cleared.
-    const shipping = Math.max(0, Math.min(Number(payload.returnShippingDeduction || 0), Math.max(0, amount - replacement)));
-    const fromDue = Math.min(shipping, Math.max(0, dueBefore - replacement)), fromDebt = Math.min(shipping - fromDue, debt);
+    const replacementLines = resolveReplacements(db, payload.replacements, lines);
+    const replacementTotals = replacementLines.length ? Finance.calculateOrder(replacementLines) : null;
+    let replacement, shipping, fromDue, fromDebt;
+    if (replacementTotals) {
+      // Return shipping comes out of the money due first (then the debt being cleared); what is left pays for the
+      // replacement books, and the rest of their price goes on the replacement invoice.
+      shipping = Math.max(0, Math.min(Number(payload.returnShippingDeduction || 0), amount));
+      fromDue = Math.min(shipping, dueBefore); fromDebt = Math.min(shipping - fromDue, debt);
+      replacement = Math.min(replacementTotals.total, dueBefore - fromDue);
+    } else {
+      replacement = Math.max(0, Math.min(Number(payload.replacementDeduction || 0), Math.max(0, dueBefore)));
+      // Return shipping the customer bears comes out of the money due first, then out of the debt being cleared.
+      shipping = Math.max(0, Math.min(Number(payload.returnShippingDeduction || 0), Math.max(0, amount - replacement)));
+      fromDue = Math.min(shipping, Math.max(0, dueBefore - replacement)); fromDebt = Math.min(shipping - fromDue, debt);
+    }
     const customerDue = Math.max(0, dueBefore - replacement - fromDue), debtReduction = debt - fromDebt;
     const account = settlement === "cash" ? cashAccount(db, payload.account) : null;
 
@@ -201,10 +267,15 @@
       }
     }
 
+    const replacementSale = replacementTotals ? createReplacementSale(db, { lines: replacementLines, totals: replacementTotals, applied: round(replacement), customer, firstSale: lines[0].document, returnId, returnNo, operationKey, date, actor, now, effects }) : null;
+
     const balanceBefore = Number(customer.balance || 0);
     let balance = balanceBefore - debtReduction;
     if (settlement === "customer-credit" || settlement === "no-settlement") balance -= customerDue;
     if (settlement === "debt-only") balance = Math.max(0, balance - customerDue);
+    // What the return itself credits on the statement (the invoices' own rows show the debt cleared and added).
+    const statementCredit = round(balanceBefore - debtReduction - balance);
+    if (replacementSale) balance += Number(replacementSale.remaining || 0);
     customer.balance = round(balance);
     effects.balanceDelta = round(customer.balance - balanceBefore);
 
@@ -214,6 +285,9 @@
       const sale = row.sale, previous = returnedQuantities(db, "sale", sale.id);
       const isFull = fullyReturned(sale, previous, row.lines);
       const saleDebt = row.debt * debtShare, salePaid = dueBefore > 0 ? paidOut * row.due / dueBefore : 0;
+      // Paid money that moved to the replacement invoice is not a refund: it is kept apart from returnedPaid so
+      // collections (paid + returnedPaid) count it once, on the replacement invoice.
+      const exchanged = replacementSale && dueBefore > 0 ? Math.min(salePaid, replacement * row.due / dueBefore) : 0;
       const points = Math.floor(Number(sale.pointsAwarded || 0) * row.amount / Math.max(1, Number(sale.total || 0)));
       if (points) { const before = Number(customer.points || 0); customer.points = Math.max(0, before - points); effects.pointsDeducted += before - customer.points; }
       const snapshot = { id: sale.id, status: sale.status, returnedAt: sale.returnedAt || null, returnReason: sale.returnReason || "" };
@@ -221,10 +295,11 @@
       Object.assign(sale, {
         status: isFull ? "مرتجع" : "مرتجع جزئي",
         paid: round(Number(sale.paid || 0) - paidDelta), remaining: round(Number(sale.remaining || 0) - remainingDelta),
-        returnedPaid: round(Number(sale.returnedPaid || 0) + paidDelta), returnedRemaining: round(Number(sale.returnedRemaining || 0) + remainingDelta),
+        returnedPaid: round(Number(sale.returnedPaid || 0) + paidDelta - Math.min(exchanged, paidDelta)), returnedRemaining: round(Number(sale.returnedRemaining || 0) + remainingDelta),
+        ...(exchanged > 0 ? { exchangedPaid: round(Number(sale.exchangedPaid || 0) + Math.min(exchanged, paidDelta)) } : {}),
         returnedAt: now, returnReason: reason, updatedAt: now
       });
-      effects.sales.push({ ...snapshot, paidDelta: round(paidDelta), remainingDelta: round(remainingDelta) });
+      effects.sales.push({ ...snapshot, paidDelta: round(paidDelta), remainingDelta: round(remainingDelta), exchangedDelta: round(Math.min(exchanged, paidDelta)) });
       if (isFull) {
         const shipment = shipmentForSale(db, sale);
         if (shipment) {
@@ -251,6 +326,8 @@
       documentId: sourceDocuments.length === 1 ? sourceDocuments[0] : "متعدد", sourceDocuments, date,
       items: lines.map(line => ({ bookId: line.bookId, documentId: line.documentId, sourceInvoiceId: line.documentId, sourceInvoiceNo: line.documentId, lineIndex: line.lineIndex, qty: line.qty, unitPrice: line.unitValue, total: line.amount, reason })),
       subtotal: round(amount - shipping), amount: round(amount - shipping), debtReduction: round(debtReduction), replacementDeduction: round(replacement), returnShippingDeduction: round(fromDue + fromDebt),
+      ...(replacementSale ? { replacementSaleId: replacementSale.id, replacementTotal: replacementSale.total, replacementRemaining: replacementSale.remaining, replacementItems: replacementSale.lines.map(line => ({ bookId: line.bookId, qty: line.qty, unitPrice: line.finalUnitPrice, total: line.finalNet })) } : {}),
+      statementCredit,
       customerDue: round(customerDue), settlementType: settlement, settlement, paidAmount: settlement === "cash" ? round(customerDue) : 0, balanceEffect: effects.balanceDelta,
       account: account?.name || "", reason, notes: "", operationKey, effects, createdBy: actor.name || actor.username, createdByUsername: actor.username, createdAt: now, updatedAt: now, status: "معتمد", deletedAt: null
     };
@@ -398,14 +475,32 @@
       const perBook = new Map(), perBatch = new Map();
       for (const row of effects.stock) perBook.set(row.bookId, (perBook.get(row.bookId) || 0) + Number(row.qty || 0));
       for (const row of [...effects.batchRestores, ...effects.createdBatches]) perBatch.set(row.batchId, (perBatch.get(row.batchId) || 0) + Number(row.qty || 0));
+      // Copies of the replacement invoice come back to stock in the same step.
+      const replaced = effects.replacementSaleId ? list(db, "sales").find(item => item.id === effects.replacementSaleId && item.status !== "ملغاة") : null;
       for (const [bookId, qty] of perBook) {
         const book = books.find(item => item.id === bookId); if (!book) continue;
-        const free = Number(book.stock || 0) - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0));
+        const free = (replaced?.lines || []).filter(line => line.bookId === bookId).reduce((sum, line) => sum + Number(line.qty || 0), 0) + Number(book.stock || 0) - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0));
         if (free + 1e-6 < qty) throw fail(`الكتب اللي رجعت من «${book.name}» اتباعت تاني أو اتحجزت؛ المتاح دلوقتي ${Math.max(0, free)} والمرتجع ${qty}.`, "STOCK_ALREADY_USED");
       }
       for (const [batchId, qty] of perBatch) { const batch = batches.find(item => (item.batchId || item.id) === batchId); if (batch && Number(batch.remainingQty || 0) + 1e-6 < qty) throw fail("الكتب اللي رجعت بالمرتجع ده اتباعت تاني من نفس الدفعة؛ مينفعش يتلغي.", "STOCK_ALREADY_USED"); }
     }
+    // The replacement invoice is cancelled with the return, only while nothing else was done on it.
+    const replacementSale = sale && effects.replacementSaleId ? list(db, "sales").find(item => item.id === effects.replacementSaleId) : null;
+    if (replacementSale && replacementSale.status !== "ملغاة") {
+      if (documentReturns(db, "sale", replacementSale.id).length) throw fail(`الفاتورة البديلة ${replacementSale.id} عليها مرتجع؛ ألغيه الأول.`, "REPLACEMENT_HAS_RETURN");
+      if (round(Number(replacementSale.paid || 0)) !== round(Number(replacementSale.paidFromReturn || 0))) throw fail(`الفاتورة البديلة ${replacementSale.id} اتدفع عليها فلوس بعد المرتجع؛ سوّيها الأول.`, "REPLACEMENT_PAID");
+    }
     const party = active(list(db, sale ? "customers" : "suppliers")).find(item => item.id === record.partyId);
+    if (replacementSale && replacementSale.status !== "ملغاة") {
+      for (const line of replacementSale.lines || []) {
+        Inventory.restoreBatchAllocations(db, line.batchAllocations || []);
+        const book = books.find(item => item.id === line.bookId); if (!book) continue;
+        const before = Number(book.stock || 0); book.stock = before + Number(line.qty || 0); book.updatedAt = now;
+        stockMovement(db, book, "إلغاء بيع بديل", Number(line.qty || 0), before, replacementSale.id, `إلغاء المرتجع ${record.returnNo} — ${reason}`, actor, now);
+      }
+      // The balance change below (effects.balanceDelta) already takes its remaining off the customer's account.
+      Object.assign(replacementSale, { status: "ملغاة", cancelledAt: now, voidedAt: now, voidedBy: actor.name || actor.username, voidedByUsername: actor.username, cancelReason: `إلغاء المرتجع ${record.returnNo}`, paid: 0, paidAmount: 0, remaining: 0, remainingAmount: 0, updatedAt: now });
+    }
     // Stock and batches.
     for (const row of effects.stock) {
       const book = books.find(item => item.id === row.bookId); if (!book) continue;
@@ -438,7 +533,8 @@
       const stillReturned = documentReturns(db, sale ? "sale" : "purchase", document.id).some(item => item.id !== record.id);
       Object.assign(document, {
         paid: round(Number(document.paid || 0) + row.paidDelta), remaining: round(Number(document.remaining || 0) + row.remainingDelta),
-        returnedPaid: round(Math.max(0, Number(document.returnedPaid || 0) - row.paidDelta)), returnedRemaining: round(Math.max(0, Number(document.returnedRemaining || 0) - row.remainingDelta)),
+        returnedPaid: round(Math.max(0, Number(document.returnedPaid || 0) - row.paidDelta + Number(row.exchangedDelta || 0))), returnedRemaining: round(Math.max(0, Number(document.returnedRemaining || 0) - row.remainingDelta)),
+        ...(row.exchangedDelta ? { exchangedPaid: round(Math.max(0, Number(document.exchangedPaid || 0) - row.exchangedDelta)) } : {}),
         status: stillReturned ? "مرتجع جزئي" : row.status, returnedAt: stillReturned ? document.returnedAt : row.returnedAt, returnReason: stillReturned ? document.returnReason : row.returnReason, updatedAt: now
       });
     }

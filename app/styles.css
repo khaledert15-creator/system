@@ -1012,6 +1012,31 @@ textarea { resize: vertical; min-height: 80px; }
 }
 
 .table-wrap { width: 100%; overflow-x: auto; }
+/* Replacement books inside a customer return. */
+.return-replacement { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfd; }
+.return-replacement-head strong { display: block; font-size: 13px; }
+.return-replacement-head span { color: var(--muted); font-size: 11px; }
+.return-replacement-suggestions { display: grid; gap: 6px; }
+.return-replacement-suggestions:empty { display: none; }
+.return-replacement-option { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; text-align: right; cursor: pointer; font: inherit; }
+.return-replacement-option:hover:not([disabled]) { border-color: #9cc0e8; background: #f5f9ff; }
+.return-replacement-option[disabled] { opacity: .55; cursor: not-allowed; }
+.return-replacement-option span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.return-replacement-lines table { min-width: 0; }
+.return-replacement-lines th, .return-replacement-lines td { padding: 8px; }
+.return-replacement-lines input { width: 72px; min-width: 0; }
+.return-replacement-total { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 12px; border-radius: 10px; background: #f3f7fb; font-size: 12px; }
+.return-replacement-total .due { color: #b42318; }
+.return-replacement-view { display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8faf9; font-size: 12px; }
+/* Return from one invoice: a slightly wider dialog and a books table that fits it (no sideways scroll). */
+.modal:has(#sale-return-form) { width: min(860px, 100%); }
+.sale-return-lines table { min-width: 0; }
+.sale-return-lines th, .sale-return-lines td { padding: 10px 8px; }
+.sale-return-lines td:first-child { min-width: 140px; }
+.sale-return-lines td small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 400; white-space: normal; }
+.sale-return-lines .sale-return-qty { width: 72px; min-width: 0; }
+#sale-return-form .metric-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0; }
+@media (max-width: 760px) { #sale-return-form .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .modal:has(#sale-customer-return-form) { width: min(1700px, calc(100vw - 32px)); max-height: calc(100vh - 24px); }
 #modal-body:has(#sale-customer-return-form) { padding: 16px 20px 22px; }
 .customer-return-overview { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(185px, .8fr) minmax(155px, .65fr) auto; gap: 10px; align-items: center; margin-bottom: 10px; }
