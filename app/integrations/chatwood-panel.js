@@ -229,7 +229,7 @@
         el("div", {}, el("span", { text: "مشتريات فعلية" }), el("b", { text: `${money(customer.purchasesTotal)} (${customer.purchasesCount})` })),
         el("div", {}, el("span", { text: "متبقي على فواتيره" }), el("b", { class: customer.outstanding > 0 ? "due" : "", text: money(customer.outstanding) })))));
     if (!customer.identified) {
-      $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), el("div", { class: "card state" }, el("strong", { text: state.phone ? "الرقم ده مش مسجل في السيستم ولا في الموقع." : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })), recipientSection());
+      $("orders-list").replaceChildren(newOrderLink(), suggestionSection(), el("div", { class: "card state" }, el("strong", { text: state.phone ? (state.data.storeEnabled && !state.data.storeAvailable ? "الرقم ده مش مسجل في السيستم، والموقع مش متاح دلوقتي فمقدرناش نتأكد منه." : "الرقم ده مش مسجل في السيستم ولا في الموقع.") : "مفيش طلبات مربوطة بالمحادثة دي، وجهة الاتصال مفيهاش رقم موبايل مصري." }), el("span", { class: "muted", text: "لو العميل طلب برقم تاني، اكتبه يدويًا." })), recipientSection());
       $("manual-form").hidden = Boolean(state.phone);
       return;
     }
