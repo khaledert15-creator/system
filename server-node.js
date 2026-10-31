@@ -1057,6 +1057,22 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
 // book.reservedStock must equal the copies held by active order reservations. Older paths could leave copies
 // reserved for an order that was deleted, cancelled or already invoiced, or drop a reservation without its count; the
 // shelf then showed copies as reserved (or free) that were not. Runs at start-up and fixes both sides, with a log.
+// Orders marked delivered by hand before the manual status route closed them kept status «تم التسليم» with stage
+// "shipped". Only orders whose parcel is delivered (not refused, cancelled or returned) are moved to "delivered".
+function repairDeliveredOrderStages(db,user=BACKORDER_SYSTEM_USER) {
+  const fixed=[];
+  for(const order of db.onlineOrders||[]){
+    if(order.deletedAt||order.refusal||order.cancelledAt||order.status!=="تم التسليم"||order.workflowStage==="delivered"||order.workflowStage!=="shipped")continue;
+    const shipment=(db.shipments||[]).find(item=>!item.deletedAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
+    if(shipment?.normalizedStatus!=="delivered")continue;
+    const now=new Date().toISOString();
+    Object.assign(order,{workflowStage:"delivered",updatedAt:now});
+    appendOrderAudit(db,user,order,"تصحيح مرحلة طلب متسلّم",`كان «تم التسليم» وواقف على «اتشحن» · ${shipment.id}`);
+    fixed.push(order.id);
+  }
+  return fixed;
+}
+
 function repairReservedStock(db,user=BACKORDER_SYSTEM_USER) {
   const now=new Date().toISOString(),orderFixes=[],bookFixes=[];
   const closed=order=>order.deletedAt||order.cancelledAt||order.refusal||["cancelled","returned","delivered"].includes(order.workflowStage)||["ملغي","مرتجع","تم التسليم"].includes(order.status);
@@ -5651,7 +5667,9 @@ server.listen(PORT, HOST, () => {
       const changed = syncShipmentsWithOrders(db);
       const reserved = repairReservedStock(db);
       if (reserved.orderFixes.length || reserved.bookFixes.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"RESERVED_STOCK_REPAIRED", ...reserved }));
-      if (changed || reserved.orderFixes.length || reserved.bookFixes.length) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
+      const delivered = repairDeliveredOrderStages(db);
+      if (delivered.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"DELIVERED_ORDER_STAGES_REPAIRED", orders:delivered }));
+      if (changed || reserved.orderFixes.length || reserved.bookFixes.length || delivered.length) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
     } catch (error) { console.error("Shipment/order sync failed:", error.message); }
   }, 2000).unref();
 });
