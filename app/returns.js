@@ -4,6 +4,9 @@
   else root.Returns = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
   // Customer and supplier returns, done on the server in one step: the page sends what was selected and the server
   // checks it, computes the money and moves stock, batches, balances, cash and statuses together (an error changes
@@ -132,7 +135,7 @@
       const book = list(db, "books").find(item => item.id === line.bookId);
       const unitCost = round(lastCost ?? (averageCost || Number(book?.cost || 0)));
       const id = nextNumber("BAT-", list(db, "inventoryBatches"));
-      db.inventoryBatches.push({ id, batchId: id, productId: line.bookId, bookId: line.bookId, purchaseInvoiceId: sale.id, supplierId: book?.supplierId || "", receivedQty: left, remainingQty: left, unitCost, coverPrice: Number(book?.price || 0), purchaseDate: now.slice(0, 10), source: "sales_return", status: unitCost > 0 ? "active" : "cost_incomplete", createdAt: now, updatedAt: now, deletedAt: null });
+      db.inventoryBatches.push({ id, batchId: id, productId: line.bookId, bookId: line.bookId, purchaseInvoiceId: sale.id, supplierId: book?.supplierId || "", receivedQty: left, remainingQty: left, unitCost, coverPrice: Number(book?.price || 0), purchaseDate: cairoDate(now), source: "sales_return", status: unitCost > 0 ? "active" : "cost_incomplete", createdAt: now, updatedAt: now, deletedAt: null });
       effects.createdBatches.push({ batchId: id, qty: left });
     }
   }
@@ -216,7 +219,7 @@
     if (lines.some(line => line.document.customerId !== customerId) || (payload.customerId && payload.customerId !== customerId)) throw fail("كل البنود لازم تكون من فواتير نفس العميل.", "MIXED_CUSTOMERS", 400);
     const singleInvoice = Boolean(payload.invoiceId);
     if (singleInvoice && lines.some(line => line.documentId !== payload.invoiceId)) throw fail("البنود لازم تكون من الفاتورة المختارة.", "WRONG_INVOICE", 400);
-    const now = actor.now || new Date().toISOString(), date = String(payload.date || now).slice(0, 10), reason = String(payload.reason || "").trim();
+    const now = actor.now || new Date().toISOString(), date = payload.date ? String(payload.date).slice(0, 10) : cairoDate(now), reason = String(payload.reason || "").trim();
     if (!reason) throw fail("سبب المرتجع مطلوب.", "REASON_REQUIRED", 400);
 
     // Per invoice: the part of the returned value that clears what is still owed, the rest is due to the customer.
@@ -300,6 +303,8 @@
       Object.assign(sale, {
         status: isFull ? "مرتجع" : "مرتجع جزئي",
         paid: round(Number(sale.paid || 0) - paidDelta), remaining: round(Number(sale.remaining || 0) - remainingDelta),
+        // paidAmount/remainingAmount mirror the live figures (carrier collections and packing read them).
+        paidAmount: round(Number(sale.paid || 0) - paidDelta), remainingAmount: round(Number(sale.remaining || 0) - remainingDelta),
         returnedPaid: round(Number(sale.returnedPaid || 0) + paidDelta - Math.min(exchanged, paidDelta)), returnedRemaining: round(Number(sale.returnedRemaining || 0) + remainingDelta),
         ...(exchanged > 0 ? { exchangedPaid: round(Number(sale.exchangedPaid || 0) + Math.min(exchanged, paidDelta)) } : {}),
         returnedAt: now, returnReason: reason, updatedAt: now
@@ -376,7 +381,7 @@
     if (single && lines.some(line => line.documentId !== payload.purchaseId)) throw fail("البنود لازم تكون من المستند المختار.", "WRONG_DOCUMENT", 400);
     const settlement = single ? "auto" : String(payload.settlement || "account-credit");
     if (!single && !["cash", "account-credit"].includes(settlement)) throw fail("اختر طريقة تسوية صحيحة.", "INVALID_SETTLEMENT", 400);
-    const now = actor.now || new Date().toISOString(), date = String(payload.date || now).slice(0, 10), reason = String(payload.reason || "").trim();
+    const now = actor.now || new Date().toISOString(), date = payload.date ? String(payload.date).slice(0, 10) : cairoDate(now), reason = String(payload.reason || "").trim();
     // Only free copies can go back to the supplier: copies reserved for confirmed orders or held for a stock count stay.
     // Lines are added up per book, so two lines of the same book cannot each pass on their own.
     const requested = new Map();
@@ -534,7 +539,7 @@
     const reversals = [];
     for (const id of effects.cashTxIds || []) {
       const tx = list(db, "cash").find(item => item.id === id); if (!tx || tx.reversedBy) continue;
-      const reversal = { id: nextNumber("TX-", db.cash), date: now.slice(0, 10), type: tx.type === "صرف" ? "قبض" : "صرف", direction: tx.type === "صرف" ? "in" : "out", locked: true, account: tx.account, accountId: tx.accountId || "", party: tx.party, amount: tx.amount, category: `إلغاء ${tx.category}`, returnId: record.id, reversesId: tx.id, note: `إلغاء المرتجع ${record.returnNo} — ${reason}`, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" };
+      const reversal = { id: nextNumber("TX-", db.cash), date: cairoDate(now), type: tx.type === "صرف" ? "قبض" : "صرف", direction: tx.type === "صرف" ? "in" : "out", locked: true, account: tx.account, accountId: tx.accountId || "", party: tx.party, amount: tx.amount, category: `إلغاء ${tx.category}`, returnId: record.id, reversesId: tx.id, note: `إلغاء المرتجع ${record.returnNo} — ${reason}`, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" };
       db.cash.push(reversal); tx.reversedBy = reversal.id; reversals.push(reversal.id);
     }
     // Documents, orders and shipments go back to what they were, unless another return still applies.
@@ -543,6 +548,7 @@
       const stillReturned = documentReturns(db, sale ? "sale" : "purchase", document.id).some(item => item.id !== record.id);
       Object.assign(document, {
         paid: round(Number(document.paid || 0) + row.paidDelta), remaining: round(Number(document.remaining || 0) + row.remainingDelta),
+        ...(sale ? { paidAmount: round(Number(document.paid || 0) + row.paidDelta), remainingAmount: round(Number(document.remaining || 0) + row.remainingDelta) } : {}),
         returnedPaid: round(Math.max(0, Number(document.returnedPaid || 0) - row.paidDelta + Number(row.exchangedDelta || 0))), returnedRemaining: round(Math.max(0, Number(document.returnedRemaining || 0) - row.remainingDelta)),
         ...(row.exchangedDelta ? { exchangedPaid: round(Math.max(0, Number(document.exchangedPaid || 0) - row.exchangedDelta)) } : {}),
         status: stillReturned ? "مرتجع جزئي" : row.status, returnedAt: stillReturned ? document.returnedAt : row.returnedAt, returnReason: stillReturned ? document.returnReason : row.returnReason, updatedAt: now

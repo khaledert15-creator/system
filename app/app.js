@@ -1910,7 +1910,9 @@ function normalizeData(value) {
         linkedShipment.orderId = linkedSale.id;
         linkedSale.shipmentId = linkedShipment.id;
       }
-      const shipmentStatusMap = { "جديدة":"تم إنشاء الشحنة", "تم التجهيز":"تم إنشاء الشحنة", "تم التسليم للشركة":"خرج للتوصيل", "في الطريق":"خرج للتوصيل", "خرج للتوصيل":"خرج للتوصيل", "تم التسليم":"تم التسليم", "مرتجع":"مرتجع" };
+      // Delivered and returned are set by the server together with the order's stage (tracking, the manual status
+      // route, returns); copying only the label here left orders «تم التسليم» at stage «shipped».
+      const shipmentStatusMap = { "جديدة":"تم إنشاء الشحنة", "تم التجهيز":"تم إنشاء الشحنة", "تم التسليم للشركة":"خرج للتوصيل", "في الطريق":"خرج للتوصيل", "خرج للتوصيل":"خرج للتوصيل" };
       order.status = shipmentStatusMap[linkedShipment.status] || order.status;
     } else if (linkedSale && !["ملغي","مرتجع"].includes(order.status)) {
       order.status = "تم إنشاء الفاتورة";
@@ -2260,8 +2262,9 @@ function auditEntry(payload = {}) {
   return AuditIds.assignUniqueAuditId(data.audit || [], entry);
 }
 
+// Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
 // Ids made from random UUIDs contain so many digits that Number() loses precision; max + 1 then equals max and
@@ -2956,9 +2959,10 @@ function statCard(label, value, note, icon, tone = "", trend = "", action = "") 
 
 function renderDashboard() {
   const sales = activeSalesList();
-  const totalSales = sales.reduce((sum, inv) => sum + inv.total, 0);
+  const totalSales = sales.reduce((sum, inv) => sum + Number(inv.total || 0), 0);
   const inventoryCost = liveBooks().reduce((sum, book) => sum + productInventorySummary(book.id).currentInventoryValue, 0);
-  const customerDebt = data.customers.reduce((sum, item) => sum + item.balance, 0);
+  // What customers owe (positive balances); customers created by the order screens may have no balance field yet.
+  const customerDebt = data.customers.filter(item => !item.deletedAt).reduce((sum, item) => sum + Math.max(0, Number(item.balance || 0)), 0);
   const lowStock = liveBooks().filter(book => book.stock <= book.reorder);
   const staleBooks = liveBooks().filter(book => {
     if (!book.lastSale) return true;
@@ -2968,7 +2972,7 @@ function renderDashboard() {
   const dashboardAlerts = getNotificationItems();
   const maxChart = Math.max(...sales.map(s => s.total), 1000);
   const manualReviewShipments = data.shipments.filter(item => !item.deletedAt && (item.manualInterventionNeeded || item.manual_review_required));
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = today();
   const manualUpdatedToday = (data.trackingHistory || []).filter(row => row.source === "manual_review" && String(row.reviewedAt || row.createdAt || "").slice(0, 10) === todayKey).length;
   const notUpdatedAges = data.shipments.filter(item => !item.deletedAt && !item.lastTrackingAt).map(item => Math.max(0, (Date.now() - new Date(item.createdAt || item.updatedAt || Date.now()).getTime()) / 86400000));
   const avgNotUpdatedAge = notUpdatedAges.length ? Math.round(notUpdatedAges.reduce((sum, age) => sum + age, 0) / notUpdatedAges.length) : 0;
@@ -2980,8 +2984,8 @@ function renderDashboard() {
       <p>متابعة فورية للمبيعات والمخزون والمديونيات والشحنات. الأرقام الحالية تجريبية ويمكنك تعديلها وإضافة بياناتك الحقيقية.</p>
     </div>
     <div class="stats-grid">
-      ${statCard("إجمالي المبيعات", money(totalSales), "إجمالي الفواتير المسجلة", "↗", "", "+12.4%", "sales")}
-      ${statCard("قيمة المخزون", money(inventoryCost), `${liveBooks().length} صنف مسجل`, "▤", "gold", "+4.1%", "inventory")}
+      ${statCard("إجمالي المبيعات", money(totalSales), "إجمالي الفواتير المسجلة", "↗", "", "", "sales")}
+      ${statCard("قيمة المخزون", money(inventoryCost), `${liveBooks().length} صنف مسجل`, "▤", "gold", "", "inventory")}
       ${statCard("مديونية العملاء", money(customerDebt), "أرصدة آجلة قائمة", "👤", "blue", "", "customer-debt")}
       ${statCard("أصناف تحتاج انتباه", lowStock.length, "منخفضة أو سالبة المخزون", "!", "red", "", "stock-alerts")}
       ${statCard("شحنات تحتاج مراجعة", manualReviewShipments.length, "تحتاج مراجعة يدوية بعد تعذر التحديث", "⚑", "gold", "", "shipping")}
@@ -3290,18 +3294,23 @@ function salesDailySummary(filter = salesDateFilter) {
   const cashTotal = sales.filter(sale => salesPaymentBucket(sale) === "cash").reduce((sum, sale) => sum + Number(sale.paid || 0), 0);
   const transferTotal = sales.filter(sale => salesPaymentBucket(sale) === "transfer").reduce((sum, sale) => sum + Number(sale.paid || 0), 0);
   const codTotal = sales.filter(sale => salesPaymentBucket(sale) === "cod").reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  // What was collected on these sales; refunds leave through cashReturns (a return lowers `paid` and raises `returnedPaid`).
-  const actualCollections = sales.reduce((sum, sale) => sum + Number(sale.paid || 0) + Number(sale.returnedPaid || 0), 0);
+  // Money that actually came in during the period (sales, order deposits, carrier collections…), from the treasury
+  // rows of those days: an invoice dated another day can still be collected today. Transfers between accounts and
+  // reversal entries are not income.
+  const notMovement = item => item.transferId || item.reversedBy || item.reversesId || /تحويل بين|عكس|قيد عكسي|إلغاء/.test(`${item.category || ""}`);
+  const actualCollections = activeCash().filter(item => item.type === "قبض" && !notMovement(item) && String(item.date || item.createdAt || "").slice(0, 10) >= range.from && String(item.date || item.createdAt || "").slice(0, 10) <= range.to).reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const purchasesTotal = purchaseTotalForRange(range.from, range.to);
   const supplierPayments = cashOutForRange(range.from, range.to, item => /مشتريات|توريد|مورد|شراء/i.test(`${item.category || ""} ${item.note || ""}`));
-  const expenses = cashOutForRange(range.from, range.to, item => !/مرتجع|مشتريات|توريد|مورد|شراء/i.test(`${item.category || ""} ${item.note || ""}`));
-  const netMovement = actualCollections - supplierPayments - expenses - cashReturns;
+  // Expenses only: returns, money given back on orders (رد مبلغ طلب), purchases and transfers are not running costs.
+  const orderRefunds = cashOutForRange(range.from, range.to, item => !notMovement(item) && /رد مبلغ|رد عربون|استرداد/.test(`${item.category || ""}`));
+  const expenses = cashOutForRange(range.from, range.to, item => !notMovement(item) && !/مرتجع|مشتريات|توريد|مورد|شراء|رد مبلغ|رد عربون|استرداد/i.test(`${item.category || ""} ${item.note || ""}`));
+  const netMovement = actualCollections - supplierPayments - expenses - cashReturns - orderRefunds;
   const cogsSummary = salesCogsSummary(sales);
   const grossProfit = cogsSummary.incompleteLines ? null : netSales - cogsSummary.cost;
   // netSales already subtracts the returns, so a refund is not subtracted a second time here.
   const netProfit = grossProfit === null ? null : grossProfit - expenses;
   const totalIn = actualCollections;
-  const totalOut = supplierPayments + expenses + cashReturns;
+  const totalOut = supplierPayments + expenses + cashReturns + orderRefunds;
   return { range, sales, salesTotal, invoiceCount, discounts, returnsTotal, cashReturns, netSales, cashTotal, transferTotal, codTotal, actualCollections, purchasesTotal, supplierPayments, expenses, netMovement, cogs: cogsSummary.cost, incompleteCostLines: cogsSummary.incompleteLines, grossProfit, netProfit, totalIn, totalOut };
 }
 
@@ -3658,8 +3667,14 @@ function shippingRateForGovernorate(governorate="",goods=0){return OrderFinance.
 
 function orderShippingFee(order){const source=order&&typeof order==="object"?order:{};for(const key of ["shippingFee","shippingCost","shipping"]){if(source[key]==null)continue;const value=OrderFinance.normalizeNumber(source[key]);if(Number.isFinite(value)&&value>=0)return value;}return 0;}
 
+// A sale handed over in the shop ships nothing: no governorate fee (the server applies the same rule).
+function saleIsInStore(sale = draftSale) {
+  return sale.saleOperationType === "بيع مباشر" && sale.channel !== "متجر إلكتروني" && !sale.onlineOrderId;
+}
+
 function applySaleCustomerShipping(customer) {
   if(!customer||draftSale.shippingFeeOverride)return;
+  if(saleIsInStore()){draftSale.shippingCost=0;draftSale.shippingPriceSource="in_store";return;}
   const goods=saleTotals().goods||0,rate=shippingRateForGovernorate(customer.governorate,goods);
   draftSale.shippingCost=rate.fee;draftSale.shippingPriceSource=rate.source;
 }
@@ -4571,10 +4586,12 @@ async function saveQuickOrderDraft({silent=false,reload="background"}={}) {
   const payload=quickOrderPayload();
   let result;
   try{result=quickOrderDraft.savedOrderId
-    ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:payload,reload})
+    ? await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/quick`,{method:"PATCH",body:{...payload,...(quickOrderDraft.orderStamp?{orderStamp:quickOrderDraft.orderStamp}:{})},reload})
     : await orderWorkflowRequest("/api/orders/quick",{body:payload,reload});}
   catch(error){if(/^CHATWOOD_CONTEXT_/.test(error.code||"")){dropChatwoodContext();renderQuickOrderPreservingContext();}throw error;}
   quickOrderDraft.savedOrderId=result.order.id;
+  // The order as this screen last saw it: a later save from here is refused if someone else changed it meanwhile.
+  if(quickOrderDraft.orderStamp)quickOrderDraft.orderStamp=packingEditStamp(result.order);
   if(!silent)toast(result.order.confirmedAt?`تم حفظ تعديلات الطلب ${result.order.id}.`:`تم حفظ المسودة ${result.order.id}.`);
   return result.order;
 }
@@ -4590,6 +4607,7 @@ async function saveAndConfirmQuickOrder() {
   try{
     await saveQuickOrderDraft({silent:true,reload:false});
     const confirmResult=await orderWorkflowRequest(`/api/orders/${encodeURIComponent(quickOrderDraft.savedOrderId)}/confirm`,{reload:"background"});
+    if(quickOrderDraft.orderStamp&&confirmResult?.order)quickOrderDraft.orderStamp=packingEditStamp(confirmResult.order);
     const confirmedId=quickOrderDraft.savedOrderId;
     quickOrderDraft=newQuickOrderDraft();
     quickOrderSearch="";
@@ -4774,7 +4792,7 @@ async function editQuickOrder(id,exportOverride=null) {
   }
   else if(["preparing","needs_review"].includes(order.workflowStage)&&!confirm("بدأ تجهيز هذا الطلب. سيتم تحديث الطلب الأصلي وإعادة ضبط Checklist وإشعار موظف التجهيز. هل تريد المتابعة؟"))return;
   const recordedPayments=(data.orderPayments||[]).filter(item=>item.orderId===order.id&&item.status!=="reversed"&&item.confirmed!==false),recordedPaid=recordedPayments.reduce((sum,item)=>sum+Number(item.amount||0),0);
-  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id,websiteOrderNumber:isWebsiteOrder(order)?String(order.websiteOrderNumber||"موقع"):"",customerEditConfirmed:false,customerEditChannel:"واتساب",customerEditNote:""};
+  quickOrderDraft={...emptyQuickOrderDraft(),phone:order.phone||"",customerId:order.customerId||"",customerName:order.customerName||"",governorate:order.governorate||"",city:order.city||"",address:order.address||"",addressMark:order.addressMark||"",alternativePhone:order.alternativePhone||"",shippingCompany:order.shippingCompany||preferredShippingCompanyName(),lines:(order.lines||[]).map(line=>({bookId:line.bookId,qty:Number(line.qty||1),price:Number(line.price||getBook(line.bookId)?.price||0),discount:Number(line.discount||0),discountType:line.discountType||"percent",discountScope:line.discountScope||"unit"})),shippingCost:orderShippingFee(order),shippingManual:quickOrderShippingWasManual(order),paymentPlan:order.paymentPlan||"cash_on_delivery",paymentMethod:order.paymentMethod||"الدفع عند الاستلام",paidAmount:recordedPayments.length?recordedPaid:Number(order.paidAmount||0),paymentConfirmed:recordedPayments.length>0,cashAccountId:recordedPayments[0]?.cashAccountId||"",paymentLocked:recordedPayments.length>0,orderDiscount:Number(order.orderDiscount||0),orderDiscountType:order.orderDiscountType||"percent",notes:order.notes||"",chatwootConversationId:order.chatwootConversationId||"",savedOrderId:order.id,orderStamp:packingEditStamp(order),websiteOrderNumber:isWebsiteOrder(order)?String(order.websiteOrderNumber||"موقع"):"",customerEditConfirmed:false,customerEditChannel:"واتساب",customerEditNote:""};
   quickOrderSearch="";quickOrderAutofocusPending=true;onlineOrdersMode="quick";
   // Editing can start from the shipping page or a dialog, so bring the orders page up first.
   if(currentView!=="onlineOrders")navigate("onlineOrders");else renderOnlineOrders();
@@ -4882,6 +4900,13 @@ const ORDER_REFUSAL_OUTCOMES=[
   ["keep_deposit","بدون رد الديبوزت","الديبوزت يتحسب تعويض عن مصاريف الشحن.","✓"],
   ["charge_shipping","العميل يكمّل تكلفة الشحن","بلّغته بتكلفة الشحن وهيحوّل الفرق.","＋"]
 ];
+
+// Same rule as the server's shipment cancel route: a parcel delivered, returned, refused or collected stays.
+function shipmentCancellable(shipment) {
+  if(!shipment||shipment.refusedAt||shipment.settlementId)return false;
+  if([shipment.normalizedStatus,shipment.shippingStatus,shipment.trackingStatus].some(code=>["delivered","returned","refused"].includes(code))||["تم التسليم","مرتجع"].includes(shipment.status))return false;
+  return !(data.orderCollections||[]).some(item=>item.sourceKey===`order-collection:${shipment.id}`&&item.status!=="reversed");
+}
 
 function orderCanBeRefused(order) {
   if(!order||order.refusal||order.cancelledAt||order.status==="ملغي"||!order.saleId||!canAction("order.quick.edit"))return false;
@@ -6782,7 +6807,7 @@ function resetShippingFilters() {
 function renderShipping() {
   const statuses = Object.entries(SHIPPING_STATUSES);
   const rows = data.shipments.filter(item => !item.deletedAt);
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = today();
   const active = rows.filter(item => !["تم التسليم", "مرتجع", "ملغاة"].includes(item.status));
   const noMovement = rows.filter(item => item.lastMovementAt && (Date.now() - new Date(item.lastMovementAt).getTime()) / 3600000 >= data.settings.tracking.noMovementHours && !["تم التسليم", "مرتجع"].includes(item.status));
   const quickLabel = shippingQuickFilterLabel();
@@ -6852,7 +6877,7 @@ function shipmentsTable(list) {
         <button class="row-action" data-action="shipment-complaints" data-id="${esc(item.id)}">▤ سجل الشكاوى${complaintCount ? ` (${complaintCount})` : ""}</button>
         <button class="row-action" data-action="update-shipment" data-id="${esc(item.id)}">تعديل بيانات الشحنة</button>
         <button class="row-action" data-action="copy-tracking-code" data-id="${esc(item.id)}">نسخ رقم التتبع</button>${debugButton}
-        <button class="row-action text-danger" data-action="cancel-shipment-flow" data-id="${esc(item.id)}">إلغاء الشحنة</button></div></details></div></td></tr>`;
+        ${shipmentCancellable(item)?`<button class="row-action text-danger" data-action="cancel-shipment-flow" data-id="${esc(item.id)}">إلغاء الشحنة</button>`:""}</div></details></div></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="text-center muted">لا توجد شحنات مطابقة.</td></tr>`}</tbody></table>`;
 }
 
@@ -7246,7 +7271,9 @@ function renderFinancialReports() {
   const showIncome=!financeReportFilters.movementType||["دخل","تسوية شركة شحن"].includes(financeReportFilters.movementType);
   const expenses=showExpenses?(data.expenses||[]).filter(i=>i.status==="معتمد"&&inRange(i)&&byAccount(i)&&(!financeReportFilters.expenseType||i.expenseType===financeReportFilters.expenseType)&&(!financeReportFilters.carrier||i.beneficiary===financeReportFilters.carrier)):[];
   const income=showIncome?(data.otherIncome||[]).filter(i=>i.status==="معتمد"&&inRange(i)&&byAccount(i)):[];
-  const sales=(data.sales||[]).filter(i=>i.status!=="ملغاة"&&inRange(i));
+  const sales=(data.sales||[]).filter(i=>!i.deletedAt&&i.status!=="ملغاة"&&inRange(i));
+  // Customer returns dated in the period come off the sales (a returned invoice keeps its full total).
+  const returnsTotal=salesReturnsAmount(range.from||"0000-00-00",range.to||"9999-12-31");
   const shipments=(data.shipments||[]).filter(i=>!i.deletedAt&&inRange(i)&&(!financeReportFilters.carrier||[i.company,i.carrier].includes(financeReportFilters.carrier)));
   const settlements=(data.carrierSettlements||[]).filter(i=>i.approvedAt&&inRange(i)&&byAccount(i)&&(!financeReportFilters.carrier||i.company===financeReportFilters.carrier));
   const collections=(data.orderCollections||[]).filter(i=>i.status!=="reversed"&&inRange(i)&&(!financeReportFilters.carrier||i.carrier===financeReportFilters.carrier));
@@ -7264,10 +7291,10 @@ function renderFinancialReports() {
   const directlySettled=sumMoney(collections.filter(i=>i.status==="settled"&&!i.settlementId),i=>i.amount||0);
   const settled=centsMoney(moneyCents(sumMoney(settlements,i=>i.actualNetSettlement||0))+moneyCents(directlySettled));
   const unresolvedDifference=sumMoney(settlements.filter(i=>Math.abs(Number(i.settlementDifference||0))>.009),i=>i.settlementDifference||0);
-  const netResult=centsMoney(moneyCents(salesTotal)+moneyCents(incomeTotal)-moneyCents(expenseTotal));
+  const netResult=centsMoney(moneyCents(salesTotal)-moneyCents(returnsTotal)+moneyCents(incomeTotal)-moneyCents(expenseTotal));
   const shippingProfit=centsMoney(moneyCents(shippingCharge)-moneyCents(shippingCosts)-moneyCents(commissions)-moneyCents(returnCosts)-moneyCents(Math.max(0,shippingRelated-shippingCosts-commissions-returnCosts)));
   const movementOptions=["","دخل","مصروف","تسوية شركة شحن","تحويل بين الخزن","قيد عكسي"];
-  return `<article class="card finance-report-filters"><div class="card-header"><div><h3>فترة التقرير والفلاتر</h3><p>الفترة شاملة تاريخ البداية والنهاية بالكامل.</p></div><div class="finance-range-presets">${[["today","اليوم"],["week","هذا الأسبوع"],["month","هذا الشهر"],["custom","فترة مخصصة"]].map(([v,l])=>`<button class="tab ${financeReportFilters.preset===v?"active":""}" data-action="finance-report-preset" data-preset="${esc(v)}">${l}</button>`).join("")}</div></div><div class="form-grid four"><div class="form-field"><label>من تاريخ</label><input id="finance-report-from" type="date" value="${esc(range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="finance-report-to" type="date" value="${esc(range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="finance-report-movement">${movementOptions.map(v=>`<option value="${esc(v)}" ${financeReportFilters.movementType===v?"selected":""}>${v||"كل الحركات"}</option>`).join("")}</select></div><div class="form-field"><label>الخزنة أو الحساب</label><select id="finance-report-account"><option value="">كل الحسابات</option>${activeCashAccounts().map(a=>`<option ${financeReportFilters.account===a.name?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div><div class="form-field"><label>نوع المصروف</label><select id="finance-report-expense-type"><option value="">كل الأنواع</option>${(data.expenseTypes||[]).map(t=>`<option ${financeReportFilters.expenseType===t.name?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div><div class="form-field"><label>شركة الشحن</label><select id="finance-report-carrier"><option value="">كل الشركات</option>${activeShippingCompanies().map(c=>`<option ${financeReportFilters.carrier===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div></div></article><div class="finance-callout"><strong>نتيجة الفترة ≠ التدفق النقدي</strong><span>كل مؤشر يُقرأ من مستنده الأصلي؛ لا تُكرر المبيعات أو الشحن داخل الإيرادات الأخرى.</span></div><section class="report-group"><h3>النتيجة</h3><div class="report-grid">${statCard("صافي النتيجة",money(netResult),"المبيعات + الإيرادات الأخرى − المصروفات","≋","gold")}${statCard("إجمالي المصروفات",money(expenseTotal),"المعتمد فقط","−","red")}${statCard("إيرادات أخرى",money(incomeTotal),"خارج المبيعات والشحن","＋")}</div></section><section class="report-group"><h3>المبيعات</h3><div class="report-grid">${statCard("مبيعات المنتجات",money(centsMoney(moneyCents(salesTotal)-moneyCents(shippingCharge))),"من فواتير البيع","▤")}${statCard("مبيعات غير محصلة",money(salesUncollected),"الرصيد المتبقي بالفواتير","⌛","gold")}${statCard("شحن محصل من العملاء",money(shippingCharge),"من الشحنات والفواتير","▣","blue")}</div></section><section class="report-group"><h3>شركات الشحن</h3><div class="report-grid">${statCard("تم تحصيله لدى الشركات",money(collectedByCarriers),"لم يدخل الخزنة بعد","▣","blue")}${statCard("مستحق لدى الشركات",money(carrierDue),"صافي التحويل المتوقع","⌛","blue")}${statCard("تم تحويله فعليًا",money(settled),"تسويات وتحويلات معتمدة","✓")}${statCard("فروق غير معالجة",money(unresolvedDifference),"تسويات بفروق","!","red")}</div></section><section class="report-group"><h3>تكلفة الشحن</h3><div class="report-grid">${statCard("تكلفة الشحن",money(shippingCosts),"مصروفات آلية معتمدة","−","red")}${statCard("عمولات التحصيل",money(commissions),"مصروفات آلية معتمدة","−","red")}${statCard("صافي نتيجة الشحن",money(shippingProfit),"شحن العميل − تكاليف الشحن","≋","gold")}</div></section>`;
+  return `<article class="card finance-report-filters"><div class="card-header"><div><h3>فترة التقرير والفلاتر</h3><p>الفترة شاملة تاريخ البداية والنهاية بالكامل.</p></div><div class="finance-range-presets">${[["today","اليوم"],["week","هذا الأسبوع"],["month","هذا الشهر"],["custom","فترة مخصصة"]].map(([v,l])=>`<button class="tab ${financeReportFilters.preset===v?"active":""}" data-action="finance-report-preset" data-preset="${esc(v)}">${l}</button>`).join("")}</div></div><div class="form-grid four"><div class="form-field"><label>من تاريخ</label><input id="finance-report-from" type="date" value="${esc(range.from)}"></div><div class="form-field"><label>إلى تاريخ</label><input id="finance-report-to" type="date" value="${esc(range.to)}"></div><div class="form-field"><label>نوع الحركة</label><select id="finance-report-movement">${movementOptions.map(v=>`<option value="${esc(v)}" ${financeReportFilters.movementType===v?"selected":""}>${v||"كل الحركات"}</option>`).join("")}</select></div><div class="form-field"><label>الخزنة أو الحساب</label><select id="finance-report-account"><option value="">كل الحسابات</option>${activeCashAccounts().map(a=>`<option ${financeReportFilters.account===a.name?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div><div class="form-field"><label>نوع المصروف</label><select id="finance-report-expense-type"><option value="">كل الأنواع</option>${(data.expenseTypes||[]).map(t=>`<option ${financeReportFilters.expenseType===t.name?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div><div class="form-field"><label>شركة الشحن</label><select id="finance-report-carrier"><option value="">كل الشركات</option>${activeShippingCompanies().map(c=>`<option ${financeReportFilters.carrier===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div></div></article><div class="finance-callout"><strong>نتيجة الفترة ≠ التدفق النقدي</strong><span>كل مؤشر يُقرأ من مستنده الأصلي؛ لا تُكرر المبيعات أو الشحن داخل الإيرادات الأخرى.</span></div><section class="report-group"><h3>النتيجة</h3><div class="report-grid">${statCard("صافي النتيجة",money(netResult),"المبيعات − المرتجعات + الإيرادات الأخرى − المصروفات","≋","gold")}${statCard("مرتجعات المبيعات",money(returnsTotal),"قيمة المرتجعات في الفترة","↶","red")}${statCard("إجمالي المصروفات",money(expenseTotal),"المعتمد فقط","−","red")}${statCard("إيرادات أخرى",money(incomeTotal),"خارج المبيعات والشحن","＋")}</div></section><section class="report-group"><h3>المبيعات</h3><div class="report-grid">${statCard("مبيعات المنتجات",money(centsMoney(moneyCents(salesTotal)-moneyCents(shippingCharge))),"من فواتير البيع","▤")}${statCard("مبيعات غير محصلة",money(salesUncollected),"الرصيد المتبقي بالفواتير","⌛","gold")}${statCard("شحن محصل من العملاء",money(shippingCharge),"من الشحنات والفواتير","▣","blue")}</div></section><section class="report-group"><h3>شركات الشحن</h3><div class="report-grid">${statCard("تم تحصيله لدى الشركات",money(collectedByCarriers),"لم يدخل الخزنة بعد","▣","blue")}${statCard("مستحق لدى الشركات",money(carrierDue),"صافي التحويل المتوقع","⌛","blue")}${statCard("تم تحويله فعليًا",money(settled),"تسويات وتحويلات معتمدة","✓")}${statCard("فروق غير معالجة",money(unresolvedDifference),"تسويات بفروق","!","red")}</div></section><section class="report-group"><h3>تكلفة الشحن</h3><div class="report-grid">${statCard("تكلفة الشحن",money(shippingCosts),"مصروفات آلية معتمدة","−","red")}${statCard("عمولات التحصيل",money(commissions),"مصروفات آلية معتمدة","−","red")}${statCard("صافي نتيجة الشحن",money(shippingProfit),"شحن العميل − تكاليف الشحن","≋","gold")}</div></section>`;
 }
 
 function financeReportRange() {
@@ -10315,8 +10342,12 @@ root.addEventListener("change", event => {
     renderSales();
   }
   if (event.target.classList.contains("sale-book-picker")) selectSaleLineBook(index, event.target.value);
-  if (event.target.id === "sale-channel") draftSale.channel = event.target.value;
-  if (event.target.id === "sale-operation-type") draftSale.saleOperationType = event.target.value;
+  if (event.target.id === "sale-channel" || event.target.id === "sale-operation-type") {
+    draftSale[event.target.id === "sale-channel" ? "channel" : "saleOperationType"] = event.target.value;
+    // Switching between a shop sale and a shipped one changes the automatic shipping fee.
+    applySaleCustomerShipping(getCustomer(draftSale.customerId));
+    renderSales();
+  }
   if (event.target.id === "sale-date") draftSale.date = event.target.value;
   if (event.target.id === "sales-date-filter") {
     salesDateFilter = event.target.value || "today";
@@ -12665,7 +12696,8 @@ function statementRows(id, kind) {
       type:"invoice",
       reference: invoice.id,
       description: kind === "customer" ? `فاتورة مبيعات · خصم ${money(invoice.discount||0)} · شحن ${Number(invoice.shippingFee ?? invoice.shipping ?? invoice.shippingCost ?? 0) ? money(invoice.shippingFee ?? invoice.shipping ?? invoice.shippingCost ?? 0) : "مجاني"}` : `مستند ${invoice.type || "مشتريات"}`,
-      debit: invoice.status === "ملغاة" ? 0 : Number(invoice.remaining ?? invoice.total ?? 0),
+      // Consignment (أمانة) stock is not owed to the supplier until it is sold, so it never adds to his balance.
+      debit: invoice.status === "ملغاة" || (kind === "supplier" && invoice.type === "أمانة") ? 0 : Number(invoice.remaining ?? invoice.total ?? 0),
       credit: 0,
       status: invoice.status,user:invoice.createdByName||invoice.createdByUsername||"—",note:invoice.notes||invoice.note||"",links:{invoiceId:invoice.id,orderId:invoice.onlineOrderId||""}
     })),
@@ -12690,8 +12722,11 @@ function statementRows(id, kind) {
       credit: receipt.status === "ملغى" || Number(receipt.balanceSign ?? -1) > 0 ? 0 : Number(receipt.balanceApplied || 0),
       status: receipt.status,user:receipt.createdBy||"—",note:receipt.note||"",links:{receiptId:receipt.id}
     })),
-    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt&&!item.refusalId).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
-    ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:"استخدام رصيد دائن في طلب جديد",debit:Number(item.amount),credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
+    // Order payments never enter this statement (they lower the invoice's remaining, or come before any invoice), so
+    // giving them back — in cash or as the separate order credit (customerCredits) — does not move the balance either.
+    // These rows show what happened, with the amount in the description.
+    ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt&&!item.refusalId).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:`${cancellationSettlementLabel(item.settlementType)} · ${money(item.amount)}`,debit:0,credit:0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
+    ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:`استخدام رصيد دائن في طلب جديد · ${money(item.amount)}`,debit:0,credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
     ...(kind==="customer"?(data.onlineOrders||[]).filter(item=>item.customerId===id&&item.status==="ملغي").map(item=>({date:item.cancelledAt,type:"cancelled_order",reference:item.id,description:"إلغاء طلب — إلغاء مستند دون حذف",debit:0,credit:0,status:"ملغي",user:item.cancelledBy||"—",links:{orderId:item.id,invoiceId:item.saleId||""}})):[])
   ].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row,index,rows)=>({...row,balance:rows.slice(0,index+1).reduce((sum,item)=>sum+Number(item.debit||0)-Number(item.credit||0),0)}));
 }

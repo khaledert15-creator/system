@@ -29,7 +29,7 @@ const sandbox = {
   shipmentTrackingSummary:() => ({}), shipmentComplaints:() => [], shipmentStatusOptions:() => "<option>x</option>", shipmentStatusBadge:() => "",
   shipmentStatusCode:item => item.normalizedStatus || "in_transit",
   shipmentStatusMeta:item => ({ code:item.normalizedStatus || "in_transit" }),
-  data:{ onlineOrders:[], shipments, complaints:[], trackingHistory:[], settings:{ tracking:{} } }, orderCanBeRefused:() => false,
+  data:{ onlineOrders:[], shipments, complaints:[], trackingHistory:[], settings:{ tracking:{} } }, orderCanBeRefused:() => false, shipmentCancellable:() => true,
   ShipmentFollowUp:require("../app/shipment-followup.js")
 };
 vm.createContext(sandbox);

@@ -1,4 +1,7 @@
 "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
 // Correcting a payment an employee recorded by mistake (wrong amount, wrong cash account or method, the wrong order,
 // or money that never arrived / was entered twice). Nothing is edited in place: the original payment and its cash row
@@ -193,7 +196,7 @@ function addPayment(db, input, user, { randomUUID, nextId, appendOrderAudit, now
   if (existing) return { payment:existing, existing:true, carrierNotice:false };
   const blocker = orderClosedReason(db, order);
   if (blocker) throw correctionError(blocker.code === "ORDER_NOT_FOUND" ? 404 : 409, blocker.code, blocker.message);
-  const today = now.slice(0, 10);
+  const today = cairoDate(now);
   if (dayClosed(db, today)) throw correctionError(409, "DAY_CLOSED", `يومية ${today} متقفلة؛ افتحها الأول من الخزينة.`);
   const amount = round(OrderFinance.normalizeNumber(input.amount));
   if (!Number.isFinite(amount) || amount <= 0) throw correctionError(400, "AMOUNT_INVALID", "اكتب المبلغ اللي وصل.");

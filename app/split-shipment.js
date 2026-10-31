@@ -1,4 +1,7 @@
 "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
 // Partial shipping (Option B): a confirmed pre-order whose books are only partly on the shelf is split, with the
 // customer's agreement to an extra shipping fee, into
@@ -133,7 +136,7 @@ function createSplitShipment(deps) {
     // Part 2, created after part 1 took its copies so the missing books cannot be reserved for it: same customer,
     // address and carrier; cash on delivery; never a website-linked order of its own.
     const child = {
-      id:childId, date:now.slice(0, 10), customerId:order.customerId, customerName:order.customerName, phone:order.phone, alternativePhone:order.alternativePhone || "",
+      id:childId, date:cairoDate(now), customerId:order.customerId, customerName:order.customerName, phone:order.phone, alternativePhone:order.alternativePhone || "",
       governorate:order.governorate || "", city:order.city || "", address:order.address || "", addressMark:order.addressMark || "",
       source:order.source || "", sourcePlatform:order.sourcePlatform || "", shippingCompany:order.shippingCompany || "",
       paymentMethod:"الدفع عند الاستلام", shippingCost:totals.second.shipping, shippingFee:totals.second.shipping, shippingFeeOverride:true, shippingPriceSource:`split:${order.id}`,

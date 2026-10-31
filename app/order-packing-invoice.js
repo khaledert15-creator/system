@@ -1,4 +1,7 @@
 "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
 const Finance = require("./order-finance.js");
 const Inventory = require("./purchase-inventory-integrity.js");
@@ -39,7 +42,7 @@ function ensurePackingInvoice(db, order, user, nextId) {
   }
   const now = new Date().toISOString(), id = nextId("INV-", db.sales || []);
   const sale = {
-    id, operationKey, onlineOrderId:order.id, date:now.slice(0,10), customerId:customer.id,
+    id, operationKey, onlineOrderId:order.id, date:cairoDate(now), customerId:customer.id,
     channel:"متجر إلكتروني", saleOperationType:"طلب أونلاين", status:"معتمدة", payment:order.paymentMethod,
     paymentStatus:payment.paymentStatus, paid:payment.paidAmount, paidAmount:payment.paidAmount,
     remaining:payment.remainingAmount, remainingAmount:payment.remainingAmount,

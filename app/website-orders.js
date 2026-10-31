@@ -1,4 +1,7 @@
 "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
 // Website (Store) orders inside the Sales System: catalog/links snapshots for the Store, the approval preview and the
 // atomic approval itself (INTEGRATION_DOCS/ARCHITECTURE_TO_BE.md §7). Everything here is synchronous and works on a
@@ -373,14 +376,14 @@ function createWebsiteOrders(deps) {
     const customerName = String(storeOrder.customer?.name || "").trim() || phone;
     let customer = db.customers.find(item => !item.deletedAt && normalizeEgyptPhone(item.phone) === phone);
     if (!customer) {
-      customer = { id:nextId("C", db.customers), name:customerName, phone, alternativePhone, governorate, city, address, addressMark, type:"أونلاين", source:"website", createdAt:now, updatedAt:now, deletedAt:null };
+      customer = { id:nextId("C", db.customers), balance:0, name:customerName, phone, alternativePhone, governorate, city, address, addressMark, type:"أونلاين", source:"website", createdAt:now, updatedAt:now, deletedAt:null };
       db.customers.push(customer);
     }
     const preorderConsent = Object.fromEntries([...shortBooks.keys()].map(bookId => [bookId, true]));
     const paymentPlan = amount <= 0 ? "cash_on_delivery" : round(amount) >= totals.total ? "prepaid_full" : "advance_cod";
     const paymentMethod = ({ cash_on_delivery:"الدفع عند الاستلام", advance_cod:"مقدم + الباقي عند الاستلام", prepaid_full:"مدفوع بالكامل مسبقًا" })[paymentPlan];
     const order = {
-      id:nextId("ORD-", db.onlineOrders), date:now.slice(0, 10), customerId:customer.id, customerName, phone, alternativePhone:alternativePhone || customer.alternativePhone || "",
+      id:nextId("ORD-", db.onlineOrders), date:cairoDate(now), customerId:customer.id, customerName, phone, alternativePhone:alternativePhone || customer.alternativePhone || "",
       governorate, city, address, addressMark, source:"website", sourcePlatform:"store",
       websiteOrderNumber, websiteOrderId:storeOrder.id ?? null, integrationId:storeOrder.integrationId || crypto.randomUUID(), chatwootConversationId:storeOrder.chatwootConversationId ? String(storeOrder.chatwootConversationId) : "",
       paymentMethod, shippingCompany, shippingCost:totals.shipping, shippingFee:totals.shipping, shippingFeeOverride:true, shippingPriceSource:`website:${websiteOrderNumber}`,

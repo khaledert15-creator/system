@@ -1,3 +1,5 @@
+// Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
@@ -772,6 +774,8 @@ function requestedShippingFee(record={}) {
 }
 
 function shippingOverrideRequired(db, record={}) {
+  // A counter sale handed over in the shop has no automatic shipping fee (same rule as saleIsInStore in the page).
+  if(record.saleOperationType==="بيع مباشر"&&record.channel!=="متجر إلكتروني"&&!record.onlineOrderId)return Math.abs(requestedShippingFee(record))>.009;
   const governorate=record.governorate||record.customerSnapshot?.governorate||(db.customers||[]).find(item=>item.id===record.customerId)?.governorate||"";
   const automatic=automaticShippingFee(db,governorate,record.lines||[],record.orderDiscount??record.invoiceDiscount??0,record.orderDiscountType??record.invoiceDiscountType??"percent");
   return Math.abs(requestedShippingFee(record)-automatic)>.009;
@@ -884,7 +888,7 @@ function applyQuickOrderPayment(db,order,payload,user) {
     const now=new Date().toISOString(),receiptId=`PAY-${crypto.randomUUID()}`;
     const receipt={id:receiptId,sourceKey,idempotencyKey:sourceKey,orderId:order.id,invoiceId:"",customerId:order.customerId,amount:payment.paidAmount,paymentMethod:String(payload.receiptMethod||payload.paymentMethod||"كاش"),cashAccountId:account.id,cashAccountName:account.name,confirmed:true,status:"confirmed",receivedBy:user.name||user.username,receivedByUsername:user.username,receivedAt:now,source:"quick_order"};
     db.orderPayments.push(receipt);
-    db.cash.push({id:nextId("TX-",db.cash),date:now.slice(0,10),type:"قبض",direction:"in",locked:true,account:account.name,party:order.customerName,amount:receipt.amount,category:"دفعة طلب",orderId:order.id,paymentId:receipt.id,sourceKey:`${sourceKey}:cash`,note:`دفعة مقدمة للطلب ${order.id}`,createdAt:now,createdBy:receipt.receivedBy});
+    db.cash.push({id:nextId("TX-",db.cash),date:cairoDate(now),type:"قبض",direction:"in",locked:true,account:account.name,party:order.customerName,amount:receipt.amount,category:"دفعة طلب",orderId:order.id,paymentId:receipt.id,sourceKey:`${sourceKey}:cash`,note:`دفعة مقدمة للطلب ${order.id}`,createdAt:now,createdBy:receipt.receivedBy});
     appendOrderAudit(db,user,order,"تسجيل دفعة مؤكدة",`${receipt.amount} · ${account.name}`);
     order.paymentReceiptId=receipt.id;
   }
@@ -1049,6 +1053,10 @@ function reconcileReservationWrite(currentDb,nextDb,user) {
         continue;
       }
       if(!previousReservation)continue;
+      // Same books and quantities: the reservation stays exactly as it was. Rebuilding it stamped a new time and user
+      // on every reserved order at each save, which made unrelated saves conflict.
+      const sameLines=JSON.stringify([...aggregateOrderLines(order.lines||[])].sort())===JSON.stringify([...aggregateOrderLines(previousReservation.lines||[])].sort());
+      if(sameLines)continue;
       reserveOrderInventory(nextDb,order,user,order.lines||[]);
     }
   }
@@ -1069,6 +1077,21 @@ function repairDeliveredOrderStages(db,user=BACKORDER_SYSTEM_USER) {
     Object.assign(order,{workflowStage:"delivered",updatedAt:now});
     appendOrderAudit(db,user,order,"تصحيح مرحلة طلب متسلّم",`كان «تم التسليم» وواقف على «اتشحن» · ${shipment.id}`);
     fixed.push(order.id);
+  }
+  return fixed;
+}
+
+// Refusals recorded with the old-returns repair tool left their parcel without refusedAt, so tracking could still flip
+// the order. The parcel of a refused order is marked refused once.
+function repairRefusedShipments(db) {
+  const fixed=[];
+  for(const order of db.onlineOrders||[]){
+    if(order.deletedAt||!order.refusal)continue;
+    const shipment=(db.shipments||[]).find(item=>!item.deletedAt&&!item.cancelledAt&&(item.id===order.shipmentId||item.onlineOrderId===order.id));
+    if(!shipment||shipment.refusedAt)continue;
+    const now=new Date().toISOString();
+    Object.assign(shipment,{status:"مرتجع",currentStatus:"مرتجع",normalizedStatus:"returned",shippingStatus:"returned",refusedAt:order.refusedAt||now,updated:now,updatedAt:now});
+    fixed.push(shipment.id);
   }
   return fixed;
 }
@@ -1458,6 +1481,8 @@ function createOrderCollectionAtomic(db,payload,user) {
   const previous=next.orderCollections.find(item=>item.sourceKey===sourceKey&&item.status!=="reversed");
   if(previous)throw Object.assign(new Error("تم تسجيل تحصيل هذه الشحنة سابقًا."),{status:409,previous});
   const values=shipmentCollectionValues(next,shipment);
+  // toCents reads Arabic digits; anything it reads as 0 that is not written as zero is not a number.
+  if(!receivedProvided&&(payload.amount===null||payload.amount===undefined||String(payload.amount).trim()===""||(toCents(payload.amount)===0&&!/^[\s0٠۰.,٫]+$/.test(String(payload.amount)))))throw Object.assign(new Error("قيمة التحصيل لازم تكون رقم."),{status:400,code:"INVALID_AMOUNT"});
   const amountCents=receivedProvided?receivedCents+toCents(values.expectedCommission)+toCents(values.shippingCost):toCents(payload.amount);
   if(amountCents<0)throw Object.assign(new Error("قيمة التحصيل لا يمكن أن تكون سالبة."),{status:400});
   const differenceCents=amountCents-toCents(values.expectedCollection);
@@ -1467,6 +1492,8 @@ function createOrderCollectionAtomic(db,payload,user) {
   if(registrationType==="settled"&&!canFinance(next,user,"finance.collection.settle"))throw Object.assign(new Error("ليس لديك صلاحية استلام التحويل في الخزنة."),{status:403});
   const account=String(payload.account||"").trim();
   if(registrationType==="settled"&&!account)throw Object.assign(new Error("يجب اختيار الخزنة أو الحساب."),{status:400});
+  // The money lands in a real, active cash account; a typed name that matches none would hide it from every balance.
+  if(registrationType==="settled"&&!(next.cashAccounts||[]).some(item=>!item.deletedAt&&item.active!==false&&(item.name===account||item.id===account)))throw Object.assign(new Error("الخزنة دي مش موجودة أو موقوفة."),{status:400,code:"CASH_ACCOUNT_NOT_FOUND"});
   const actor=financeActor(user),now=new Date().toISOString();
   const collection={
     id:nextId("COL-",next.orderCollections),sourceKey,idempotencyKey:sourceKey,
@@ -1475,7 +1502,7 @@ function createOrderCollectionAtomic(db,payload,user) {
     onlineOrderId:shipment.onlineOrderId||values.sale?.onlineOrderId||"",
     customerName:shipment.customer||shipment.customerName||values.customer?.name||"",
     customerPhone:shipment.phone||shipment.customerPhone||values.customer?.phone||"",
-    carrier:values.company,collectionDate:String(payload.collectionDate||now.slice(0,10)),
+    carrier:values.company,collectionDate:String(payload.collectionDate||cairoDate(now)),
     productsValue:values.productsValue,customerShippingCharge:values.customerShippingCharge,
     expectedCollection:values.expectedCollection,amount:fromCents(amountCents),
     difference:fromCents(differenceCents),differenceReason,notes:String(payload.notes||"").trim(),
@@ -1609,14 +1636,14 @@ function approveSettlementAtomic(db, settlementId, user) {
   const actual=fromCents(toCents(settlement.actualNetSettlement||0)),difference=fromCents(toCents(actual)-toCents(expected));
   if(actual<0)throw Object.assign(new Error("لا يمكن اعتماد مبلغ تسوية سالب."),{status:400});
   if(Math.abs(difference)>.01&&!settlement.differenceReason)throw Object.assign(new Error("يجب تحديد سبب الفرق قبل الاعتماد."),{status:400});
-  const settlementCash={id:nextId("TX-",next.cash),date:settlement.transferDate||now.slice(0,10),type:"قبض",direction:"in",movementType:"تسوية شركة شحن",account:settlement.account,party:settlement.company,amount:actual,category:"تسوية شركة شحن",settlementId:settlementId,sourceKey:cashKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
+  const settlementCash={id:nextId("TX-",next.cash),date:settlement.transferDate||cairoDate(now),type:"قبض",direction:"in",movementType:"تسوية شركة شحن",account:settlement.account,party:settlement.company,amount:actual,category:"تسوية شركة شحن",settlementId:settlementId,sourceKey:cashKey,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
   next.cash.push(settlementCash);
   if(process.env.NODE_ENV==="test"&&process.env.FINANCE_TEST_FAIL_STAGE==="after-cash")throw Object.assign(new Error("Injected finance test failure."),{status:500});
   const addExpense=(line,amount,type,key)=>{
     if(Number(amount)<=0)return;
     if(next.expenses.some(item=>item.sourceKey===key)||next.cash.some(item=>item.sourceKey===key))throw Object.assign(new Error("اكتُشف قيد مكرر داخل التسوية."),{status:409});
     const expenseType=financeTypeByName(next,"expense",type);
-    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||now.slice(0,10),expenseTypeId:expenseType?.id||"",expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,carrier:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,cashTransactionId:settlementCash.id,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
+    const expense={id:nextId("EXP-",next.expenses),date:settlement.transferDate||cairoDate(now),expenseTypeId:expenseType?.id||"",expenseType:type,amount:Number(amount),account:settlement.account,beneficiary:settlement.company,carrier:settlement.company,source:"تسوية شركة شحن",shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,cashTransactionId:settlementCash.id,sourceKey:key,status:"معتمد",createdAt:now,approvedAt:now,createdBy:actor.name,approvedBy:actor.name};
     next.expenses.push(expense);
     const expenseCash={id:nextId("TX-",next.cash),date:expense.date,type:"صرف",direction:"out",movementType:"مصروف",account:settlement.account,party:settlement.company,amount:expense.amount,category:type,expenseId:expense.id,shipmentId:line.shipmentId,orderId:line.orderId||"",invoiceId:line.invoiceId||line.orderId||"",settlementId,sourceKey:key,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name};
     next.cash.push(expenseCash);expense.cashMovementId=expenseCash.id;
@@ -4139,7 +4166,7 @@ const server = http.createServer(async (req, res) => {
       if(missingCustomerFields.length)return send(res,400,{ok:false,code:"MISSING_CUSTOMER_FIELDS",fields:missingCustomerFields,message:quickOrderValidationMessage(missingCustomerFields)});
       payload.city=quickOrderCity(payload,customer||{});
       if(!customer){
-        customer={id:nextId("C",db.customers),name:String(payload.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),createdAt:now,updatedAt:now,deletedAt:null};
+        customer={id:nextId("C",db.customers),balance:0,name:String(payload.customerName).trim(),phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone),governorate:String(payload.governorate||"").trim(),city:String(payload.city||"").trim(),address:String(payload.address||"").trim(),addressMark:String(payload.addressMark||"").trim(),createdAt:now,updatedAt:now,deletedAt:null};
         db.customers.push(customer);
       }
       const requested=Array.isArray(payload.lines)?payload.lines:[];
@@ -4159,7 +4186,7 @@ const server = http.createServer(async (req, res) => {
       const duplicateMatches=DuplicateOrders.blockingMatches(DuplicateOrders.findCustomerOrders(db.onlineOrders,{phone,alternativePhone:payload.alternativePhone,customerId:customer?.id,customerName:payload.customerName||customer?.name,governorate:payload.governorate||customer?.governorate,whatsAppPhone:identity.customerWhatsAppPhone,chatwootContactId:identity.chatwootContactId}));
       const duplicateReason=String(payload.duplicateOverrideReason||"").trim();
       if(duplicateMatches.length&&!DuplicateOrders.validReason(duplicateReason))return send(res,409,{ok:false,code:"POSSIBLE_DUPLICATE_ORDER",message:`لهذا العميل طلب مفتوح (${duplicateMatches.map(match=>`${match.order.id} · ${match.label}`).join("، ")}). أضف على الطلب الموجود أو اكتب سبب تسجيل طلب منفصل.`,orders:duplicateMatches.map(match=>({id:match.order.id,state:match.state,strength:match.strength,label:match.label}))});
-      const order={id:nextId("ORD-",db.onlineOrders),date:now.slice(0,10),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",quickOrderRequestId:requestId,chatwootContactId:identity.chatwootContactId,customerWhatsAppPhone:identity.customerWhatsAppPhone,sourcePlatform:"chatwoot",chatwootConversationId:identity.chatwootConversationId,...(chatwood.identity?{chatwootChannel:chatwood.identity.channel,chatwoodLink:quickOrderChatwoodLink(chatwood.identity,user,now)}:{}),paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
+      const order={id:nextId("ORD-",db.onlineOrders),date:cairoDate(now),customerId:customer.id,customerName:customer.name,phone:customer.phone,alternativePhone:normalizeCustomerPhone(payload.alternativePhone)||customer.alternativePhone||"",governorate:String(payload.governorate||customer.governorate||"").trim(),city:String(payload.city||customer.city||"").trim(),address:String(payload.address||customer.address||"").trim(),addressMark:String(payload.addressMark||customer.addressMark||"").trim(),source:"whatsapp",quickOrderRequestId:requestId,chatwootContactId:identity.chatwootContactId,customerWhatsAppPhone:identity.customerWhatsAppPhone,sourcePlatform:"chatwoot",chatwootConversationId:identity.chatwootConversationId,...(chatwood.identity?{chatwootChannel:chatwood.identity.channel,chatwoodLink:quickOrderChatwoodLink(chatwood.identity,user,now)}:{}),paymentMethod:payload.paymentMethod||"الدفع عند الاستلام",shippingCompany,shippingCost:totals.shipping,shippingFee:totals.shipping,shippingFeeOverride:Boolean(payload.shippingManual||payload.shippingFeeOverride),shippingPriceSource:String(payload.shippingPriceSource||((payload.shippingManual||payload.shippingFeeOverride)?"manual":`governorate:${String(payload.governorate||customer.governorate||"").trim()}`)),orderDiscount:Number(payload.orderDiscount||0),orderDiscountType:payload.orderDiscountType==="amount"?"amount":"percent",status:"مسودة",workflowStage:"draft",lines:totals.lines,subtotal:totals.subtotal,discountTotal:totals.discountTotal,total:totals.total,notes:normalizedNote,createdAt:now,createdBy:user.name||user.username,createdByUsername:user.username,updatedAt:now,deletedAt:null};
       try{applyQuickOrderPayment(db,order,payload,user);}catch(error){return send(res,error.status||400,{ok:false,code:error.code,message:error.message});}
       if(lines.some(line=>line.discountOverridden)||totals.orderDiscountAmount>0)appendOrderAudit(db,user,order,"تعديل خصم الطلب",JSON.stringify({items:lines.filter(line=>line.discountOverridden).map(line=>({bookId:line.bookId,original:{discount:line.systemDiscount,type:line.systemDiscountType},next:{discount:line.discount,type:line.discountType}})),orderDiscount:{value:Number(payload.orderDiscount||0),type:payload.orderDiscountType||"percent"},reason:String(payload.discountReason||"تعديل مصرح من شاشة الطلب السريع")}));
       // The required deposit at the time the order is taken (WhatsApp default); what was paid is kept apart.
@@ -4183,6 +4210,9 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.saleId)return send(res,409,{ok:false,message:"لا يمكن تعديل الكتب أو الأسعار بعد إنشاء الفاتورة. استخدم إجراءات التصحيح الحالية."});
+      // A screen that opened the order sends it back as it saw it; a change saved meanwhile from another screen is not
+      // overwritten silently (pages without the stamp keep working as before).
+      if(payload.orderStamp&&JSON.stringify(packingEditStamp(order))!==JSON.stringify(payload.orderStamp))return send(res,409,{ok:false,code:"ORDER_CHANGED",message:`الطلب ${order.id} اتعدّل من شاشة تانية بعد ما فتحته. افتحه تاني عشان تشوف آخر نسخة قبل ما تحفظ.`});
       // A cancelled, refused or returned order holds no copies; editing it would reserve copies for an order that never ships.
       if(order.cancelledAt||order.refusal||["cancelled","returned","delivered"].includes(order.workflowStage)||["ملغي","مرتجع","تم التسليم"].includes(order.status))return send(res,409,{ok:false,code:"ORDER_CLOSED",message:"الطلب ده مقفول (ملغي أو مرتجع أو اتسلّم)؛ مينفعش يتعدّل."});
       if(["awaiting_shipping","shipped"].includes(order.workflowStage)||order.preparedAt)return send(res,409,{ok:false,code:"REOPEN_PREPARATION_REQUIRED",message:"تم تجهيز هذا الطلب بالفعل. استخدم «إعادة فتح للتجهيز» قبل تعديل الكتب أو الأسعار."});
@@ -4609,7 +4639,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route.startsWith("/api/customers/") && route.endsWith("/ledger") && req.method === "GET") {
-      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());return send(res,200,{ok:true,rows:OrderRefunds.customerLedger(db,route.split("/")[3]),revision:dbRevision()});
+      const user=sessionUser(req);if(!user)return send(res,401,{ok:false,code:"AUTHENTICATION_REQUIRED",message:"انتهت جلسة الدخول، برجاء تسجيل الدخول مرة أخرى"});const db=ensureTrackingDb(readDb());
+      // A customer's account is for the screens that deal with money or customers.
+      if(!Permissions.viewsFor(db.settings||{},user).some(view=>["parties","sales","accounting"].includes(view)))return send(res,403,{ok:false,code:"PERMISSION_DENIED",message:"ليس لديك صلاحية عرض حساب العميل."});
+      return send(res,200,{ok:true,rows:OrderRefunds.customerLedger(db,route.split("/")[3]),revision:dbRevision()});
     }
 
     if (route.startsWith("/api/customers/") && route.endsWith("/credits/use") && req.method === "POST") {
@@ -5151,7 +5184,7 @@ const server = http.createServer(async (req, res) => {
       try{
         const db=ensureFinanceDb(readDb()),payload=JSON.parse(await readBody(req)||"{}"),month=String(payload.month||"");
         const summary=postalMonthSummary(db,month);
-        if(month>=new Date().toISOString().slice(0,7))return send(res,400,{ok:false,message:"اعتمد كشف البريد بعد انتهاء الشهر فقط."});
+        if(month>=cairoDate().slice(0,7))return send(res,400,{ok:false,message:"اعتمد كشف البريد بعد انتهاء الشهر فقط."});
         if(db.postalStatements.some(item=>item.month===month&&!item.deletedAt))return send(res,409,{ok:false,message:"كشف هذا الشهر معتمد بالفعل. لا يمكن اعتماده مرتين."});
         const billedShipmentCount=PostalShipping.numberFromInput(payload.billedShipmentCount),grossCost=moneyInput(payload.grossCost,"إجمالي تكلفة البريد"),discount=moneyInput(payload.discount,"خصم البريد"),netDue=PostalShipping.statementNet(grossCost,discount),differenceReason=String(payload.differenceReason||"").trim();
         if(!Number.isInteger(billedShipmentCount)||billedShipmentCount<0)return send(res,400,{ok:false,message:"عدد شحنات الكشف غير صالح."});
@@ -5186,7 +5219,7 @@ const server = http.createServer(async (req, res) => {
         const amount=moneyInput(payload.amount,"مبلغ السداد"),outstanding=postalOutstanding(db,month),account=String(payload.account||"").trim();
         if(amount<=0||toCents(amount)>toCents(outstanding))return send(res,400,{ok:false,message:"مبلغ السداد يجب أن يكون أكبر من صفر ولا يتجاوز المتبقي على كشف هذا الشهر."});
         if(!(db.cashAccounts||[]).some(item=>!item.deletedAt&&item.active!==false&&item.name===account))return send(res,400,{ok:false,message:"اختر خزنة أو حسابًا نشطًا."});
-        const date=String(payload.date||new Date().toISOString().slice(0,10));if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return send(res,400,{ok:false,message:"تاريخ السداد غير صالح."});
+        const date=String(payload.date||cairoDate());if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return send(res,400,{ok:false,message:"تاريخ السداد غير صالح."});
         const now=new Date().toISOString(),actor=financeActor(user),payment={id:nextId("POSTPAY-",db.postalPayments),operationKey,month,date,account,amount,reference:String(payload.reference||"").trim().slice(0,100),createdAt:now,createdBy:actor.name,createdByUsername:actor.username};
         db.postalPayments.push(payment);db.cash.push({id:nextId("TX-",db.cash),date,type:"صرف",direction:"out",movementType:"سداد مديونية البريد",account,party:"البريد المصري",amount,category:"سداد مديونية البريد",postalPaymentId:payment.id,sourceKey:`postal-payment:${operationKey}`,locked:true,status:"معتمد",createdAt:now,createdBy:actor.name,createdByUsername:actor.username});
         AuditIds.appendAuditRecord(db.audit,{operationType:"POSTAL_PAYMENT_RECORDED",action:"سداد مديونية البريد المصري",entity:"المالية",entityId:payment.id,user:actor.name,username:actor.username,performedAt:now,details:`${month} · ${amount} · ${account} · ${payment.reference}`});
@@ -5486,7 +5519,7 @@ const server = http.createServer(async (req, res) => {
         if (fs.existsSync(DB_PATH)) {
           const db = ensureTrackingDb(readDb());
           settings = defaultTrackingSettings(db.settings || {});
-          const todayKey = new Date().toISOString().slice(0, 10);
+          const todayKey = cairoDate();
           queue = {
             eligible: activeTrackableShipments(db, { manual: false }).length,
             pending: (db.shipments || []).filter(item => item.trackingRetryPending).length,
@@ -5669,7 +5702,9 @@ server.listen(PORT, HOST, () => {
       if (reserved.orderFixes.length || reserved.bookFixes.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"RESERVED_STOCK_REPAIRED", ...reserved }));
       const delivered = repairDeliveredOrderStages(db);
       if (delivered.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"DELIVERED_ORDER_STAGES_REPAIRED", orders:delivered }));
-      if (changed || reserved.orderFixes.length || reserved.bookFixes.length || delivered.length) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
+      const refused = repairRefusedShipments(db);
+      if (refused.length) console.log(JSON.stringify({ timestamp:new Date().toISOString(), operationType:"REFUSED_SHIPMENTS_REPAIRED", shipments:refused }));
+      if (changed || reserved.orderFixes.length || reserved.bookFixes.length || delivered.length || refused.length) { writeDb(db, { operationType:"SHIPMENTS_SYNCED_WITH_ORDERS", performedBy:"system" }); console.log(`Synced ${changed} shipment(s) with their orders.`); }
     } catch (error) { console.error("Shipment/order sync failed:", error.message); }
   }, 2000).unref();
 });

@@ -7,6 +7,9 @@
   else root.OrderRefusals = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function (Refunds, Integrity) {
   "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
   // A refused delivery is not a customer return: the customer never received the books, so the whole invoice is
   // reversed and the only money left to settle is the deposit and the shipping cost the customer is asked to cover.
@@ -179,7 +182,7 @@
     const refusedShipment = preview.shipmentId ? list(db, "shipments").find(item => item.id === preview.shipmentId) : null;
     if (refusedShipment) checkCarrierCharges(db, refusedShipment, { charged: payload.carrierCharged, returnFee: payload.carrierReturnFee || 0 }, actor.now || new Date().toISOString());
     if (plan.refund > 0 && !list(db, "cashAccounts").some(item => !item.deletedAt && item.active !== false && item.id === (payload.cashAccountId || preview.depositCashAccountId))) throw fail("اختر الخزنة التي سيُرد منها الديبوزت.", "CASH_ACCOUNT_REQUIRED", 400);
-    const now = actor.now || new Date().toISOString(), date = String(payload.date || now).slice(0, 10);
+    const now = actor.now || new Date().toISOString(), date = payload.date ? String(payload.date).slice(0, 10) : cairoDate(now);
     const order = list(db, "onlineOrders").find(item => item.id === orderId);
     const sale = list(db, "sales").find(item => item.id === preview.invoiceId);
     const customer = list(db, "customers").find(item => item.id === sale.customerId);
@@ -199,7 +202,7 @@
     Object.assign(sale, {
       status: "مرتجع", refusal,
       returnedRemaining: round(Number(sale.returnedRemaining || 0) + codRemaining), remaining: plan.extraDue, remainingAmount: plan.extraDue,
-      returnedPaid: round(Number(sale.returnedPaid || 0) + plan.refund), paid: round(Math.max(0, Number(sale.paid || 0) - plan.refund)),
+      returnedPaid: round(Number(sale.returnedPaid || 0) + plan.refund), paid: round(Math.max(0, Number(sale.paid || 0) - plan.refund)), paidAmount: round(Math.max(0, Number(sale.paid || 0) - plan.refund)),
       returnedAt: now, returnReason: reason, updatedAt: now
     });
     db.returns.push({
@@ -275,7 +278,7 @@
     if (customer) customer.balance = round(Number(customer.balance || 0) + delta);
     if (extraRefund > 0) {
       db.cash = list(db, "cash");
-      db.cash.push({ id: nextNumber("TX-", db.cash), date: now.slice(0, 10), type: "صرف", direction: "out", locked: true, account: account.name, accountId: account.id, party: row.customerName, customerId: sale.customerId, amount: extraRefund, category: "مرتجع مبيعات - رفض استلام", orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}`, note: reason, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" });
+      db.cash.push({ id: nextNumber("TX-", db.cash), date: cairoDate(now), type: "صرف", direction: "out", locked: true, account: account.name, accountId: account.id, party: row.customerName, customerId: sale.customerId, amount: extraRefund, category: "مرتجع مبيعات - رفض استلام", orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}`, note: reason, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" });
     }
     // A payout that never happened is cancelled by an opposite cash entry, so the cash box history stays complete.
     let reversedCash = 0;
@@ -283,7 +286,7 @@
       const returns = saleReturns(db, sale.id), returnIds = new Set(returns.map(item => item.id));
       db.cash = list(db, "cash");
       for (const tx of db.cash.filter(item => !item.deletedAt && item.type === "صرف" && returnIds.has(item.returnId) && !item.reversedBy)) {
-        const reversal = { id: nextNumber("TX-", db.cash), date: now.slice(0, 10), type: "قبض", direction: "in", locked: true, account: tx.account, accountId: tx.accountId || "", party: tx.party || row.customerName, customerId: sale.customerId, amount: round(tx.amount), category: "عكس مرتجع مبيعات لم يُصرف", returnId: tx.returnId, reversesId: tx.id, orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}:reverse:${tx.id}`, note: `المبلغ المسجل رد نقدي في ${tx.id} لم يُصرف للعميل — ${reason}`, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" };
+        const reversal = { id: nextNumber("TX-", db.cash), date: cairoDate(now), type: "قبض", direction: "in", locked: true, account: tx.account, accountId: tx.accountId || "", party: tx.party || row.customerName, customerId: sale.customerId, amount: round(tx.amount), category: "عكس مرتجع مبيعات لم يُصرف", returnId: tx.returnId, reversesId: tx.id, orderId: sale.onlineOrderId, invoiceId: sale.id, sourceKey: `refusal-repair:${operationKey}:reverse:${tx.id}`, note: `المبلغ المسجل رد نقدي في ${tx.id} لم يُصرف للعميل — ${reason}`, createdAt: now, createdBy: actor.name || actor.username, status: "معتمد" };
         db.cash.push(reversal);
         tx.reversedBy = reversal.id;
         reversedCash = round(reversedCash + Number(tx.amount || 0));
@@ -296,6 +299,9 @@
     for (const item of repairedReturns) Object.assign(item, { refusalRepaired: true, updatedAt: now });
     // Reports count cash refunds from the return records, so the deposit paid out now belongs to them too.
     if (extraRefund > 0 && repairedReturns.length) { const last = repairedReturns.at(-1); last.paidAmount = round(Number(last.paidAmount || 0) + extraRefund); }
+    // The parcel came back refused too: refusedAt keeps tracking from flipping the order again.
+    const repairedShipment = order && list(db, "shipments").find(item => !item.deletedAt && !item.cancelledAt && (item.id === order.shipmentId || item.onlineOrderId === order.id));
+    if (repairedShipment && !repairedShipment.refusedAt) Object.assign(repairedShipment, { status: "مرتجع", currentStatus: "مرتجع", normalizedStatus: "returned", shippingStatus: "returned", refusedAt: order.refusedAt || sale.returnedAt || now, updated: now, updatedAt: now });
     if (order) Object.assign(order, { ...(order.refusal ? {} : { refusal: { ...repair, repaired: true } }), status: "مرتجع", workflowStage: "returned", refusedAt: order.refusedAt || sale.returnedAt || now, paidAmount: round(row.deposit - plan.refund), remainingAmount: plan.extraDue, remaining: plan.extraDue, updatedAt: now });
     return { existing: false, sale, repair };
   }

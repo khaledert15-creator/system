@@ -4,6 +4,9 @@
   else root.OrderRefunds = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
+  // Business dates are Cairo dates: work between midnight and 2–3 am belongs to the new day, not the UTC one.
+  const cairoDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+
 
   const round = value => Number(Number(value || 0).toFixed(2));
   const list = (db, key) => Array.isArray(db?.[key]) ? db[key] : [];
@@ -80,7 +83,7 @@
     db.orderRefunds.push(settlement);
     if (type === "cash_refund") {
       db.cash = list(db, "cash");
-      db.cash.push({ id:`TX-${randomUUID()}`, date:now.slice(0,10), type:"صرف", direction:"out", locked:true, account:account.name, accountId:account.id, party:preview.customerName, customerId:preview.customerId, amount, category:"رد مبلغ طلب", orderId:preview.orderId, invoiceId:preview.invoiceId, paymentId, refundId, sourceKey:`refund:${refundId}`, note:settlement.reason, createdAt:now, createdBy:settlement.performedBy, status:"معتمد" });
+      db.cash.push({ id:`TX-${randomUUID()}`, date:cairoDate(now), type:"صرف", direction:"out", locked:true, account:account.name, accountId:account.id, party:preview.customerName, customerId:preview.customerId, amount, category:"رد مبلغ طلب", orderId:preview.orderId, invoiceId:preview.invoiceId, paymentId, refundId, sourceKey:`refund:${refundId}`, note:settlement.reason, createdAt:now, createdBy:settlement.performedBy, status:"معتمد" });
     }
     if (type === "customer_credit" || type === "pending_credit") {
       db.customerCredits = list(db, "customerCredits");
