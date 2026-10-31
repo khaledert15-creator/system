@@ -732,7 +732,7 @@ function userFinanceActions(db,user={}) {
 
 // Screen actions the page checks with canAction(): the user's or role's saved list when there is one, else the defaults
 // (same lists as ACTION_ROLES in app/app.js).
-const APP_ACTION_DEFAULTS={"edit-sale-payment":["مالك","مدير","محاسب"],"cancel-sale":["مالك","مدير"],"close-sales-day":["مالك","مدير"]};
+const APP_ACTION_DEFAULTS={"edit-sale-payment":["مالك","مدير","محاسب"],"cancel-sale":["مالك","مدير"],"close-sales-day":["مالك","مدير"],"edit-supplier-balance":["مالك","مدير"]};
 function canAppAction(db,user,action) {
   const role=financeRole(user);
   if(role==="مالك"||user?.username==="owner")return true;
@@ -1837,7 +1837,16 @@ function validateRoleWrites(currentDb, nextDb, user) {
     const field = ["amount","account","accountId","cashAccountId","date","category","type","collectionId","settlementId","sourceKey"].find(name => !isDeepStrictEqual(old[name] ?? null, row[name] ?? null));
     if (field) return fail("LINKED_FINANCE_PROTECTED", `${row.id} مربوط بتحصيل أو تسوية؛ إلغاؤه بقيد عكسي بس.`, { key, id:row.id, field });
   }
+  // A supplier's direct debt edits are its history: a save may add new ones, never change or drop old ones.
+  for (const [old, row] of changedRows(currentDb.suppliers || [], nextDb.suppliers || []).changed) {
+    const was = old.balanceAdjustments || [], now = row.balanceAdjustments || [];
+    if (now.length < was.length || was.some((item, index) => !isDeepStrictEqual(item, now[index]))) return fail("SUPPLIER_BALANCE_HISTORY_PROTECTED", `سجل تعديلات مديونية المورد «${row.name || row.id}» مبيتعدّلش. حدّث الصفحة وأعد المحاولة.`, { key:"suppliers", id:row.id });
+  }
   if (role === "مالك" || user.username === "owner") return { ok:true };
+  // A supplier's debt is edited directly only with its own permission; purchases and returns still move it.
+  for (const [old, row] of changedRows(currentDb.suppliers || [], nextDb.suppliers || []).changed) {
+    if ((row.balanceAdjustments || []).length > (old.balanceAdjustments || []).length && !canAppAction(currentDb, user, "edit-supplier-balance")) return fail("WRITE_PERMISSION_DENIED", `تعديل مديونية المورد «${row.name || row.id}» مباشرة مش من صلاحيتك.`, { key:"suppliers", id:row.id });
+  }
   // An invoice's money and state change through the payment and cancel screens only; a save from any other screen
   // may not mark it paid, cancel or delete it. Values the page only fills in for old records (empty before) pass.
   const filled = (old, field) => old[field] !== undefined && old[field] !== null && old[field] !== "";

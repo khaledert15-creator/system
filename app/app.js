@@ -50,6 +50,7 @@ const ACTION_ROLES = {
   "manage-finance-types": ["مالك","مدير"], "reverse-financial-transaction": ["مالك","مدير"],
   "view-financial-reports": ["مالك","مدير","محاسب"], "approve-settlement-difference": ["مالك","مدير"],
   "add-cash-account": ["مالك","مدير"], "edit-cash-account": ["مالك","مدير"],
+  "edit-supplier-balance": ["مالك","مدير"],
   "customize-role": ["مالك","مدير"], "customize-user": ["مالك","مدير"], "manage-users": ["مالك"],
   "show-tracking-debug": ["مالك","مدير"],
   "omni-refresh": ["مالك","مدير","كاشير","شحن"], "omni-open": ["مالك","مدير","كاشير","شحن"],
@@ -93,7 +94,7 @@ const PERMISSION_ACTIONS = [
   ["طلبات الأونلاين", [["online-order-stat","فلترة الطلبات من المربعات"],["add-online-order","إضافة طلب أونلاين"],["view-online-order","عرض طلب أونلاين"],["edit-online-order","تعديل طلب أونلاين"],["convert-order-sale","إنشاء فاتورة من الطلب"],["create-order-shipment","إنشاء شحنة من الطلب"],["print-online-order","طباعة طلب أونلاين"],["order.quick.create","إنشاء طلب واتساب سريع"],["order.quick.confirm","تأكيد طلب واتساب"],["order.quick.edit","تعديل طلب واتساب"],["order.discount.override","تعديل خصم النظام"],["order.shipping.override","تعديل رسوم الشحن يدويًا"],["order.payment.receive","تسجيل استلام دفعة"],["order.prepare","تجهيز الطلبات"],["order.pack","تغليف الطلبات"],["order.shipping","تسليم الطلب للشحن"],["order.website.view","عرض طلبات الموقع"],["order.website.approve","اعتماد طلبات الموقع"],["order.deposit.override","قبول عربون أقل من المطلوب وتعديل عربون طلب"],["order.deposit.default","تعديل العربون الافتراضي لطلبات الموقع"],["order.split.shipment","تقسيم شحن الطلب (شحن المتوفر أولًا)"],["order.chatwood.correct","تصحيح ربط الطلبات بمحادثات Chatwood"]]],
   ["المشتريات", [["add-purchase-line","إضافة صنف شراء"],["save-purchase","حفظ مستند شراء"],["show-purchases-list","عرض مستندات الشراء"],["receive-purchase","اعتماد استلام مشتريات"],["delete-purchase","حذف مستند شراء"]]],
   ["المرتجعات", [["new-sale-return-customer","مرتجع مبيعات مستقل"],["new-purchase-return-supplier","مرتجع مشتريات مستقل"],["open-return-search","بحث المرتجعات"],["open-sale-return-list","مرتجع من فاتورة بيع"],["open-purchase-return-list","مرتجع من فاتورة شراء"],["start-sale-return","بدء مرتجع بيع"],["start-purchase-return","بدء مرتجع شراء"],["view-return","عرض مرتجع"],["print-return","طباعة مرتجع"]]],
-  ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
+  ["العملاء والموردون", [["add-customer","إضافة عميل"],["add-supplier","إضافة مورد"],["statement","كشف حساب"],["edit-party","تعديل عميل/مورد"],["edit-supplier-balance","تعديل مديونية المورد مباشرة"],["delete-party","حذف عميل/مورد"],["party-voucher","إيصال طرف"],["view-party-voucher","عرض إيصال طرف"],["cancel-party-voucher","إلغاء إيصال طرف"]]],
   ["الشحن", [["view-shipment","عرض شحنة"],["update-shipment","تعديل شحنة"],["add-shipment-complaint","إضافة شكوى شحنة"],["manage-shipment-complaints","إدارة شكاوى الشحنة"],["delete-shipment","حذف شحنة"],["update-tracking-now","تتبع شحنة الآن"],["update-all-tracking","تتبع الشحنات النشطة"],["test-local-rpa","اختبار خدمة التتبع"],["retry-pending-tracking","إعادة محاولة مهام التتبع"],["show-tracking-debug","عرض بيانات تشخيص التتبع"],["shipping-companies","شركات الشحن"],["edit-shipping-company","تعديل شركة شحن"],["delete-shipping-company","حذف شركة شحن"]]],
   ["المالية", [["finance.collection.view","عرض تحصيل الأوردرات"],["finance.collection.create","تسجيل تحصيل لدى شركة الشحن"],["finance.collection.settle","استلام تحصيل في الخزنة"],["finance.collection.reverse","عكس تحصيل أوردر"],["add-expense","إضافة مصروف"],["approve-expense","اعتماد مصروف"],["add-other-income","إضافة إيراد آخر"],["approve-other-income","اعتماد إيراد آخر"],["create-settlement","إنشاء تسوية تحصيل"],["approve-settlement","اعتماد تسوية"],["approve-settlement-difference","اعتماد فرق تسوية"],["manage-finance-types","إدارة الأنواع المالية"],["reverse-financial-transaction","إنشاء قيد عكسي"],["view-financial-reports","عرض التقارير المالية"],["add-cash-in","قبض عام"],["add-cash-out","صرف عام"],["view-cash","تفاصيل حركة مالية"],["edit-cash","تعديل حركة مالية"],["delete-cash","حذف حركة مالية"],["add-cash-account","إضافة خزنة"],["edit-cash-account","تعديل خزنة"],["cash-transfer","تحويل بين الخزن"],["trial-balance","ميزان المراجعة"],["chart-accounts","دليل الحسابات"],["print-cash-daily","يومية الخزنة"]]],
   ["التقارير", [["open-report","فتح تقرير"],["export-report","تصدير CSV"],["view-best-customers","عرض تقرير أفضل العملاء"],["view-best-suppliers","عرض تقرير أفضل الموردين"],["whatsapp-report","تجهيز تقرير واتساب"],["print-statement","طباعة كشف حساب"],["print-voucher","طباعة إيصال"]]],
@@ -6673,7 +6674,7 @@ function partyRow(item, isCustomers, partyKind) {
             <td class="money">${money(item.creditLimit)}</td>
             <td class="money ${item.balance > item.creditLimit && item.creditLimit ? "text-danger" : ""}">${money(item.balance)}</td>
             ${isCustomers ? `<td>${item.points || 0}</td>` : ""}
-            <td><div class="row-actions"><button class="row-action" data-action="statement" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">كشف حساب</button><button class="row-action" data-action="party-voucher" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}" data-voucher-type="استلام">استلام</button><button class="row-action" data-action="party-voucher" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}" data-voucher-type="دفع">دفع</button><button class="row-action" data-action="edit-party" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">تعديل</button><button class="row-action text-danger" data-action="delete-party" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">حذف</button></div></td>
+            <td><div class="row-actions"><button class="row-action" data-action="statement" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">كشف حساب</button><button class="row-action" data-action="party-voucher" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}" data-voucher-type="استلام">استلام</button><button class="row-action" data-action="party-voucher" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}" data-voucher-type="دفع">دفع</button><button class="row-action" data-action="edit-party" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">تعديل</button>${!isCustomers && canAction("edit-supplier-balance") ? `<button class="row-action" data-action="edit-supplier-balance" data-id="${esc(item.id)}">تعديل المديونية</button>` : ""}<button class="row-action text-danger" data-action="delete-party" data-id="${esc(item.id)}" data-kind="${esc(partyKind)}">حذف</button></div></td>
           </tr>`;
 }
 
@@ -8916,6 +8917,20 @@ function addPartyModal(kind, item = null, options = {}) {
   if (options.returnToSale) modalBody.querySelector('#party-form [name="name"]')?.focus();
 }
 
+// Direct correction of a supplier's debt; every change is kept on the supplier and shown in its statement.
+function supplierBalanceModal(supplier) {
+  if (!supplier) return toast("المورد غير موجود.", "error");
+  openModal(`تعديل مديونية: ${supplier.name}`, "ملف الأطراف", `
+    <form id="supplier-balance-form" data-id="${esc(supplier.id)}">
+      <div class="form-grid">
+        <div class="form-field"><label>المديونية الحالية</label><input type="number" value="${Number(supplier.balance || 0)}" readonly></div>
+        <div class="form-field"><label class="required">المديونية الجديدة</label><input name="balance" type="number" step="0.01" required value="${Number(supplier.balance || 0)}"></div>
+        <div class="form-field full"><label class="required">سبب التعديل</label><textarea name="reason" required placeholder="مثال: تسوية رصيد افتتاحي متفق عليها مع المورد"></textarea><small>يُسجل التعديل في كشف حساب المورد وسجل العمليات باسمك.</small></div>
+      </div>
+      <div class="form-actions"><button class="btn" type="submit">حفظ التعديل</button><button class="btn ghost" type="button" data-action="close-modal">إلغاء</button></div>
+    </form>`);
+}
+
 function addShipmentModal(item = null) {
   const finance=shipmentFinanceValues(item||{});
   openModal(item ? "تعديل بيانات الشحنة" : "إنشاء شحنة جديدة", "الشحن والتوصيل", `
@@ -9768,6 +9783,7 @@ root.addEventListener("click", async event => {
     const item = target.dataset.kind === "customer" ? getCustomer(target.dataset.id) : getSupplier(target.dataset.id);
     addPartyModal(target.dataset.kind, item);
   }
+  if (action === "edit-supplier-balance") supplierBalanceModal(getSupplier(target.dataset.id));
   if (action === "delete-party") await deleteParty(target.dataset.id, target.dataset.kind);
   if (action === "add-shipment") return toast("تم إلغاء إنشاء الشحنة اليدوي. أنشئ الشحنة من أمر بيع أو طلب أونلاين مؤكد حتى تكون مرتبطة بمستند حقيقي.", "error");
   if (action === "view-shipment") viewShipment(target.dataset.id);
@@ -11290,6 +11306,46 @@ modalBody.addEventListener("submit", async event => {
     }
     return;
   }
+  if (form.id === "supplier-balance-form") {
+    if (!requireAction("edit-supplier-balance")) return;
+    const supplier = getSupplier(form.dataset.id);
+    if (!supplier) return toast("المورد غير موجود.", "error");
+    const reason = String(formData.reason || "").trim();
+    const before = Number(supplier.balance || 0);
+    const after = Number(Number(formData.balance).toFixed(2));
+    if (!Number.isFinite(after)) return toast("اكتب قيمة صحيحة للمديونية.", "error");
+    if (!reason) return toast("يجب كتابة سبب التعديل.", "error");
+    if (after === before) return toast("المديونية الجديدة مساوية للحالية.", "error");
+    const dataBeforeBalanceSave = structuredClone(data);
+    const now = new Date().toISOString();
+    const actor = actorSnapshot();
+    const delta = Number((after - before).toFixed(2));
+    const adjustment = { id:`SBA-${Date.now()}`, date:now, before, after, delta, reason, createdBy:actor.name, createdByUsername:actor.username };
+    supplier.balanceAdjustments = [...(supplier.balanceAdjustments || []), adjustment];
+    supplier.balance = after;
+    supplier.updatedAt = now;
+    data.audit.push(auditEntry({
+      action:"تعديل مديونية مورد مباشرة",
+      operationType:"SUPPLIER_BALANCE_EDITED",
+      moduleName:"الموردون",
+      entityType:"الموردون",
+      entity:"الموردون",
+      entityId:supplier.id,
+      documentNo:adjustment.id,
+      oldValue:money(before),
+      newValue:money(after),
+      notes:`${supplier.name}: ${money(before)} ← ${money(after)} · السبب: ${reason}`
+    }));
+    const saved = await saveData();
+    if (!saved) {
+      data = dataBeforeBalanceSave;
+      cacheDataLocally();
+      return toast("فشل حفظ تعديل المديونية على الخادم. لم تُعتمد التغييرات.", "error");
+    }
+    closeModal();
+    toast(`تم تعديل مديونية ${supplier.name} إلى ${money(after)}.`);
+    return render();
+  }
   if (form.id === "party-form") {
     const dataBeforePartySave = structuredClone(data);
     const now = new Date().toISOString();
@@ -12722,6 +12778,7 @@ function statementRows(id, kind) {
       credit: receipt.status === "ملغى" || Number(receipt.balanceSign ?? -1) > 0 ? 0 : Number(receipt.balanceApplied || 0),
       status: receipt.status,user:receipt.createdBy||"—",note:receipt.note||"",links:{receiptId:receipt.id}
     })),
+    ...(kind==="supplier"?((data.suppliers||[]).find(item=>item.id===id)?.balanceAdjustments||[]).map(item=>({date:item.date,type:"balance_adjustment",reference:item.id,description:`تعديل مديونية مباشر: ${money(item.before)} ← ${money(item.after)}`,debit:item.delta>0?item.delta:0,credit:item.delta<0?-item.delta:0,status:"معتمد",user:item.createdBy||item.createdByUsername||"—",note:item.reason||"",links:{}})):[]),
     // Order payments never enter this statement (they lower the invoice's remaining, or come before any invoice), so
     // giving them back — in cash or as the separate order credit (customerCredits) — does not move the balance either.
     // These rows show what happened, with the amount in the description.
@@ -12747,7 +12804,7 @@ function showStatement(id, kind) {
         const referenceAction = statementRecordAction(row.reference);
         const linkedInvoice = row.links?.invoiceId && row.links.invoiceId !== row.reference ? row.links.invoiceId : "";
         const displayReference = row.type === "invoice" ? documentDisplayName(row.reference, kind === "supplier" ? "purchase" : "sale") : row.type === "cancelled_order" ? documentDisplayName(row.reference, "order") : row.reference;
-        return `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي"}[row.type]||row.type||"حركة")}</td><td>${referenceAction ? `<button class="statement-document-link" type="button" data-action="open-statement-record" data-reference="${esc(row.reference)}" title="فتح ${esc(displayReference)}">${esc(displayReference)} <span aria-hidden="true">↗</span></button>` : `<strong>${esc(displayReference)}</strong>`}</td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(documentDisplayName(row.links.orderId,"order"))}</button>`:""}${linkedInvoice?`<button class="row-action" data-action="open-statement-record" data-reference="${esc(linkedInvoice)}">${esc(documentDisplayName(linkedInvoice,"sale"))}</button>`:""}</td></tr>`;
+        return `<tr data-statement-row data-type="${esc(row.type||"")}" data-date="${esc(String(row.date||"").slice(0,10))}"><td>${fmtDate(row.date)}</td><td>${esc({invoice:"فاتورة",payment:"مدفوعات",cash_refund:"Refund",customer_credit:"رصيد دائن",linked_disbursement:"ربط صرف",pending_credit:"رصيد معلق",credit_use:"استخدام رصيد",cancelled_order:"طلب ملغي",balance_adjustment:"تعديل مديونية"}[row.type]||row.type||"حركة")}</td><td>${referenceAction ? `<button class="statement-document-link" type="button" data-action="open-statement-record" data-reference="${esc(row.reference)}" title="فتح ${esc(displayReference)}">${esc(displayReference)} <span aria-hidden="true">↗</span></button>` : `<strong>${esc(displayReference)}</strong>`}</td><td>${esc(row.description)}</td><td class="money">${row.debit ? money(row.debit) : "—"}</td><td class="money">${row.credit ? money(row.credit) : "—"}</td><td class="money">${money(row.balance)}</td><td>${badge(row.status || "معتمد", ["ملغاة","ملغى"].includes(row.status) ? "danger" : "")}</td><td>${esc(row.user||"—")}</td><td>${esc(row.note||"—")}</td><td>${row.links?.orderId?`<button class="row-action" data-action="view-online-order" data-id="${esc(row.links.orderId)}">${esc(documentDisplayName(row.links.orderId,"order"))}</button>`:""}${linkedInvoice?`<button class="row-action" data-action="open-statement-record" data-reference="${esc(linkedInvoice)}">${esc(documentDisplayName(linkedInvoice,"sale"))}</button>`:""}</td></tr>`;
       }).join("") || `<tr><td colspan="11" class="text-center muted">لا توجد حركات مسجلة لهذا الطرف.</td></tr>`}
     </tbody></table></div>
     <div class="form-actions"><button class="btn" data-action="print-statement" data-id="${esc(id)}" data-kind="${esc(kind)}">طباعة كشف الحساب</button><button class="btn ghost" type="button" data-action="close-modal">إغلاق</button></div>`);
@@ -15529,7 +15586,7 @@ function appHasActionHandler(action) {
     "open-sale-return-list": showReturnDocumentPicker, "open-purchase-return-list": showReturnDocumentPicker,
     "start-sale-return": saleReturnModal, "start-purchase-return": purchaseReturnModal, "view-return": viewReturn, "print-return": printReturn,
     "add-customer": addPartyModal, "add-supplier": addPartyModal, "statement": showStatement,
-    "edit-party": addPartyModal, "delete-party": deleteParty, "party-voucher": partyVoucherModal,
+    "edit-party": addPartyModal, "edit-supplier-balance": supplierBalanceModal, "delete-party": deleteParty, "party-voucher": partyVoucherModal,
     "view-party-voucher": viewPartyVoucher, "cancel-party-voucher": cancelPartyVoucher, "add-shipment": addShipmentModal,
     "view-shipment": viewShipment, "update-shipment": addShipmentModal, "delete-shipment": deleteShipment,
     "shipping-companies": showShippingCompanies, "edit-shipping-company": editShippingCompany, "delete-shipping-company": deleteShippingCompany, "add-cash-in": cashModal, "add-cash-out": cashModal,
