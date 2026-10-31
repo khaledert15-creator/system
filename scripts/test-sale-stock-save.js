@@ -71,7 +71,7 @@ async function run() {
   e.draftSale.lines=[{bookId:"B1",qty:2,price:10}];e.draftSale.paid=20;
   const customer={id:"C1",name:"Customer",balance:0};
   e.getCustomer=()=>customer;e.saleTotals=()=>({lines:[{finalNet:20}],total:20,subtotal:20,shipping:0});
-  e.negativeStockError=()=>"";e.document={getElementById:id=>({value:id==="sale-payment"?"نقدي":"2026-10-15"})};
+  e.negativeStockError=()=>"";e.document={getElementById:id=>({value:id==="sale-payment"?"نقدي":id==="sale-cash-account"?"الخزينة الرئيسية":"2026-10-15"})};e.activeCashAccounts=()=>[{id:"CA-001",name:"الخزينة الرئيسية"}];e.saleDefaultCashAccount=()=>"الخزينة الرئيسية";
   e.OrderFinance={normalizeNote:x=>x};e.customerSnapshot=x=>x;e.actorSnapshot=()=>({});e.recordNegativeStockOverride=()=>{};
   e.allocateInventoryFIFO=(id,qty)=>integrity.consumeBatchesFIFO(e.data,id,qty);e.resetSaleDraft=()=>{e.draftSale={lines:[]};};e.renderSales=()=>{};
   const saved=await e.commitSale();assert(saved);assert.equal(e.data.sales.length,1);assert.equal(e.data.books[0].stock,1);assert.equal(e.data.inventoryBatches[0].remainingQty,1);assert.equal(e.data.cash[0].amount,20);

@@ -251,7 +251,7 @@ function clientAddress(req) {
 // an address that tries many usernames is held back as a whole.
 const LOGIN_ADDRESS_FAILURE_LIMIT = 30;
 function loginThrottleKey(req, username) {
-  return `${clientAddress(req)}|${String(username || "").toLowerCase()}`;
+  return `${clientAddress(req)}|${String(username || "").trim().toLowerCase()}`;
 }
 function loginAddressKey(req) {
   return `${clientAddress(req)}|*`;
@@ -726,6 +726,17 @@ function userFinanceActions(db,user={}) {
   if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports","finance.collection.view","finance.collection.create"];
   if(role==="شحن")return ["finance.collection.view","finance.collection.create"];
   return [];
+}
+
+// Screen actions the page checks with canAction(): the user's or role's saved list when there is one, else the defaults
+// (same lists as ACTION_ROLES in app/app.js).
+const APP_ACTION_DEFAULTS={"edit-sale-payment":["مالك","مدير","محاسب"],"cancel-sale":["مالك","مدير"],"close-sales-day":["مالك","مدير"]};
+function canAppAction(db,user,action) {
+  const role=financeRole(user);
+  if(role==="مالك"||user?.username==="owner")return true;
+  const configured=db.settings?.permissions?.users?.[user?.username]?.actions||db.settings?.permissions?.roles?.[role]?.actions;
+  if(Array.isArray(configured))return configured.includes(action);
+  return (APP_ACTION_DEFAULTS[action]||[]).includes(role);
 }
 
 function canFinance(db,user,action) {
@@ -1333,10 +1344,13 @@ function shipmentCollectionValues(db,shipment={}) {
 function applyCarrierPayment(db,sale,order,amount,now) {
   const effect={salePaidDelta:0,saleRemainingDelta:0,customerId:"",balanceDelta:0,orderId:order?.id||""};
   if(sale){
-    const total=Number(sale.total||0),beforePaid=Number(sale.paidAmount??sale.paid??0),beforeRemaining=Number(sale.remainingAmount??sale.remaining??Math.max(0,total-beforePaid));
-    const summary=OrderFinance.calculatePayment(total,Math.min(total,beforePaid+amount));
-    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
-    effect.salePaidDelta=Number((summary.paidAmount-beforePaid).toFixed(2));effect.saleRemainingDelta=Number((beforeRemaining-summary.remainingAmount).toFixed(2));
+    // paid/remaining are the live figures (a return moves part of them to returnedPaid/returnedRemaining and leaves
+    // paidAmount/remainingAmount behind), so the collection is added to them and capped at what is still owed.
+    const total=Number(sale.total||0),beforePaid=Number(sale.paid??sale.paidAmount??0),beforeRemaining=Number(sale.remaining??sale.remainingAmount??Math.max(0,total-beforePaid));
+    const applied=Math.max(0,Math.min(Number(amount||0),beforeRemaining));
+    const paid=Number((beforePaid+applied).toFixed(2)),remaining=Number((beforeRemaining-applied).toFixed(2));
+    Object.assign(sale,{paid,paidAmount:paid,remaining,remainingAmount:remaining,paymentStatus:paid<=0?"unpaid":remaining<=0.005?"paid":"partially_paid",updatedAt:now});
+    effect.salePaidDelta=Number(applied.toFixed(2));effect.saleRemainingDelta=Number(applied.toFixed(2));
     const customer=(db.customers||[]).find(item=>item.id===sale.customerId);
     if(customer&&effect.saleRemainingDelta>0){const before=Number(customer.balance||0);customer.balance=Number(Math.max(0,before-effect.saleRemainingDelta).toFixed(2));effect.customerId=customer.id;effect.balanceDelta=Number((before-customer.balance).toFixed(2));}
   }
@@ -1350,8 +1364,10 @@ function orderPaymentFromCollections(db,order,collected) {
 }
 function reverseCarrierPayment(db,effect={},sale,order,now) {
   if(sale&&effect.salePaidDelta){
-    const total=Number(sale.total||0),paid=Math.max(0,Number(sale.paidAmount??sale.paid??0)-effect.salePaidDelta),summary=OrderFinance.calculatePayment(total,Math.min(total,paid));
-    Object.assign(sale,{paid:summary.paidAmount,paidAmount:summary.paidAmount,remaining:summary.remainingAmount,remainingAmount:summary.remainingAmount,paymentStatus:summary.paymentStatus,updatedAt:now});
+    // The exact amounts the collection moved go back (see applyCarrierPayment).
+    const paid=Number(Math.max(0,Number(sale.paid??sale.paidAmount??0)-Number(effect.salePaidDelta)).toFixed(2));
+    const remaining=Number((Number(sale.remaining??sale.remainingAmount??0)+Number(effect.saleRemainingDelta??effect.salePaidDelta)).toFixed(2));
+    Object.assign(sale,{paid,paidAmount:paid,remaining,remainingAmount:remaining,paymentStatus:paid<=0?"unpaid":remaining<=0.005?"paid":"partially_paid",updatedAt:now});
   }
   const customer=effect.customerId&&(db.customers||[]).find(item=>item.id===effect.customerId);
   if(customer&&effect.balanceDelta)customer.balance=Number((Number(customer.balance||0)+effect.balanceDelta).toFixed(2));
@@ -1491,11 +1507,15 @@ function cashRowRewritten(old,row) {
 }
 function cashWriteRequirements(current,next) {
   const required=new Set(),before=new Map((current.cash||[]).map(row=>[row.id,row])),after=new Map((next.cash||[]).map(row=>[row.id,row]));
-  const documentIds=new Set();
+  // Documents created in this same save (a counter sale, a voucher, an expense…) bring their own cash row. A row linked
+  // to a document that already existed, or for more than the document is worth, is an ordinary cash entry and needs
+  // the cash permission: otherwise touching any order would let every role put money in or take it out.
+  const newDocuments=new Map();
   for(const key of ["sales","purchases","receipts","expenses","otherIncome","carrierSettlements","onlineOrders"]){
-    const old=new Map((current[key]||[]).map(row=>[row.id,row]));
-    for(const row of next[key]||[])if(!old.has(row.id)||!isDeepStrictEqual(old.get(row.id),row))documentIds.add(String(row.id));
+    const old=new Set((current[key]||[]).map(row=>String(row.id)));
+    for(const row of next[key]||[])if(!old.has(String(row.id)))newDocuments.set(String(row.id),row);
   }
+  const documentValue=row=>Math.max(...["total","amount","paid","paidAmount","grandTotal"].map(field=>Number(row?.[field])).filter(Number.isFinite),0);
   for(const [id,old] of before){
     const row=after.get(id);
     if(row&&!cashRowRewritten(old,row))continue;
@@ -1505,8 +1525,10 @@ function cashWriteRequirements(current,next) {
   }
   for(const [id,row] of after){
     if(before.has(id))continue;
-    const linked=CASH_LINK_FIELDS.some(field=>row[field]&&documentIds.has(String(row[field])))||[...documentIds].some(docId=>docId&&String(row.note||"").includes(docId));
-    if(linked)continue;
+    const amount=Number(row.amount);
+    if(!Number.isFinite(amount)||amount<0){required.add("cash:invalid-amount");continue;}
+    const linkedId=CASH_LINK_FIELDS.map(field=>row[field]&&String(row[field])).find(id=>id&&newDocuments.has(id))||[...newDocuments.keys()].find(docId=>docId&&String(row.note||"").includes(docId));
+    if(linkedId&&amount<=documentValue(newDocuments.get(linkedId))+0.01)continue;
     if(row.transferId)required.add("cash-transfer");
     else if(row.category==="قيد عكسي")required.add("reverse-financial-transaction");
     else required.add(row.type==="صرف"?"add-cash-out":"add-cash-in");
@@ -1727,7 +1749,7 @@ const BOOK_STOCK_VIEWS = ["books","purchases","sales","onlineOrders","returns"],
 // Written only by server endpoints (cancellation refunds, credits); a save never changes them.
 const SERVER_ONLY_COLLECTIONS = ["orderRefunds","customerCredits","customerCreditUses"];
 // Records are soft-deleted (deletedAt); a save never removes them from the file.
-const NO_HARD_DELETE = ["sales","onlineOrders","shipments","customers","suppliers","receipts","orderPayments","employees","complaints"];
+const NO_HARD_DELETE = ["sales","onlineOrders","shipments","customers","suppliers","receipts","orderPayments","employees","complaints","dayClosings","expenses","otherIncome"];
 const COLLECTION_LABELS = { sales:"فواتير البيع", onlineOrders:"الطلبات", shipments:"الشحنات", customers:"العملاء", suppliers:"الموردين", purchases:"المشتريات", receipts:"الإيصالات", employees:"الموظفين", shippingCompanies:"شركات الشحن", orderPayments:"مدفوعات الطلبات", complaints:"الشكاوى", inventoryBatches:"دفعات المخزون", stockMovements:"حركات المخزون", books:"الأصناف", orderRefunds:"تسويات الإلغاء", customerCredits:"أرصدة العملاء الدائنة", customerCreditUses:"استخدام الأرصدة الدائنة" };
 const isQaRecord = row => /QA-/.test(String(row?.id || "")) || /QA-/.test(String(row?.trackingNumber || row?.tracking || "")) || ["01012345678","01099999999"].includes(String(row?.phone || "")) && /QA|اختبار/.test(String(row?.name || ""));
 function changedRows(current = [], next = []) {
@@ -1765,7 +1787,36 @@ function validateRoleWrites(currentDb, nextDb, user) {
   // Values that are never valid, whoever saves them.
   for (const book of nextDb.books || []) for (const field of ["price","cost","coverPrice","defaultSellingPrice","purchaseListPrice"]) if (book[field] != null && book[field] !== "" && !(Number(book[field]) >= 0)) return fail("INVALID_AMOUNT", `سعر «${book.name || book.id}» لازم يكون صفر أو أكتر.`, { key:"books", id:book.id });
   for (const sale of nextDb.sales || []) for (const field of ["total","paid","remaining"]) if (sale[field] != null && sale[field] !== "" && !(Number(sale[field]) >= 0)) return fail("INVALID_AMOUNT", `قيمة الفاتورة ${sale.id} لازم تكون صفر أو أكتر.`, { key:"sales", id:sale.id });
+  // Expenses and income created by a collection, settlement or statement carry the same amount as their locked cash
+  // row: they are cancelled through a reverse entry, never edited (whoever saves).
+  for (const key of ["expenses","otherIncome"]) for (const [old, row] of changedRows(currentDb[key] || [], nextDb[key] || []).changed) {
+    if (!(old.sourceKey || old.collectionId || old.settlementId || old.postalStatementId)) continue;
+    const field = ["amount","account","accountId","cashAccountId","date","category","type","collectionId","settlementId","sourceKey"].find(name => !isDeepStrictEqual(old[name] ?? null, row[name] ?? null));
+    if (field) return fail("LINKED_FINANCE_PROTECTED", `${row.id} مربوط بتحصيل أو تسوية؛ إلغاؤه بقيد عكسي بس.`, { key, id:row.id, field });
+  }
   if (role === "مالك" || user.username === "owner") return { ok:true };
+  // An invoice's money and state change through the payment and cancel screens only; a save from any other screen
+  // may not mark it paid, cancel or delete it. Values the page only fills in for old records (empty before) pass.
+  const filled = (old, field) => old[field] !== undefined && old[field] !== null && old[field] !== "";
+  for (const [old, row] of changedRows(currentDb.sales || [], nextDb.sales || []).changed) {
+    if (isQaRecord(row)) continue;
+    const money = ["paid","paidAmount","remaining","remainingAmount","paymentStatus"].find(field => filled(old, field) && !isDeepStrictEqual(old[field], row[field]));
+    if (money && !canAppAction(currentDb, user, "edit-sale-payment")) return fail("WRITE_PERMISSION_DENIED", `تحصيل وتعديل مدفوع الفاتورة ${row.id} مش من صلاحيتك.`, { key:"sales", id:row.id, field:money });
+    const state = ["status","deletedAt","cancelledAt","voidedAt"].find(field => (filled(old, field) || field !== "status") && !isDeepStrictEqual(old[field] ?? null, row[field] ?? null));
+    if (state && !canAppAction(currentDb, user, state === "status" ? "edit-sale-payment" : "cancel-sale") && !canAppAction(currentDb, user, "cancel-sale")) return fail("WRITE_PERMISSION_DENIED", `إلغاء أو حذف الفاتورة ${row.id} مش من صلاحيتك.`, { key:"sales", id:row.id, field:state });
+  }
+  // A closed day (اليومية المقفولة) is changed, and closed or reopened, only by whoever may close it.
+  if (!canAppAction(currentDb, user, "close-sales-day")) {
+    if (!isDeepStrictEqual(currentDb.dayClosings || [], nextDb.dayClosings || [])) return fail("WRITE_PERMISSION_DENIED", "قفل اليومية وفتحها مش من صلاحيتك.", { key:"dayClosings" });
+    const closed = new Set((currentDb.dayClosings || []).filter(item => !item.deletedAt).map(item => String(item.date || "")));
+    const dayOf = row => String(row?.date || row?.createdAt || "").slice(0, 10);
+    const salesDiff = changedRows(currentDb.sales || [], nextDb.sales || []);
+    const touched = [...salesDiff.added, ...salesDiff.changed.flatMap(pair => pair)].find(row => closed.has(dayOf(row)));
+    if (touched) return fail("DAY_CLOSED", `يومية ${dayOf(touched)} مقفولة؛ تعديل الفاتورة ${touched.id} محتاج صلاحية قفل اليومية.`, { key:"sales", id:touched.id });
+    const cashDiff = changedRows(currentDb.cash || [], nextDb.cash || []);
+    const cashTouched = [...cashDiff.added, ...cashDiff.changed.flatMap(pair => pair), ...cashDiff.removed].find(row => closed.has(dayOf(row)));
+    if (cashTouched) return fail("DAY_CLOSED", `يومية ${dayOf(cashTouched)} مقفولة؛ حركة الخزنة ${cashTouched.id} مبتتعدّلش.`, { key:"cash", id:cashTouched.id });
+  }
   // What an invoice or an order is for (its books, amounts, customer, date) is changed only through the server's
   // order and return screens; a save from the page may update payments and status fields, not these.
   if (role !== "مدير") {
@@ -4206,6 +4257,15 @@ const server = http.createServer(async (req, res) => {
       const id=route.split("/")[3],order=(db.onlineOrders||[]).find(item=>item.id===id&&!item.deletedAt);
       if(!order)return send(res,404,{ok:false,message:"الطلب غير موجود."});
       if(order.confirmedAt&&activeReservation(order))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+      // Confirming only moves a new order forward. A stale page or a second click on an order that was confirmed and
+      // has gone on (packed, invoiced, shipped) or was cancelled, refused or returned must not put it back on the
+      // packing list: it would be packed and shipped again and reserve copies for books that already left.
+      const closedStage=["cancelled","returned","refused","delivered","shipped","awaiting_shipping","packed","needs_review","preparing","not_completed"].includes(String(order.workflowStage||""));
+      if(order.cancelledAt||order.refusal||["ملغي","مرتجع","تم التسليم"].includes(order.status)||order.saleId||order.shipmentId||order.preparedAt||closedStage){
+        if(order.confirmedAt&&!order.cancelledAt&&!order.refusal&&!["ملغي","مرتجع"].includes(order.status))return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
+        return send(res,409,{ok:false,code:"ORDER_NOT_CONFIRMABLE",message:"الطلب ده ملغي أو مرفوض أو مرتجع؛ مينفعش يتأكد تاني. حدّث الصفحة."});
+      }
+      if(order.confirmedAt&&order.workflowStage==="awaiting_stock")return send(res,200,{ok:true,order,existing:true,revision:dbRevision()});
       try{reserveOrderInventory(db,order,user,order.lines||[],{allowBackorder:true});}catch(error){return send(res,error.status||409,{ok:false,code:error.code||"INSUFFICIENT_AVAILABLE_STOCK",message:error.message,bookId:error.bookId,available:error.available});}
       const now=new Date().toISOString();Object.assign(order,{confirmedAt:order.confirmedAt||now,confirmedBy:order.confirmedBy||user.name||user.username,confirmedByUsername:order.confirmedByUsername||user.username});
       const stage=applyBackorderStage(order,user,now);
@@ -4322,6 +4382,9 @@ const server = http.createServer(async (req, res) => {
         if(!operationKey)return send(res,400,{ok:false,code:"OPERATION_KEY_REQUIRED",message:"Operation Key مطلوب."});
         const now=new Date().toISOString(),steps=[];
         const shipment=activeOrderShipment(db,order);
+        // An order exported to the carrier may already be with the post: its books go back on the shelf only when the
+        // employee confirms the courier never took the parcel.
+        if(!shipment&&payload.courierNotPickedUp!==true){const exportCheck=carrierExportBlock(order,payload);if(exportCheck?.error)return send(res,409,{...exportCheck.error,message:`الطلب ${order.id} اتصدّر لشركة الشحن، وممكن يكون الطرد مع البريد. اختار «المندوب ما استلمش الطرد» لو الطرد لسه عندنا.`});}
         if(shipment){
           // Egypt Post tracking can show a code as moving before the courier collects the parcel; when the employee
           // confirms the parcel never left, the order can still be cancelled (never once it was delivered or returned).
@@ -4522,6 +4585,7 @@ const server = http.createServer(async (req, res) => {
       const invoiceId=route.split("/")[3],sale=(db.sales||[]).find(item=>item.id===invoiceId&&!item.deletedAt);if(!sale)return send(res,404,{ok:false,message:"الفاتورة غير موجودة."});
       if(sale.status==="ملغاة")return send(res,200,{ok:true,sale,existing:true,revision:dbRevision()});
       if(saleHasReturn(db,sale))return send(res,409,{ok:false,code:"SALE_HAS_RETURN",message:"لا يمكن إلغاء فاتورة عليها مرتجع. الكتب رجعت المخزن بالمرتجع بالفعل."});
+      if(sale.replacementForReturnId)return send(res,409,{ok:false,code:"REPLACEMENT_INVOICE",message:`الفاتورة دي بديل في المرتجع ${sale.replacementForReturnNo||sale.replacementForReturnId}؛ لإلغائها ألغِ المرتجع نفسه.`});
       if((db.shipments||[]).some(item=>!item.deletedAt&&(item.invoiceId===sale.id||item.orderId===sale.id)))return send(res,409,{ok:false,code:"SHIPMENT_CANCELLATION_REQUIRED",message:"ألغِ الشحنة المرتبطة أولًا."});
       const financial=OrderRefunds.cancellationPreview(db,{invoiceId});if(!financial.canCancel)return send(res,409,{ok:false,code:"PAYMENT_REFUND_REQUIRED",message:"لا يمكن إلغاء الفاتورة قبل تسوية المبلغ المدفوع.",financial});
       const now=new Date().toISOString();restockVoidedSale(db,sale,user,"إبطال الفاتورة دون حذف",now);
@@ -4642,6 +4706,9 @@ const server = http.createServer(async (req, res) => {
       }
       const shortage=PREPARATION_SHORTAGE_REASONS.includes(reason);
       if(shortage&&!missing.size)return send(res,400,{ok:false,code:"MISSING_BOOKS_REQUIRED",message:"حدد الكتاب الناقص والكمية الناقصة منه."});
+      // An invoiced order (reopened for packing) already took its books out of stock with the invoice: it cannot become a
+      // pre-order waiting for copies. Its shortage goes to review instead.
+      if(shortage&&order.saleId)return send(res,409,{ok:false,code:"ORDER_ALREADY_INVOICED",message:"الطلب ده عليه فاتورة والكتب اتخصمت من المخزون بيها؛ مينفعش يتحول حجز مسبق. سجّل المشكلة «مراجعة» أو عدّل الطلب من الإدارة."});
       const missingLines=[...missing].map(([bookId,qty])=>({bookId,qty}));
       order.preparationIssue={reason,notes,missingLines,createdAt:now,createdBy:user.name||user.username};
       if(shortage){
@@ -4822,6 +4889,11 @@ const server = http.createServer(async (req, res) => {
         if(payload.carrierCancelled!==true)return send(res,409,{ok:false,code:"CARRIER_CANCELLATION_CONFIRMATION_REQUIRED",message:"ألغِ الشحنة من نظام شركة الشحن أولًا ثم فعّل مربع التأكيد."});
         if(!reason)return send(res,400,{ok:false,message:"اكتب سبب إلغاء الشحنة."});
         if(!["revise_shipment","cancel_order"].includes(resolution))return send(res,400,{ok:false,message:"اختر تعديل الشحنة أو إلغاء الطلب بالكامل."});
+        // Only a parcel that never reached the customer can be cancelled: once delivered, returned or collected, a new
+        // shipment would be delivered and collected a second time.
+        const shipmentCode=canonicalShippingStatus(shipment.shippingStatus||shipment.trackingStatus||shipment.normalizedStatus||shipment.status);
+        if(shipment.refusedAt||["delivered","returned","refused"].includes(shipmentCode))return send(res,409,{ok:false,code:"SHIPMENT_NOT_CANCELLABLE",message:"الشحنة دي اتسلمت أو رجعت؛ مينفعش تتلغي. سجّل مرتجع أو رفض استلام."});
+        if(shipment.settlementId||(db.orderCollections||[]).some(item=>item.sourceKey===`order-collection:${shipment.id}`&&item.status!=="reversed"))return send(res,409,{ok:false,code:"SHIPMENT_COLLECTED",message:"شركة الشحن حصّلت فلوس الشحنة دي؛ اعكس التحصيل الأول."});
         const postalChargeStatus=isPostalCarrier(shipment)?(payload.postalChargeStatus==="not_charged"?"not_charged":"charged"):null;
         const postalChargeReason=String(payload.postalChargeReason||"").trim();
         if(postalChargeStatus==="not_charged"&&!postalChargeReason)return send(res,400,{ok:false,message:"اذكر سبب عدم احتساب البريد لتكلفة الشحنة الملغاة."});
@@ -4908,6 +4980,8 @@ const server = http.createServer(async (req, res) => {
       });
       if (statusCode === "delivered") shipment.deliveredAt = shipment.deliveredAt || now;
       if (statusCode === "returned") shipment.returnedAt = shipment.returnedAt || now;
+      // Tracking stops at a delivered parcel, so the order must close here like tracking would close it.
+      if (statusCode === "delivered") syncLinkedOrder(db, shipment);
       if (payload.warehouseReturn === true && statusCode === "returned") {
         shipment.returnedToWarehouseAt = shipment.returnedToWarehouseAt || now;
         syncLinkedOrder(db, shipment);
@@ -5278,6 +5352,19 @@ const server = http.createServer(async (req, res) => {
           return send(res, 403, { ok:false, code:"PERMISSIONS_CHANGE_FORBIDDEN", message:"ليس لديك صلاحية تعديل صلاحيات المستخدمين أو الأدوار." });
         }
       }
+      // Owner-only powers can be given only by the owner: a manager may tailor permissions but not hand himself (or
+      // anyone) user administration or a system reset.
+      if (!isOwnerAccount(user)) {
+        const ownerOnly = ["manage-users", "factory_reset_system", "purge_demo_data", "manage_seasons"];
+        for (const key of ["roles", "users"]) {
+          const before = permissionScope(currentDb.settings?.permissions, key), after = permissionScope(parsed.settings?.permissions, key);
+          for (const [name, entry] of Object.entries(after)) {
+            const had = new Set(Array.isArray(before?.[name]?.actions) ? before[name].actions : []);
+            const granted = (Array.isArray(entry?.actions) ? entry.actions : []).find(action => ownerOnly.includes(action) && !had.has(action));
+            if (granted) return send(res, 403, { ok:false, code:"OWNER_ONLY_PERMISSION", message:"الصلاحية دي المالك بس اللي يديها." });
+          }
+        }
+      }
       try {
         parsed.audit = AuditIds.reconcileClientAudit(currentDb.audit || [], parsed.audit || []);
         // New log rows carry the user who really made this save; a name the page wrote differently is kept beside it.
@@ -5325,6 +5412,7 @@ const server = http.createServer(async (req, res) => {
         return send(res,roleWrites.code==="WRITE_PERMISSION_DENIED"?403:409,roleWrites);
       }
       const financeRequirements=financeWriteRequirements(ensureFinanceDb(currentDb),ensureFinanceDb(parsed));
+      if(financeRequirements.includes("cash:invalid-amount"))return send(res,400,{ok:false,code:"CASH_AMOUNT_INVALID",message:"مبلغ حركة الخزنة لازم يكون رقم موجب."});
       if(financeRequirements.includes("reverse-financial-transaction:locked"))return send(res,409,{ok:false,code:"CASH_DOCUMENT_PROTECTED",message:"حركات الخزنة المرتبطة بمستند (فاتورة، إيصال، مصروف، تحصيل…) مبتتعدّلش من هنا. ألغِ المستند نفسه أو اعمل قيد عكسي."});
       const deniedFinanceAction=financeRequirements.find(action=>!canFinance(currentDb,user,action));
       if(deniedFinanceAction)return send(res,403,{ok:false,code:"FINANCE_PERMISSION_DENIED",message:"ليس لديك صلاحية لتنفيذ هذا التغيير المالي."});

@@ -233,6 +233,10 @@
     }
     const amount = round([...perSale.values()].reduce((sum, row) => sum + row.amount, 0));
     const debt = [...perSale.values()].reduce((sum, row) => sum + row.debt, 0), dueBefore = [...perSale.values()].reduce((sum, row) => sum + row.due, 0);
+    for (const field of ["returnShippingDeduction", "replacementDeduction"]) {
+      const value = payload[field];
+      if (value != null && value !== "" && !(Number.isFinite(Number(value)) && Number(value) >= 0)) throw fail("المبالغ لازم تكون أرقام موجبة.", "INVALID_AMOUNT", 400);
+    }
     const replacementLines = resolveReplacements(db, payload.replacements, lines);
     const replacementTotals = replacementLines.length ? Finance.calculateOrder(replacementLines) : null;
     let replacement, shipping, fromDue, fromDebt;
@@ -272,7 +276,8 @@
     const balanceBefore = Number(customer.balance || 0);
     let balance = balanceBefore - debtReduction;
     if (settlement === "customer-credit" || settlement === "no-settlement") balance -= customerDue;
-    if (settlement === "debt-only") balance = Math.max(0, balance - customerDue);
+    // Only lowers what the customer owes, down to zero; a credit the customer already had is kept as it was.
+    if (settlement === "debt-only") balance = Math.min(balance, Math.max(0, balance - customerDue));
     // What the return itself credits on the statement (the invoices' own rows show the debt cleared and added).
     const statementCredit = round(balanceBefore - debtReduction - balance);
     if (replacementSale) balance += Number(replacementSale.remaining || 0);
@@ -409,7 +414,8 @@
     let cashIn = 0, totalReduction = 0;
     for (const row of perPurchase.values()) {
       const purchase = row.purchase, total = Math.max(1, Number(purchase.total || 0)), consignment = purchase.type === "أمانة";
-      const reduction = consignment ? 0 : Math.min(Number(purchase.remaining || 0), (Number(purchase.remaining || 0) + Number(purchase.returnedRemaining || 0)) * row.amount / total);
+      // By account with a cash refund the supplier pays us back in money: the documents' debt stays as it was.
+      const reduction = consignment || (!single && settlement === "cash") ? 0 : Math.min(Number(purchase.remaining || 0), (Number(purchase.remaining || 0) + Number(purchase.returnedRemaining || 0)) * row.amount / total);
       const refund = consignment ? 0 : single
         ? Math.min(Number(purchase.paid || 0), (Number(purchase.paid || 0) + Number(purchase.returnedPaid || 0)) * row.amount / total)
         : settlement === "cash" && moneyAmount > 0 ? Math.min(Number(purchase.paid || 0), moneyAmount * row.amount / moneyAmount) : 0;
@@ -482,7 +488,9 @@
         const free = (replaced?.lines || []).filter(line => line.bookId === bookId).reduce((sum, line) => sum + Number(line.qty || 0), 0) + Number(book.stock || 0) - Math.max(0, Number(book.reservedStock || 0)) - Math.max(0, Number(book.countHoldQty || 0));
         if (free + 1e-6 < qty) throw fail(`الكتب اللي رجعت من «${book.name}» اتباعت تاني أو اتحجزت؛ المتاح دلوقتي ${Math.max(0, free)} والمرتجع ${qty}.`, "STOCK_ALREADY_USED");
       }
-      for (const [batchId, qty] of perBatch) { const batch = batches.find(item => (item.batchId || item.id) === batchId); if (batch && Number(batch.remainingQty || 0) + 1e-6 < qty) throw fail("الكتب اللي رجعت بالمرتجع ده اتباعت تاني من نفس الدفعة؛ مينفعش يتلغي.", "STOCK_ALREADY_USED"); }
+      const replacedFromBatch = new Map();
+      for (const line of replaced?.lines || []) for (const allocation of line.batchAllocations || []) replacedFromBatch.set(String(allocation.batchId), (replacedFromBatch.get(String(allocation.batchId)) || 0) + Number(allocation.qty || 0));
+      for (const [batchId, qty] of perBatch) { const batch = batches.find(item => (item.batchId || item.id) === batchId); if (batch && Number(batch.remainingQty || 0) + (replacedFromBatch.get(String(batchId)) || 0) + 1e-6 < qty) throw fail("الكتب اللي رجعت بالمرتجع ده اتباعت تاني من نفس الدفعة؛ مينفعش يتلغي.", "STOCK_ALREADY_USED"); }
     }
     // The replacement invoice is cancelled with the return, only while nothing else was done on it.
     const replacementSale = sale && effects.replacementSaleId ? list(db, "sales").find(item => item.id === effects.replacementSaleId) : null;
@@ -499,7 +507,7 @@
         stockMovement(db, book, "إلغاء بيع بديل", Number(line.qty || 0), before, replacementSale.id, `إلغاء المرتجع ${record.returnNo} — ${reason}`, actor, now);
       }
       // The balance change below (effects.balanceDelta) already takes its remaining off the customer's account.
-      Object.assign(replacementSale, { status: "ملغاة", cancelledAt: now, voidedAt: now, voidedBy: actor.name || actor.username, voidedByUsername: actor.username, cancelReason: `إلغاء المرتجع ${record.returnNo}`, paid: 0, paidAmount: 0, remaining: 0, remainingAmount: 0, updatedAt: now });
+      Object.assign(replacementSale, { status: "ملغاة", cancelledByReturnReversal: true, cancelledAt: now, voidedAt: now, voidedBy: actor.name || actor.username, voidedByUsername: actor.username, cancelReason: `إلغاء المرتجع ${record.returnNo}`, paid: 0, paidAmount: 0, remaining: 0, remainingAmount: 0, updatedAt: now });
     }
     // Stock and batches.
     for (const row of effects.stock) {
@@ -519,7 +527,9 @@
       for (const row of effects.batchTakes) { const batch = batches.find(item => (item.batchId || item.id) === row.batchId); if (batch) { batch.remainingQty = round(Number(batch.remainingQty || 0) + row.qty); batch.updatedAt = now; } }
     }
     // Money: the balance change and every cash entry are cancelled by opposite ones.
-    if (party) party.balance = round(Number(party.balance || 0) - Number(effects.balanceDelta || 0));
+    // A replacement invoice cancelled on its own already took its remaining off the customer's balance.
+    const alreadyCancelled = sale && effects.replacementSaleId && list(db, "sales").find(item => item.id === effects.replacementSaleId)?.status === "ملغاة" && !replacementSale?.cancelledByReturnReversal ? Number(record.replacementRemaining || 0) : 0;
+    if (party) party.balance = round(Number(party.balance || 0) - Number(effects.balanceDelta || 0) + alreadyCancelled);
     if (sale && party && effects.pointsDeducted) party.points = Number(party.points || 0) + effects.pointsDeducted;
     const reversals = [];
     for (const id of effects.cashTxIds || []) {

@@ -20,7 +20,8 @@ check("purchase amount derives the after-discount cost", app.includes("line.cost
 check("sale details separate book and invoice discounts", /سعر الكتاب<\/th><th>خصم الكتاب %<\/th><th>خصم الكتاب ج\.م<\/th><th>خصم الفاتورة للنسخة<\/th><th>سعر النسخة النهائي/.test(app));
 check("purchase details show all requested pricing columns", app.includes('commercialUnitPricing(line,"purchase")'));
 check("return source pricing is resolved from original documents", app.includes("function returnLinePricing") && app.includes("sourceInvoiceId"));
-check("sales return selectors show invoice discount and actual return amount", (app.match(/خصم الفاتورة للنسخة<\/th><th>سعر النسخة النهائي<\/th><th>كمية المرتجع<\/th><th>قيمة المرتجع/g) || []).length >= 2 && app.includes('data-return-line-value'));
+// By customer: one column per pricing step; from one invoice: one «سعر النسخة» column with the discounts under the price.
+check("sales return selectors show invoice discount and actual return amount", /خصم الفاتورة للنسخة<\/th><th>سعر النسخة النهائي<\/th><th>كمية المرتجع<\/th><th>قيمة المرتجع/.test(app) && /<th>سعر النسخة<\/th><th>كمية المرتجع<\/th><th>قيمة المرتجع/.test(app) && app.includes("خصم الفاتورة ${money(pricing.invoiceDiscountUnit)}") && app.includes('data-return-line-value'));
 check("purchase return selectors retain source discount columns", (app.match(/خصم ج\.م<\/th><th>بعد الخصم<\/th><th>كمية المرتجع<\/th><th>قيمة المتاح/g) || []).length >= 2);
 check("sale and purchase printouts expose explicit discount columns", (app.match(/<th>خصم %<\/th><th>خصم ج\.م<\/th><th>بعد الخصم<\/th>/g) || []).length >= 2);
 check("online order details retain the unified pricing fields", app.includes("line.unitOriginalPrice") && app.includes("line.unitDiscountAmount") && app.includes("line.unitFinalPrice"));

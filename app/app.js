@@ -1516,6 +1516,13 @@ function normalizeCashAccountName(value) {
   return activeCashAccounts().find(account => account.name === text)?.name || text;
 }
 
+// The cash account a counter-sale payment method normally lands in (the employee can change it on the invoice).
+function saleDefaultCashAccount(payment = "") {
+  const byMethod = { "نقدي":"الخزينة الرئيسية", "مختلط":"الخزينة الرئيسية", "InstaPay":"InstaPay", "محفظة":"المحافظ الإلكترونية", "تحويل بنكي":"تحويل بنكي", "Visa":"البنك الأهلي" };
+  const names = activeCashAccounts().map(account => account.name);
+  return names.includes(byMethod[payment]) ? byMethod[payment] : names.includes("الخزينة الرئيسية") ? "الخزينة الرئيسية" : names[0] || "";
+}
+
 function cashAccountOptions(selected = "") {
   const current = normalizeCashAccountName(selected) || activeCashAccounts()[0]?.name || "";
   return activeCashAccounts().map(account => `<option value="${esc(account.name)}" ${account.name === current ? "selected" : ""}>${esc(account.name)}</option>`).join("");
@@ -3554,6 +3561,7 @@ function renderSaleInvoice() {
         <div class="summary-row shipping-summary-row"><span>رسوم الشحن <small id="sale-shipping-source">${shippingPresentation.sourceLabel}</small></span><strong id="sale-shipping-total" class="${shippingPresentation.free ? "free-shipping" : ""}">${shippingPresentation.amountLabel}</strong></div>
         <div class="summary-row total"><span>الإجمالي النهائي</span><strong id="sale-total">${money(totals.total)}</strong></div>
         <div class="form-field"><label>طريقة الدفع</label><select id="sale-payment">${["نقدي","Visa","تحويل بنكي","InstaPay","محفظة","آجل","مختلط"].map(value => `<option ${draftSale.payment === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+        <div class="form-field" ${draftSale.payment === "آجل" ? "hidden" : ""}><label>الفلوس دخلت على</label><select id="sale-cash-account">${cashAccountOptions(draftSale.cashAccount || saleDefaultCashAccount(draftSale.payment))}</select></div>
         <div class="form-field"><label>المبلغ المدفوع</label><input id="sale-paid" type="number" min="0" max="${esc(totals.total)}" value="${esc(draftSale.paid || 0)}"></div>
         <div class="summary-row"><span>المتبقي على العميل</span><strong id="sale-remaining" class="${totals.remaining > 0 ? "text-danger" : ""}">${money(totals.remaining)}</strong></div>
         <div class="form-field quick-sale-notes"><label for="sale-notes">ملحوظة اختيارية</label><textarea id="sale-notes" maxlength="5000" rows="3" placeholder="تظهر في تفاصيل الفاتورة والطباعة وكشف الحساب">${esc(draftSale.notes||"")}</textarea>${draftSale.notes ? `<small>ستظهر الملاحظة مع الفاتورة.</small>` : ""}</div>
@@ -4879,7 +4887,10 @@ function orderCanBeRefused(order) {
   if(!order||order.refusal||order.cancelledAt||order.status==="ملغي"||!order.saleId||!canAction("order.quick.edit"))return false;
   const sale=(data.sales||[]).find(item=>item.id===order.saleId&&!item.deletedAt);
   if(!sale||["ملغاة","مرتجع","مرتجع جزئي"].includes(sale.status))return false;
-  return Boolean(order.shipmentId||activeOrderShipment(order));
+  // A delivered or collected parcel is a return, not a refusal (same rule as OrderRefusals.refusalPreview).
+  const shipment=activeOrderShipment(order);
+  if(shipment&&([shipment.normalizedStatus,shipment.shippingStatus,shipment.trackingStatus].includes("delivered")||shipment.status==="تم التسليم"||shipment.settlementId||(data.orderCollections||[]).some(item=>item.sourceKey===`order-collection:${shipment.id}`&&item.status!=="reversed")))return false;
+  return Boolean(order.shipmentId||shipment);
 }
 
 // Same rules as OrderRefusals.settlementPlan, so the employee sees the money before confirming.
@@ -9114,9 +9125,14 @@ function createPartyVoucher(payload, options = {}) {
 
   let balanceApplied = 0;
   let advanceApplied = 0;
+  // balance is what the customer owes us / what we owe the supplier. Money received from a customer or paid to a
+  // supplier settles that; money paid to a customer or received from a supplier settles the other side (a credit the
+  // customer had, or money the supplier owed us), so it raises the balance back towards zero.
+  const balanceSign = (payload.partyKind === "customer") === (payload.type === "استلام") ? -1 : 1;
   if (payload.balanceMode === "settle") {
-    balanceApplied = Math.min(amount, Math.max(0, Number(party.balance || 0)));
-    party.balance = Math.max(0, Number(party.balance || 0) - balanceApplied);
+    const open = balanceSign < 0 ? Math.max(0, Number(party.balance || 0)) : Math.max(0, -Number(party.balance || 0));
+    balanceApplied = Math.min(amount, open);
+    party.balance = Number((Number(party.balance || 0) + balanceSign * balanceApplied).toFixed(2));
   } else if (payload.balanceMode === "advance") {
     advanceApplied = amount;
     party.advance = Number(party.advance || 0) + amount;
@@ -9134,6 +9150,7 @@ function createPartyVoucher(payload, options = {}) {
     method: payload.method,
     balanceMode: payload.balanceMode,
     balanceApplied,
+    balanceSign,
     advanceApplied,
     reference: payload.reference || "",
     note: payload.note || "",
@@ -10318,8 +10335,10 @@ root.addEventListener("change", event => {
     salesFilterTo = event.target.value || today();
     renderSales();
   }
+  if (event.target.id === "sale-cash-account") draftSale.cashAccount = event.target.value;
   if (event.target.id === "sale-payment") {
     draftSale.payment = event.target.value;
+    draftSale.cashAccount = saleDefaultCashAccount(event.target.value);
     const totals = saleTotals();
     draftSale.paid = event.target.value === "آجل" ? 0 : totals.total;
     renderSales();
@@ -12104,6 +12123,9 @@ async function commitSale({ printAfter = false } = {}) {
   }
   const payment = document.getElementById("sale-payment").value;
   const paid = Math.max(0, Math.min(Number(draftSale.paid || 0), totals.total));
+  // The money goes into a real cash account (Visa/wallet are payment methods, not accounts).
+  const cashAccount = activeCashAccounts().find(account => account.name === (document.getElementById("sale-cash-account")?.value || draftSale.cashAccount || saleDefaultCashAccount(payment)));
+  if (paid > 0 && !cashAccount) return toast("اختار الخزنة أو الحساب اللي الفلوس دخلت عليه.", "error");
   const remaining = Math.max(0, totals.total - paid);
   if (remaining > 0 && customer.creditLimit && customer.balance + remaining > customer.creditLimit) {
     const confirmed = confirm("سيتم تجاوز الحد الائتماني للعميل. هل تعتمد العملية بصلاحية المدير؟");
@@ -12163,7 +12185,7 @@ async function commitSale({ printAfter = false } = {}) {
     recordStockMovement(book, "بيع", -Number(line.qty), before, book.stock, sale.id, customer.name);
   });
   if (remaining > 0) customer.balance += remaining;
-  if (paid > 0) data.cash.push({ id: nextId("TX-", data.cash), date: sale.date, type: "قبض", locked: true, account: payment === "نقدي" || payment === "آجل" ? "الخزينة الرئيسية" : payment, party: customer.name, amount: paid, category: "مبيعات", note: [`فاتورة ${sale.id}`,sale.notes].filter(Boolean).join(" — ") });
+  if (paid > 0) data.cash.push({ id: nextId("TX-", data.cash), date: sale.date, type: "قبض", locked: true, account: cashAccount.name, accountId: cashAccount.id || "", saleId: sale.id, invoiceId: sale.id, paymentMethod: payment, party: customer.name, amount: paid, category: "مبيعات", note: [`فاتورة ${sale.id}`,sale.notes].filter(Boolean).join(" — ") });
   if (customer.type === "تجزئة") { sale.pointsAwarded = Math.floor(totals.total / 10); customer.points = (customer.points || 0) + sale.pointsAwarded; }
   data.sales.push(sale);
   const saved=await saveData("إنشاء فاتورة بيع", "المبيعات", sale.id);
@@ -12663,8 +12685,9 @@ function statementRows(id, kind) {
       type:"payment",
       reference: receipt.id,
       description: `إيصال ${receipt.type} — ${receipt.method}`,
-      debit: 0,
-      credit: receipt.status === "ملغى" ? 0 : Number(receipt.balanceApplied || 0),
+      // A voucher that settled the other side (money paid back to a customer with credit) raises the balance.
+      debit: receipt.status === "ملغى" || Number(receipt.balanceSign ?? -1) < 0 ? 0 : Number(receipt.balanceApplied || 0),
+      credit: receipt.status === "ملغى" || Number(receipt.balanceSign ?? -1) > 0 ? 0 : Number(receipt.balanceApplied || 0),
       status: receipt.status,user:receipt.createdBy||"—",note:receipt.note||"",links:{receiptId:receipt.id}
     })),
     ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt&&!item.refusalId).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:cancellationSettlementLabel(item.settlementType),debit:["cash_refund","linked_disbursement"].includes(item.settlementType)?Number(item.amount):0,credit:item.settlementType==="customer_credit"?Number(item.amount):0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
@@ -12866,7 +12889,7 @@ function cancelPartyVoucher(id) {
   if (!confirm(`هل تريد إلغاء الإيصال ${id} وعكس أثره على الخزنة والرصيد؟`)) return;
   const party = receipt.partyKind === "customer" ? getCustomer(receipt.partyId) : getSupplier(receipt.partyId);
   if (party) {
-    party.balance = Number(party.balance || 0) + Number(receipt.balanceApplied || 0);
+    party.balance = Number((Number(party.balance || 0) - Number(receipt.balanceSign ?? -1) * Number(receipt.balanceApplied || 0)).toFixed(2));
     party.advance = Math.max(0, Number(party.advance || 0) - Number(receipt.advanceApplied || 0));
   }
   data.cash.push({
@@ -14260,7 +14283,7 @@ function purchaseReturnBySupplierModal(supplierId = "") {
         <div class="mini-metric"><span>تأثير حساب المورد</span><strong id="supplier-return-balance">${money(0)}</strong></div>
       </div>
       <div class="form-grid">
-        <div class="form-field"><label>طريقة التسوية المالية</label><select name="settlement"><option value="cash">رد نقدي من المورد للخزنة</option><option value="account-credit">خصم من رصيد المورد</option><option value="no-settlement">بدون تسوية حالية، يضاف كرصيد مستحق</option></select></div>
+        <div class="form-field"><label>طريقة التسوية المالية</label><select name="settlement"><option value="cash">رد نقدي من المورد للخزنة</option><option value="account-credit">خصم من رصيد المورد</option></select></div>
         <div class="form-field" data-cash-account-field><label>خزنة استلام المبلغ</label><select name="account">${cashAccountOptions("الخزينة الرئيسية")}</select></div>
         <div class="form-field"><label>تاريخ المرتجع</label><input name="date" type="date" value="${today()}"></div>
         <div class="form-field full"><label class="required">سبب المرتجع</label><input name="reason" required placeholder="مثال: إرجاع أصناف للمورد"></div>

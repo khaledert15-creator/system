@@ -55,6 +55,11 @@
     return { context, rows, deposit: round(rows.reduce((sum, row) => sum + row.open, 0)) };
   }
 
+  function shipmentDelivered(shipment) {
+    const codes = [shipment.normalizedStatus, shipment.shippingStatus, shipment.trackingStatus].map(value => String(value || ""));
+    return codes.includes("delivered") || shipment.status === "تم التسليم" || shipment.currentStatus === "تم التسليم";
+  }
+
   function refusalPreview(db, orderId) {
     const order = list(db, "onlineOrders").find(item => !item.deletedAt && item.id === orderId);
     if (!order) throw fail("الطلب غير موجود.", "ORDER_NOT_FOUND", 404);
@@ -67,6 +72,10 @@
     else if (!sale) blocked = "لا توجد فاتورة لهذا الطلب؛ استخدم إلغاء الطلب بدل رفض الاستلام.";
     else if (!shipment && !order.shipmentId) blocked = "الطلب لم يُشحن بعد؛ استخدم إلغاء الطلب بدل رفض الاستلام.";
     else if (["مرتجع", "مرتجع جزئي"].includes(sale.status) || saleReturns(db, sale.id).length) blocked = "الفاتورة عليها مرتجع مسجل بالفعل؛ استخدم أداة تصحيح المرتجعات القديمة.";
+    // A parcel the customer received, or whose money the carrier collected or settled, was not refused: that is a
+    // return (with its own refund), not a refusal that puts the books back and leaves the collected money standing.
+    else if (shipment && shipmentDelivered(shipment)) blocked = "الشحنة اتسلمت للعميل؛ سجّلها مرتجع عادي مش رفض استلام.";
+    else if (shipment && (shipment.settlementId || list(db, "orderCollections").some(item => item.sourceKey === `order-collection:${shipment.id}` && item.status !== "reversed"))) blocked = "شركة الشحن حصّلت فلوس الشحنة دي؛ اعكس التحصيل الأول أو سجّلها مرتجع عادي.";
     const { deposit } = sale ? depositSummary(db, order.id, sale.id) : { deposit: 0 };
     return {
       orderId: order.id, invoiceId: sale?.id || "", shipmentId: shipment?.id || "", trackingNumber: shipment?.trackingNumber || shipment?.tracking || "",
