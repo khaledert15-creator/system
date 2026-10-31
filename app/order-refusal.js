@@ -117,7 +117,7 @@
     if (!isPostalShipment(shipment)) return fee;
     const closed = month => list(db, "postalStatements").some(item => !item.deletedAt && item.month === month);
     const shippedMonth = String(shipment.shippedAt || shipment.createdAt || "").slice(0, 7);
-    const feeMonth = shipment.carrierReturnFeeMonth || String(now).slice(0, 7);
+    const feeMonth = shipment.carrierReturnFeeMonth || cairoDate(now).slice(0, 7);
     if ((charged === "no" ? "not_charged" : "charged") !== (shipment.postalChargeStatus || "charged") && closed(shippedMonth)) throw fail(`كشف البريد لشهر ${shippedMonth} معتمد؛ تكلفة الشحنة اتحسبت فيه ومينفعش تتغير.`, "POSTAL_MONTH_CLOSED");
     if (fee !== round(shipment.carrierReturnFee || 0) && round(shipment.carrierReturnFee || 0) > 0 && closed(feeMonth)) throw fail(`كشف البريد لشهر ${feeMonth} معتمد؛ رسوم المرتجع اتحسبت فيه ومينفعش تتغير.`, "POSTAL_MONTH_CLOSED");
     return fee;
@@ -136,7 +136,7 @@
       Object.assign(shipment, { carrierBaseCost: base, carrierShippingCostExpected: round((charged === "no" ? 0 : base) + fee) });
     }
     Object.assign(shipment, {
-      carrierCharged: charged === "yes", carrierReturnFee: fee, carrierReturnFeeMonth: fee > 0 ? (shipment.carrierReturnFeeMonth && round(shipment.carrierReturnFee || 0) > 0 ? shipment.carrierReturnFeeMonth : String(now).slice(0, 7)) : "",
+      carrierCharged: charged === "yes", carrierReturnFee: fee, carrierReturnFeeMonth: fee > 0 ? (shipment.carrierReturnFeeMonth && round(shipment.carrierReturnFee || 0) > 0 ? shipment.carrierReturnFeeMonth : cairoDate(now).slice(0, 7)) : "",
       carrierChargesRecordedAt: now, carrierChargesRecordedBy: actor.name || actor.username, updatedAt: now
     });
     return { postal, charged: charged === "yes", returnFee: fee };

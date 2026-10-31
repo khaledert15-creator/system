@@ -725,7 +725,8 @@ function userFinanceActions(db,user={}) {
   if(Array.isArray(userActions))return userActions;
   if(Array.isArray(roleActions))return roleActions;
   if(role==="مدير")return ["*"];
-  if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports","finance.collection.view","finance.collection.create"];
+  // Same as the page's ACTION_ROLES: the accountant records general receipts/payments and transfers between accounts.
+  if(role==="محاسب")return ["add-expense","approve-expense","add-other-income","approve-other-income","create-settlement","view-financial-reports","finance.collection.view","finance.collection.create","add-cash-in","add-cash-out","cash-transfer"];
   if(role==="شحن")return ["finance.collection.view","finance.collection.create"];
   return [];
 }
@@ -1391,7 +1392,10 @@ function applyCarrierPayment(db,sale,order,amount,now) {
     Object.assign(sale,{paid,paidAmount:paid,remaining,remainingAmount:remaining,paymentStatus:paid<=0?"unpaid":remaining<=0.005?"paid":"partially_paid",updatedAt:now});
     effect.salePaidDelta=Number(applied.toFixed(2));effect.saleRemainingDelta=Number(applied.toFixed(2));
     const customer=(db.customers||[]).find(item=>item.id===sale.customerId);
-    if(customer&&effect.saleRemainingDelta>0){const before=Number(customer.balance||0);customer.balance=Number(Math.max(0,before-effect.saleRemainingDelta).toFixed(2));effect.customerId=customer.id;effect.balanceDelta=Number((before-customer.balance).toFixed(2));}
+    // Collected beyond what the invoice still owed (e.g. a return was recorded before the courier collected the full
+    // COD): the excess is the customer's money, kept as a credit on his balance (shown on his statement).
+    const excess=Number(Math.max(0,Number(amount||0)-applied).toFixed(2));effect.excessCredit=excess;
+    if(customer&&(effect.saleRemainingDelta>0||excess>0)){const before=Number(customer.balance||0);customer.balance=Number((Math.max(0,before-effect.saleRemainingDelta)-excess).toFixed(2));effect.customerId=customer.id;effect.balanceDelta=Number((before-customer.balance).toFixed(2));}
   }
   if(order)orderPaymentFromCollections(db,order,amount);
   return effect;
@@ -1490,7 +1494,9 @@ function createOrderCollectionAtomic(db,payload,user) {
   if(differenceCents!==0&&!differenceReason)throw Object.assign(new Error("يجب اختيار سبب الفرق قبل تأكيد التحصيل."),{status:400});
   const registrationType=payload.registrationType==="settled"?"settled":"collected_by_carrier";
   if(registrationType==="settled"&&!canFinance(next,user,"finance.collection.settle"))throw Object.assign(new Error("ليس لديك صلاحية استلام التحويل في الخزنة."),{status:403});
-  const account=String(payload.account||"").trim();
+  // Stored by name like every other cash row (an id from the API is resolved to its account's name).
+  const accountInput=String(payload.account||"").trim(),accountRow=(next.cashAccounts||[]).find(item=>!item.deletedAt&&item.active!==false&&(item.name===accountInput||item.id===accountInput));
+  const account=accountRow?.name||accountInput;
   if(registrationType==="settled"&&!account)throw Object.assign(new Error("يجب اختيار الخزنة أو الحساب."),{status:400});
   // The money lands in a real, active cash account; a typed name that matches none would hide it from every balance.
   if(registrationType==="settled"&&!(next.cashAccounts||[]).some(item=>!item.deletedAt&&item.active!==false&&(item.name===account||item.id===account)))throw Object.assign(new Error("الخزنة دي مش موجودة أو موقوفة."),{status:400,code:"CASH_ACCOUNT_NOT_FOUND"});
@@ -1546,18 +1552,39 @@ function isDocumentCash(row={}) {
 }
 function cashRowRewritten(old,row) {
   for(const [key,value] of Object.entries(old))if(!isDeepStrictEqual(value,row[key]))return true;
-  return Object.keys(row).some(key=>!(key in old)&&!CASH_STAMP_FIELDS.has(key));
+  // The page fills in deletedAt:null on rows the server wrote without it; that is not a change.
+  return Object.keys(row).some(key=>!(key in old)&&!CASH_STAMP_FIELDS.has(key)&&!(key==="deletedAt"&&row[key]==null));
 }
 function cashWriteRequirements(current,next) {
   const required=new Set(),before=new Map((current.cash||[]).map(row=>[row.id,row])),after=new Map((next.cash||[]).map(row=>[row.id,row]));
   // Documents created in this same save (a counter sale, a voucher, an expense…) bring their own cash row. A row linked
   // to a document that already existed, or for more than the document is worth, is an ordinary cash entry and needs
   // the cash permission: otherwise touching any order would let every role put money in or take it out.
-  const newDocuments=new Map();
+  const newDocuments=new Map(),changedDocuments=new Map();
   for(const key of ["sales","purchases","receipts","expenses","otherIncome","carrierSettlements","onlineOrders"]){
-    const old=new Set((current[key]||[]).map(row=>String(row.id)));
-    for(const row of next[key]||[])if(!old.has(String(row.id)))newDocuments.set(String(row.id),row);
+    const old=new Map((current[key]||[]).map(row=>[String(row.id),row]));
+    for(const row of next[key]||[]){
+      const previous=old.get(String(row.id));
+      if(!previous)newDocuments.set(String(row.id),row);
+      else if(!isDeepStrictEqual(previous,row))changedDocuments.set(String(row.id),{key,old:previous,row});
+    }
   }
+  // An existing document's own step brings its cash row too, for at most what that step moves: approving an expense or
+  // income (its amount), cancelling a voucher (its amount), a purchase or invoice cancelled (what was paid on it), an
+  // invoice collected (what its paid went up by). Who may take the step is checked by the step's own permission.
+  const stepValue=({key,old,row},cash)=>{
+    if(["expenses","otherIncome"].includes(key))return old.status!=="معتمد"&&row.status==="معتمد"?Number(row.amount||0):0;
+    if(key==="receipts")return old.status!=="ملغى"&&row.status==="ملغى"?Number(old.amount||0):0;
+    if(key==="purchases"){
+      if(old.status!=="ملغاة"&&row.status==="ملغاة")return Number(old.paid||0);
+      return cash.type==="صرف"?Math.max(0,Number(row.paid||0)-Number(old.paid||0)):0;
+    }
+    if(key==="sales"){
+      if(old.status!=="ملغاة"&&row.status==="ملغاة")return Number(old.paid||0);
+      return cash.type==="قبض"?Math.max(0,Number(row.paid||0)-Number(old.paid||0)):0;
+    }
+    return 0;
+  };
   const documentValue=row=>Math.max(...["total","amount","paid","paidAmount","grandTotal"].map(field=>Number(row?.[field])).filter(Number.isFinite),0);
   for(const [id,old] of before){
     const row=after.get(id);
@@ -1572,6 +1599,8 @@ function cashWriteRequirements(current,next) {
     if(!Number.isFinite(amount)||amount<0){required.add("cash:invalid-amount");continue;}
     const linkedId=CASH_LINK_FIELDS.map(field=>row[field]&&String(row[field])).find(id=>id&&newDocuments.has(id))||[...newDocuments.keys()].find(docId=>docId&&String(row.note||"").includes(docId));
     if(linkedId&&amount<=documentValue(newDocuments.get(linkedId))+0.01)continue;
+    const stepId=CASH_LINK_FIELDS.map(field=>row[field]&&String(row[field])).find(id=>id&&changedDocuments.has(id))||[...changedDocuments.keys()].find(docId=>docId&&String(row.note||"").includes(docId));
+    if(stepId&&amount>0&&amount<=stepValue(changedDocuments.get(stepId),row)+0.01)continue;
     if(row.transferId)required.add("cash-transfer");
     else if(row.category==="قيد عكسي")required.add("reverse-financial-transaction");
     else required.add(row.type==="صرف"?"add-cash-out":"add-cash-in");
@@ -1830,6 +1859,12 @@ function validateRoleWrites(currentDb, nextDb, user) {
   // Values that are never valid, whoever saves them.
   for (const book of nextDb.books || []) for (const field of ["price","cost","coverPrice","defaultSellingPrice","purchaseListPrice"]) if (book[field] != null && book[field] !== "" && !(Number(book[field]) >= 0)) return fail("INVALID_AMOUNT", `سعر «${book.name || book.id}» لازم يكون صفر أو أكتر.`, { key:"books", id:book.id });
   for (const sale of nextDb.sales || []) for (const field of ["total","paid","remaining"]) if (sale[field] != null && sale[field] !== "" && !(Number(sale[field]) >= 0)) return fail("INVALID_AMOUNT", `قيمة الفاتورة ${sale.id} لازم تكون صفر أو أكتر.`, { key:"sales", id:sale.id });
+  // A replacement invoice («استبدال») is cancelled only by reversing its return (whoever saves).
+  for (const [old, row] of changedRows(currentDb.sales || [], nextDb.sales || []).changed) {
+    if (!old.replacementForReturnId) continue;
+    const field = ["status","deletedAt","cancelledAt","voidedAt"].find(name => !isDeepStrictEqual(old[name] ?? null, row[name] ?? null));
+    if (field) return fail("REPLACEMENT_INVOICE", `الفاتورة ${row.id} بديل في المرتجع ${old.replacementForReturnNo || old.replacementForReturnId}؛ لإلغائها ألغِ المرتجع نفسه.`, { key:"sales", id:row.id, field });
+  }
   // Expenses and income created by a collection, settlement or statement carry the same amount as their locked cash
   // row: they are cancelled through a reverse entry, never edited (whoever saves).
   for (const key of ["expenses","otherIncome"]) for (const [old, row] of changedRows(currentDb[key] || [], nextDb[key] || []).changed) {
@@ -3285,7 +3320,8 @@ function applyTrackingAlerts(db, shipment) {
 
 function syncLinkedOrder(db, shipment) {
   const order = db.onlineOrders?.find(item => item.id === shipment.onlineOrderId);
-  if (!order || order.refusal) return;
+  // A refused or cancelled order stays as it is whatever its old parcel reports.
+  if (!order || order.refusal || order.cancelledAt || order.workflowStage === "cancelled" || order.status === "ملغي") return;
   if (shipment.normalizedStatus === "delivered") {
     order.status = "تم التسليم";
     order.workflowStage = "delivered";
@@ -4983,6 +5019,7 @@ const server = http.createServer(async (req, res) => {
       const db = ensureTrackingDb(readDb());
       const shipment = (db.shipments || []).find(item => item.id === id && !item.deletedAt);
       if (!shipment) return send(res, 404, { ok:false, message:"لم يتم العثور على الشحنة." });
+      if (isCancelledShipment(shipment) || shipment.refusedAt) return send(res, 409, { ok:false, code:"SHIPMENT_CLOSED", message:"الشحنة دي ملغاة أو مرفوضة؛ حالتها مبتتغيرش." });
       const now = new Date().toISOString();
       const notes = String(payload.notes || "").trim();
       const statusText = businessShipmentStatus(statusCode, shipment.status);

@@ -6280,7 +6280,7 @@ function purchaseTotals() {
 function updateSaleSummary() {
   let totals = saleTotals();
   if(!draftSale.shippingFeeOverride){
-    const customer=getCustomer(draftSale.customerId),rate=shippingRateForGovernorate(customer?.governorate||"",totals.goods);
+    const customer=getCustomer(draftSale.customerId),rate=saleIsInStore()?{fee:0,source:"in_store"}:shippingRateForGovernorate(customer?.governorate||"",totals.goods);
     draftSale.shippingCost=rate.fee;draftSale.shippingPriceSource=rate.source;totals=saleTotals();
     const shippingInput=document.getElementById("sale-shipping-cost");if(shippingInput)shippingInput.value=totals.shipping;
   }
@@ -12726,6 +12726,8 @@ function statementRows(id, kind) {
     // giving them back — in cash or as the separate order credit (customerCredits) — does not move the balance either.
     // These rows show what happened, with the amount in the description.
     ...(kind==="customer"?(data.orderRefunds||[]).filter(item=>item.customerId===id&&!item.deletedAt&&!item.refusalId).map(item=>({date:item.performedAt,type:item.settlementType,reference:item.refundId,description:`${cancellationSettlementLabel(item.settlementType)} · ${money(item.amount)}`,debit:0,credit:0,status:item.status,user:item.performedBy||"—",note:item.reason||item.notes||"",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||"",receiptId:item.linkedReceiptId||""}})):[]),
+    // A carrier collection above what the invoice still owed leaves the excess as the customer's credit.
+    ...(kind==="customer"?(data.orderCollections||[]).filter(item=>item.status!=="reversed"&&item.paymentEffect?.customerId===id&&Number(item.paymentEffect?.excessCredit||0)>0).map(item=>({date:item.collectionDate||item.createdAt,type:"collection_excess",reference:item.id,description:`تحصيل زيادة عن المستحق — ${item.orderId||""} · ${item.trackingNumber||""}`,debit:0,credit:Number(item.paymentEffect.excessCredit),status:item.status,user:item.createdBy||"—",links:{orderId:item.orderId||"",invoiceId:item.saleId||item.invoiceId||""}})):[]),
     ...(kind==="customer"?(data.customerCreditUses||[]).filter(item=>item.customerId===id&&!item.deletedAt).map(item=>({date:item.performedAt,type:"credit_use",reference:item.id,description:`استخدام رصيد دائن في طلب جديد · ${money(item.amount)}`,debit:0,credit:0,status:item.status,user:item.performedBy||"—",links:{invoiceId:item.invoiceId||"",orderId:item.orderId||""}})):[]),
     ...(kind==="customer"?(data.onlineOrders||[]).filter(item=>item.customerId===id&&item.status==="ملغي").map(item=>({date:item.cancelledAt,type:"cancelled_order",reference:item.id,description:"إلغاء طلب — إلغاء مستند دون حذف",debit:0,credit:0,status:"ملغي",user:item.cancelledBy||"—",links:{orderId:item.id,invoiceId:item.saleId||""}})):[])
   ].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row,index,rows)=>({...row,balance:rows.slice(0,index+1).reduce((sum,item)=>sum+Number(item.debit||0)-Number(item.credit||0),0)}));
