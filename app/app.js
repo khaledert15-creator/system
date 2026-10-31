@@ -14107,9 +14107,8 @@ function withReturnShippingDeduction(result, shippingDeduction = 0) {
 
 function saleReturnCalculation(sale, selectedLines, replacementDeduction = 0, shippingDeduction = 0) {
   const returnAmount = selectedLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
-  const total = Math.max(1, Number(sale?.total || 0));
-  const remainingBase = Number(sale?.remaining || 0) + Number(sale?.returnedRemaining || 0);
-  const debtReduction = Math.min(Number(sale?.remaining || 0), remainingBase * returnAmount / total);
+  // Debt first (same rule as Returns.createSaleReturn): the returned value clears what the invoice still owes.
+  const debtReduction = Math.min(Math.max(0, Number(sale?.remaining || 0)), returnAmount);
   const replacement = Math.max(0, Math.min(Number(replacementDeduction || 0), Math.max(0, returnAmount - debtReduction)));
   const customerDue = Math.max(0, returnAmount - debtReduction - replacement);
   return withReturnShippingDeduction({ returnAmount, debtReduction, replacement, customerDue }, shippingDeduction);
@@ -14121,9 +14120,7 @@ function customerSaleReturnCalculation(selectedLines, replacementDeduction = 0, 
     const sale = data.sales.find(item => item.id === line.documentId);
     if (!sale) return sum;
     const saleReturnAmount = selectedLines.filter(row => row.documentId === sale.id).reduce((s, row) => s + Number(row.amount || 0), 0);
-    const total = Math.max(1, Number(sale.total || 0));
-    const remainingBase = Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0);
-    const saleDebt = Math.min(Number(sale.remaining || 0), remainingBase * saleReturnAmount / total);
+    const saleDebt = Math.min(Math.max(0, Number(sale.remaining || 0)), saleReturnAmount);
     return sum + (line === selectedLines.find(row => row.documentId === sale.id) ? saleDebt : 0);
   }, 0);
   const replacement = Math.max(0, Math.min(Number(replacementDeduction || 0), Math.max(0, returnAmount - debtReduction)));
@@ -14141,10 +14138,8 @@ function updateSaleReturnSummary() {
     if (rowValue) rowValue.textContent = money(amount);
     return sum + amount;
   }, 0);
-  const saleRemaining = Number(form.dataset.saleRemaining || 0);
-  const saleTotal = Math.max(1, Number(form.dataset.saleTotal || 0));
-  const returnedRemaining = Number(form.dataset.returnedRemaining || 0);
-  const debtReduction = Math.min(saleRemaining, (saleRemaining + returnedRemaining) * returnAmount / saleTotal);
+  // Debt first (same rule as the server): the returned value clears what the invoice still owes.
+  const debtReduction = Math.min(Math.max(0, Number(form.dataset.saleRemaining || 0)), returnAmount);
   const replacementTotal = returnReplacementLines(form).reduce((sum, line) => sum + line.total, 0);
   const result = withReturnReplacement({ returnAmount, debtReduction, dueBeforeReplacement: Math.max(0, returnAmount - debtReduction) }, replacementTotal, form.elements.returnShippingDeduction?.value);
   renderReplacementTotal(form, result);

@@ -28,11 +28,11 @@ const stockSum=(db,book)=>db.inventoryBatches.filter(b=>b.productId===book).redu
 pass("Partial then full return from one invoice: debt first, batches, statuses, order and shipment",()=>{
   const db=fixture();
   const first=Returns.createSaleReturn(db,{invoiceId:"I1",lines:[{documentId:"I1",lineIndex:0,qty:1}],settlement:"cash",reason:"اختبار",operationKey:key()},actor).record;
-  // 150 returned: 200 still owed on 300 → 100 clears the debt, 50 is paid back in cash.
-  assert.equal(first.debtReduction,100);assert.equal(first.customerDue,50);assert.equal(first.paidAmount,50);
-  assert.equal(db.customers[0].balance,100);assert.equal(db.sales[0].status,"مرتجع جزئي");assert.equal(db.sales[0].remaining,100);assert.equal(db.sales[0].paid,50);
+  // 150 returned while 200 is still owed: the whole 150 clears debt first, nothing is paid back in cash.
+  assert.equal(first.debtReduction,150);assert.equal(first.customerDue,0);assert.equal(first.paidAmount,0);
+  assert.equal(db.customers[0].balance,50);assert.equal(db.sales[0].status,"مرتجع جزئي");assert.equal(db.sales[0].remaining,50);assert.equal(db.sales[0].paid,100);
   assert.equal(batch(db,"BAT-002"),4,"latest allocation restored first");assert.equal(db.books[0].stock,6);
-  assert.equal(db.cash.length,1);assert.equal(db.cash[0].amount,50);assert.equal(db.cash[0].type,"صرف");
+  assert.equal(db.cash.length,0,"no cash to a customer who still owes on the invoice");
   assert.equal(db.onlineOrders[0].status,"تم الشحن");
   Returns.createSaleReturn(db,{invoiceId:"I1",lines:[{documentId:"I1",lineIndex:0,qty:1}],settlement:"cash",reason:"اختبار",operationKey:key()},actor);
   assert.equal(db.sales[0].status,"مرتجع");assert.equal(db.customers[0].balance,0);assert.equal(batch(db,"BAT-001"),3);
@@ -45,10 +45,11 @@ pass("Partial then full return from one invoice: debt first, batches, statuses, 
 pass("Return across several invoices with return shipping: per-invoice debt and money",()=>{
   const db=fixture();
   const r=Returns.createSaleReturn(db,{customerId:"C1",lines:[{documentId:"I1",lineIndex:0,qty:1},{documentId:"I2",lineIndex:0,qty:1}],settlement:"cash",returnShippingDeduction:20,reason:"اختبار",operationKey:key()},actor).record;
-  assert.equal(r.subtotal,280);assert.equal(r.debtReduction,100);assert.equal(r.customerDue,180);assert.equal(r.returnShippingDeduction,20);
-  assert.equal(db.customers[0].balance,100);
-  assert.equal(db.sales[0].remaining,100);assert.equal(db.sales[1].status,"مرتجع");
-  assert.equal(Math.round((db.sales[0].returnedPaid+db.sales[1].returnedPaid)*100)/100,180,"paid back is split between the invoices");
+  // I1 (200 owed) is cleared by its 150; I2 (paid) gives 150 back, less the 20 return shipping.
+  assert.equal(r.subtotal,280);assert.equal(r.debtReduction,150);assert.equal(r.customerDue,130);assert.equal(r.returnShippingDeduction,20);
+  assert.equal(db.customers[0].balance,50);
+  assert.equal(db.sales[0].remaining,50);assert.equal(db.sales[1].status,"مرتجع");
+  assert.equal(Math.round(((db.sales[0].returnedPaid||0)+db.sales[1].returnedPaid)*100)/100,130,"only the paid invoice gives money back");
 });
 
 pass("Rejected inputs change nothing",()=>{
@@ -158,10 +159,10 @@ pass("Cheaper replacement: the difference is refunded; on an unpaid invoice the 
   assert.equal(r.replacementTotal,120);assert.equal(r.customerDue,30);assert.equal(db.cash[0].amount,30);assert.equal(db.customers[0].balance,200);
   assert.equal(db.sales[1].returnedPaid,30);assert.equal(db.sales[1].exchangedPaid,120);
   db=fixture();
-  // I1: 200 of 300 still owed. Returning one copy (150) clears 100 of debt and 50 of paid money; replacement 150.
+  // I1: 200 of 300 still owed. Returning one copy (150) clears 150 of that debt; the replacement (150) is owed in full.
   r=Returns.createSaleReturn(db,{invoiceId:"I1",lines:[{documentId:"I1",lineIndex:0,qty:1}],replacements:[{bookId:"B2",qty:1}],settlement:"cash",reason:"استبدال",operationKey:key()},actor).record;
   const inv=db.sales.find(x=>x.id===r.replacementSaleId);
-  assert.equal(r.debtReduction,100);assert.equal(inv.paid,50);assert.equal(inv.remaining,100);assert.equal(db.customers[0].balance,200);
+  assert.equal(r.debtReduction,150);assert.equal(inv.paid,0);assert.equal(inv.remaining,150);assert.equal(db.customers[0].balance,200);
 });
 
 pass("Replacement checks: stock, discount, and copies coming back count",()=>{

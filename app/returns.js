@@ -222,15 +222,16 @@
     const now = actor.now || new Date().toISOString(), date = payload.date ? String(payload.date).slice(0, 10) : cairoDate(now), reason = String(payload.reason || "").trim();
     if (!reason) throw fail("سبب المرتجع مطلوب.", "REASON_REQUIRED", 400);
 
-    // Per invoice: the part of the returned value that clears what is still owed, the rest is due to the customer.
+    // Per invoice: the returned value clears what is still owed on it first (owner's rule, 2026-10-31: no cash goes back
+    // to a customer who still owes on the invoice); only the rest is due to the customer.
     const perSale = new Map();
     for (const line of lines) {
       const row = perSale.get(line.documentId) || { sale: line.document, lines: [], amount: 0 };
       row.lines.push(line); row.amount = round(row.amount + line.amount); perSale.set(line.documentId, row);
     }
     for (const row of perSale.values()) {
-      const sale = row.sale, total = Math.max(1, Number(sale.total || 0));
-      row.debt = Math.min(Number(sale.remaining || 0), (Number(sale.remaining || 0) + Number(sale.returnedRemaining || 0)) * row.amount / total);
+      const sale = row.sale;
+      row.debt = Math.min(Math.max(0, Number(sale.remaining || 0)), row.amount);
       // Money already given back for this invoice outside returns (a cancellation refund or credit) is not paid again.
       row.due = Math.max(0, Math.min(row.amount - row.debt, Number(sale.paid || 0) - settledOutsideReturns(db, sale)));
     }
